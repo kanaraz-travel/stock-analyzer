@@ -2,7 +2,7 @@
 // POST /api/analyze
 // Body: { ticker, stock_name, price_data: {...}, volume_data: {...}, news_items: [...] }
 
-import { createClient } from 'https://esm.sh/@supabase/supabase-js@2';
+import { createClient } from '@supabase/supabase-js';
 
 const RULESET_VERSION = 'RULESET_V1';
 
