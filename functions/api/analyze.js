@@ -25,11 +25,13 @@ export async function onRequestPost(context) {
 
   const dataSufficient = price_data && price_data.current_price != null;
   if (!dataSufficient) {
-    const fallbackSummary = {
-      recommendation: '판단 보류', overall_summary: '현재가 데이터가 부족해 분석을 진행할 수 없습니다.',
-      price_flow_summary: '-', volume_summary: '-', news_summary: '-', tip: '데이터가 충분히 수집된 후 다시 시도해 주세요.', fallback: true,
-    };
-    return jsonResponse(fallbackSummary);
+    return jsonResponse({
+      recommendation: '판단 보류',
+      overall_summary: '현재가 데이터가 부족해 분석을 진행할 수 없습니다.',
+      price_flow_summary: '-', volume_summary: '-', news_summary: '-',
+      price_tip: '-', volume_tip: '-', tip: '데이터가 충분히 수집된 후 다시 시도해 주세요.',
+      fallback: true,
+    });
   }
 
   const scoreResult = computeScore(price_data, volume_data, news_items);
@@ -38,6 +40,11 @@ export async function onRequestPost(context) {
   let debugInfo = null;
 
   try {
+    // AI 바인딩 확인 (명확한 한국어 에러)
+    if (!env.AI) {
+      throw new Error('Cloudflare Workers AI 바인딩이 설정되지 않았습니다. 대시보드에서 AI 바인딩을 추가해 주세요.');
+    }
+
     const analysisResult = await runAnalysisAgent(env, {
       ticker, stock_name, price_data, volume_data, news_items, rule_based_score: scoreResult,
     });
@@ -54,7 +61,8 @@ export async function onRequestPost(context) {
     console.warn('Multi-agent analysis failed:', e.message);
     isFallback = true;
     debugInfo = e.message;
-    
+
+    // 한국어 Fallback 메시지
     finalData = {
       recommendation: scoreResult.recommendation,
       overall_summary: `AI 분석이 일시적으로 제한되어 기본 지표로 판단했습니다. (${e.message})`,
@@ -67,16 +75,18 @@ export async function onRequestPost(context) {
     };
   }
 
-  const saved = await saveAnalysisRun(supabase, {
-    user_id: userId, ticker, stock_name, quote_price: price_data.current_price ?? null, quote_as_of: price_data.quote_as_of ?? null,
-    data_status: 'LATEST', score: scoreResult.totalScore, recommendation: finalData.recommendation, ruleset_version: RULESET_VERSION,
-    market_facts: { price_data, volume_data, news_items }, overall_summary: finalData.overall_summary,
-    price_flow_summary: finalData.price_flow_summary, volume_summary: finalData.volume_summary, news_summary: finalData.news_summary,
+  await saveAnalysisRun(supabase, {
+    user_id: userId, ticker, stock_name, quote_price: price_data.current_price ?? null,
+    quote_as_of: price_data.quote_as_of ?? null, data_status: 'LATEST',
+    score: scoreResult.totalScore, recommendation: finalData.recommendation,
+    ruleset_version: RULESET_VERSION, market_facts: { price_data, volume_data, news_items },
+    overall_summary: finalData.overall_summary, price_flow_summary: finalData.price_flow_summary,
+    volume_summary: finalData.volume_summary, news_summary: finalData.news_summary,
     tip: finalData.tip, sources: news_items?.map((n) => ({ title: n.title, url: n.url })) ?? null,
   });
 
   return jsonResponse({
-    id: saved?.id, score: scoreResult.totalScore, recommendation: finalData.recommendation,
+    score: scoreResult.totalScore, recommendation: finalData.recommendation,
     overall_summary: finalData.overall_summary, price_flow_summary: finalData.price_flow_summary,
     volume_summary: finalData.volume_summary, news_summary: finalData.news_summary,
     price_tip: finalData.price_tip || finalData.tip, volume_tip: finalData.volume_tip || finalData.tip,
@@ -85,7 +95,7 @@ export async function onRequestPost(context) {
 }
 
 async function runAnalysisAgent(env, payload) {
-  if (!env.AI) throw new Error('Workers AI binding not configured');
+  if (!env.AI) throw new Error('Workers AI 바인딩이 설정되지 않았습니다.');
   const systemPrompt = `당신은 주식 초보자를 돕는 친절하고 신중한 주식 분석가입니다. 제공된 [데이터]를 바탕으로 현재 주식의 상태를 분석하세요. 반드시 제공된 JSON 스키마 형식으로만 응답해야 합니다.`;
   const userPrompt = `
 [데이터]
@@ -111,7 +121,7 @@ async function runAnalysisAgent(env, payload) {
 }
 
 async function runJudgeAgent(env, payload) {
-  if (!env.AI) throw new Error('Workers AI binding not configured');
+  if (!env.AI) throw new Error('Workers AI 바인딩이 설정되지 않았습니다.');
   const systemPrompt = `당신은 최종 투자 판단을 내리는 심판 에이전트입니다. 분석 에이전트의 의견과 규칙 기반 점수를 종합하여 아래 5단계 중 하나를 결정하세요. (매수 추천, 매수 고려, 기다리기, 매도 고려, 매도 추천). 반드시 JSON 형식으로만 응답하세요.`;
   const userPrompt = `
 [분석 에이전트의 1차 의견]
@@ -145,13 +155,9 @@ function extractJSON(text) {
   if (!text) throw new Error('AI 응답이 비어있습니다.');
   const jsonStart = text.indexOf('{');
   const jsonEnd = text.lastIndexOf('}');
-  if (jsonStart === -1 || jsonEnd === -1) throw new Error('AI 응답에서 JSON을 찾을 수 없습니다: ' + text.slice(0, 100));
-  const jsonStr = text.substring(jsonStart, jsonEnd + 1);
-  try {
-    return JSON.parse(jsonStr);
-  } catch (e) {
-    throw new Error('AI 응답 JSON 파싱 실패: ' + e.message);
-  }
+  if (jsonStart === -1 || jsonEnd === -1) throw new Error('AI 응답에서 JSON을 찾을 수 없습니다.');
+  try { return JSON.parse(text.substring(jsonStart, jsonEnd + 1)); }
+  catch (e) { throw new Error('AI 응답 JSON 파싱 실패: ' + e.message); }
 }
 
 function computeScore(price, volume, news) {
@@ -161,18 +167,15 @@ function computeScore(price, volume, news) {
   priceScore = clamp(priceScore, -2, 2);
   let volumeScore = 0;
   if (volume && typeof volume.ratio_5d === 'number') { if (volume.ratio_5d > 1.2) volumeScore = 1; else if (volume.ratio_5d < 0.8) volumeScore = -1; }
-  let newsScore = 0;
-  let riskPenalty = 0;
-  const totalScore = priceScore + volumeScore + newsScore + riskPenalty;
+  const totalScore = priceScore + volumeScore;
   let recommendation = '기다리기';
   if (totalScore >= 4) recommendation = '매수 추천'; else if (totalScore >= 2) recommendation = '매수 고려'; else if (totalScore >= -1) recommendation = '기다리기'; else if (totalScore >= -3) recommendation = '매도 고려'; else recommendation = '매도 추천';
   return { totalScore, recommendation };
 }
 
 async function saveAnalysisRun(supabase, payload) {
-  const { data, error } = await supabase.from('stock_analysis_runs').insert(payload).select('id').single();
-  if (error) { console.error('saveAnalysisRun error:', error.message); return null; }
-  return data;
+  const { error } = await supabase.from('stock_analysis_runs').insert(payload).select('id').single();
+  if (error) { console.error('saveAnalysisRun error:', error.message); }
 }
 function clamp(v, min, max) { return Math.min(max, Math.max(min, v)); }
 function jsonResponse(body, status = 200) { return new Response(JSON.stringify(body), { status, headers: { 'content-type': 'application/json; charset=utf-8' } }); }

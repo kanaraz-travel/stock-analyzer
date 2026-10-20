@@ -4,7 +4,7 @@
 import { unzipSync } from 'fflate';
 
 let masterCache = { loaded: false, map: new Map(), codeMap: new Map(), expiresAt: 0 };
-const CACHE_TTL = 24 * 60 * 60 * 1000; // 24시간
+const CACHE_TTL = 24 * 60 * 60 * 1000;
 
 export async function onRequestGet(context) {
   const { request, env } = context;
@@ -44,15 +44,15 @@ export async function onRequestGet(context) {
     });
 
     if (!kisRes.ok) {
-      console.error('KIS API Error:', kisRes.status, await kisRes.text());
-      return jsonResponse({ error: '시세를 가져오지 못했습니다. 잠시 후 다시 확인해 주세요.' }, 502);
+      const errText = await kisRes.text();
+      console.error('KIS API Error:', kisRes.status, errText.slice(0, 300));
+      return jsonResponse({ error: '시세를 가져오지 못했습니다. 잠시 후 다시 확인해 주세요.', detail: kisRes.status }, 502);
     }
 
     let data;
     try { data = await kisRes.json(); } catch { return jsonResponse({ error: '시세 응답을 처리하지 못했습니다.' }, 502); }
     const output = data.output || {};
 
-    // ★ ISIN 코드 제거 로직 추가 (예: KR7042660001 제거)
     let finalName = output.hts_kor_isnm || stock_name;
     if (/^[A-Z0-9]{10,}/.test(finalName)) {
       finalName = finalName.replace(/^[A-Z0-9]{10,}\s*/, '').trim();
@@ -71,7 +71,7 @@ export async function onRequestGet(context) {
     });
   } catch (err) {
     console.error('quote.js Error:', err.message);
-    return jsonResponse({ error: '시세를 가져오지 못했습니다.', detail: err.message }, 502);
+    return jsonResponse({ error: '시세를 가져오지 못했습니다. 잠시 후 다시 확인해 주세요.', detail: err.message }, 502);
   }
 }
 
