@@ -3,7 +3,7 @@
 // Body: { name: '박필립' | '윤혜영' }
 // 서버가 service_role로 매직링크 토큰을 발급하고, 클라이언트가 verifyOtp로 세션 교환
 
-import { createClient } from '@supabase/supabase-js';
+import { createClient } from 'https://esm.sh/@supabase/supabase-js@2';
 
 const ALLOWED_USERS = {
   '박필립': 'philip@kanaraz-travel.test',
