@@ -10,6 +10,16 @@ export async function onRequestGet(context) {
     return jsonResponse({ error: '종목명 또는 코드를 입력해 주세요.' }, 400);
   }
 
+  // 환경 변수 누락 방어 (기본 URL 사용)
+  const baseUrl = env.KIS_BASE_URL || 'https://openapi.koreainvestment.com:9443';
+
+  if (!env.KIS_APP_KEY || !env.KIS_APP_SECRET) {
+    return jsonResponse(
+      { error: '한국투자증권 API 키가 서버에 설정되지 않았습니다. 관리자에게 문의하세요.' },
+      500
+    );
+  }
+
   let ticker = query;
   let stock_name = query;
 
@@ -19,6 +29,9 @@ export async function onRequestGet(context) {
       const searchRes = await fetch(
         `https://ac.finance.naver.com/ac?q=${encodeURIComponent(query)}&q_enc=utf-8&st=111&r_format=json&r_enc=utf-8`
       );
+      if (!searchRes.ok) {
+        return jsonResponse({ error: '종목 검색 중 오류가 발생했습니다. 잠시 후 다시 시도해 주세요.' }, 502);
+      }
       const searchData = await searchRes.json();
       const items = searchData?.items?.[0];
 
@@ -26,13 +39,12 @@ export async function onRequestGet(context) {
         return jsonResponse({ error: `'${query}'에 해당하는 종목을 찾을 수 없습니다.` }, 404);
       }
 
-      // 검색된 첫 번째 종목의 코드와 이름 추출 (예: items[0][1] = "005930", items[0][0] = "삼성전자")
       ticker = items[0][1];
       stock_name = items[0][0];
     }
 
-    // 2) 추출된 종목코드로 KIS API 호출 (또는 추후 대체될 API)
-    const accessToken = await getKisAccessToken(env);
+    // 2) 추출된 종목코드로 KIS API 호출
+    const accessToken = await getKisAccessToken(env, baseUrl);
 
     const kisQuery = new URLSearchParams({
       FID_COND_MRKT_DIV_CODE: 'J',
@@ -40,7 +52,7 @@ export async function onRequestGet(context) {
     });
 
     const kisRes = await fetch(
-      `${env.KIS_BASE_URL}/uapi/domestic-stock/v1/quotations/inquire-price?${kisQuery}`,
+      `${baseUrl}/uapi/domestic-stock/v1/quotations/inquire-price?${kisQuery}`,
       {
         headers: {
           'content-type': 'application/json; charset=utf-8',
@@ -54,32 +66,40 @@ export async function onRequestGet(context) {
 
     if (!kisRes.ok) {
       const errText = await kisRes.text();
+      console.error('KIS API Error:', kisRes.status, errText.slice(0, 300));
       return jsonResponse(
         {
           error: '시세를 가져오지 못했습니다. 잠시 후 다시 확인해 주세요.',
           detail: kisRes.status,
-          raw: errText.slice(0, 300),
         },
         502
       );
     }
 
-    const data = await kisRes.json();
+    let data;
+    try {
+      data = await kisRes.json();
+    } catch (parseErr) {
+      console.error('KIS API JSON Parse Error:', parseErr.message);
+      return jsonResponse({ error: '시세 응답을 처리하지 못했습니다.' }, 502);
+    }
+
     const output = data.output || {};
 
-    // 3) 결과 반환 (KIS API가 반환하는 정식 종목명이 있으면 그것을 사용)
+    // 3) 결과 반환
     return jsonResponse({
       ticker,
-      stock_name: output.hts_kor_isnm || stock_name, // KIS API의 한글 종목명 필드
+      stock_name: output.hts_kor_isnm || stock_name,
       price: output.stck_prpr ? Number(output.stck_prpr) : null,
       change_rate: output.prdy_ctrt ? Number(output.prdy_ctrt) : null,
       volume: output.acml_vol ? Number(output.acml_vol) : null,
-      market_status: mapMarketStatus(output),
+      market_status: 'UNKNOWN',
       quote_as_of: new Date().toISOString(),
       provider: '한국투자증권 Open API',
       data_status: 'LATEST',
     });
   } catch (err) {
+    console.error('quote.js Unexpected Error:', err.message);
     return jsonResponse(
       { error: '시세를 가져오지 못했습니다. 잠시 후 다시 확인해 주세요.', detail: err.message },
       502
@@ -87,15 +107,18 @@ export async function onRequestGet(context) {
   }
 }
 
+// ------------------------------------------------------------
+// 접근토큰 발급 (캐시 사용)
+// ------------------------------------------------------------
 let tokenCache = { accessToken: null, expiresAt: 0 };
 
-async function getKisAccessToken(env) {
+async function getKisAccessToken(env, baseUrl) {
   const now = Date.now();
   if (tokenCache.accessToken && now < tokenCache.expiresAt) {
     return tokenCache.accessToken;
   }
 
-  const res = await fetch(`${env.KIS_BASE_URL}/oauth2/tokenP`, {
+  const res = await fetch(`${baseUrl}/oauth2/tokenP`, {
     method: 'POST',
     headers: { 'content-type': 'application/json' },
     body: JSON.stringify({
@@ -106,7 +129,8 @@ async function getKisAccessToken(env) {
   });
 
   if (!res.ok) {
-    throw new Error(`KIS token error: ${res.status}`);
+    const errText = await res.text();
+    throw new Error(`KIS Token Error (${res.status}): ${errText.slice(0, 200)}`);
   }
 
   const data = await res.json();
@@ -116,10 +140,6 @@ async function getKisAccessToken(env) {
     expiresAt: now + (expiresIn - 60) * 1000,
   };
   return data.access_token;
-}
-
-function mapMarketStatus(output) {
-  return 'UNKNOWN';
 }
 
 function jsonResponse(body, status = 200) {
