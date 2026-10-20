@@ -29,17 +29,13 @@ async function init() {
   setupTransactionForm();
   setupVisibility();
 
-  supabase.auth.onAuthStateChange((_event, session) => {
-    handleAuthState(session);
-  });
-
+  supabase.auth.onAuthStateChange((_event, session) => handleAuthState(session));
   const { data: { session } } = await supabase.auth.getSession();
   handleAuthState(session);
 }
 
 async function handleAuthState(session) {
   currentUser = session?.user || null;
-
   if (currentUser) {
     $('#screen-login').hidden = true;
     $('#app-shell').hidden = false;
@@ -55,10 +51,7 @@ async function handleAuthState(session) {
 
 function mapEmailToName(email) {
   if (!email) return '';
-  const map = {
-    'philip@kanaraz-travel.test': '박필립',
-    'hyeyoung@kanaraz-travel.test': '윤혜영',
-  };
+  const map = { 'philip@kanaraz-travel.test': '박필립', 'hyeyoung@kanaraz-travel.test': '윤혜영' };
   return map[email.toLowerCase()] || '';
 }
 
@@ -76,11 +69,7 @@ function resetState() {
   $('#tx-error').hidden = true;
   setTxFormMode(null);
   $('#holdings-list').innerHTML = '<p class="empty-text">아직 등록된 거래가 없습니다.</p>';
-  ['#total-cost', '#total-value', '#total-pnl', '#realized-pnl'].forEach((id) => {
-    $(id).textContent = '-';
-  });
-
-  // 로그인 버튼 및 상태 초기화 (로그아웃 후 비활성화 방지)
+  ['#total-cost', '#total-value', '#total-pnl', '#realized-pnl'].forEach((id) => { $(id).textContent = '-'; });
   $$('.login-name-btn').forEach((b) => (b.disabled = false));
   $('#login-error').hidden = true;
   $('#login-loading').hidden = true;
@@ -89,7 +78,6 @@ function resetState() {
 function renderLoginButtons() {
   const container = $('#login-buttons');
   container.innerHTML = '';
-
   ALLOWED_NAMES.forEach((name) => {
     const btn = document.createElement('button');
     btn.type = 'button';
@@ -104,29 +92,20 @@ async function handleLogin(name) {
   const errorEl = $('#login-error');
   const loadingEl = $('#login-loading');
   const buttons = $$('.login-name-btn');
-
   errorEl.hidden = true;
   loadingEl.hidden = false;
   buttons.forEach((b) => (b.disabled = true));
 
   try {
     const res = await fetch('/api/login', {
-      method: 'POST',
-      headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ name }),
+      method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ name }),
     });
-
     let data = {};
     try { data = await res.json(); } catch { throw new Error('서버 응답을 해석할 수 없습니다.'); }
-
     if (!res.ok) throw new Error(data.error || '로그인에 실패했습니다.');
     if (!data.token_hash) throw new Error('로그인 토큰이 없습니다.');
 
-    const { error: verifyError } = await supabase.auth.verifyOtp({
-      type: 'magiclink',
-      token_hash: data.token_hash,
-    });
-
+    const { error: verifyError } = await supabase.auth.verifyOtp({ type: 'magiclink', token_hash: data.token_hash });
     if (verifyError) throw new Error(mapAuthError(verifyError.message));
   } catch (err) {
     errorEl.textContent = err.message || '로그인에 실패했습니다.';
@@ -176,21 +155,14 @@ function setupAccordions() {
 
 function setupSearch() {
   $('#search-btn').addEventListener('click', handleSearch);
-  $('#ticker-input').addEventListener('keydown', (e) => {
-    if (e.key === 'Enter') handleSearch();
-  });
+  $('#ticker-input').addEventListener('keydown', (e) => { if (e.key === 'Enter') handleSearch(); });
 }
 
 async function handleSearch() {
   const query = $('#ticker-input').value.trim();
   const errorEl = $('#search-error');
   errorEl.hidden = true;
-
-  if (!query) {
-    errorEl.textContent = '종목명 또는 종목코드를 입력해 주세요.';
-    errorEl.hidden = false;
-    return;
-  }
+  if (!query) { errorEl.textContent = '종목명 또는 종목코드를 입력해 주세요.'; errorEl.hidden = false; return; }
 
   const btn = $('#search-btn');
   btn.disabled = true;
@@ -200,7 +172,6 @@ async function handleSearch() {
     const res = await fetch(`/api/quote?ticker=${encodeURIComponent(query)}`);
     const data = await res.json();
     if (!res.ok) throw new Error(data.error || '시세를 가져오지 못했습니다.');
-
     currentQuote = data;
     renderQuote(data);
     updateMarketBadges(data);
@@ -240,14 +211,13 @@ function renderQuote(q) {
 
 function updateMarketBadges(q) {
   const market = $('#market-status-badge');
-  market.textContent = q.market_status === 'OPEN' ? '장중' : q.market_status || '상태 미확인';
-
+  market.textContent = q.market_status || '상태 확인 중';
   const dataBadge = $('#data-status-badge');
   if (q.data_status === 'LATEST') {
-    dataBadge.textContent = '최신';
+    dataBadge.textContent = '방금 조회된 시세';
     dataBadge.className = 'badge badge--positive';
   } else if (q.data_status === 'DELAYED') {
-    dataBadge.textContent = '지연';
+    dataBadge.textContent = '지연된 시세';
     dataBadge.className = 'badge badge--warning';
   } else {
     dataBadge.textContent = '일부 정보 부족';
@@ -265,9 +235,7 @@ function startAutoRefresh() {
   }, 45000);
 }
 
-function stopAutoRefresh() {
-  if (refreshTimer) { clearInterval(refreshTimer); refreshTimer = null; }
-}
+function stopAutoRefresh() { if (refreshTimer) { clearInterval(refreshTimer); refreshTimer = null; } }
 
 async function refreshQuoteSilently(ticker) {
   try {
@@ -289,13 +257,10 @@ function setupVisibility() {
   });
 }
 
-function setupAnalyze() {
-  $('#analyze-btn').addEventListener('click', runAnalysis);
-}
+function setupAnalyze() { $('#analyze-btn').addEventListener('click', runAnalysis); }
 
 async function runAnalysis() {
   if (!currentQuote) return;
-
   const { data: { session } } = await supabase.auth.getSession();
   if (!session) { alert('로그인이 필요합니다.'); return; }
 
@@ -309,24 +274,16 @@ async function runAnalysis() {
       ticker: currentQuote.ticker,
       stock_name: currentQuote.stock_name || currentQuote.ticker,
       price_data: {
-        current_price: currentQuote.price,
-        quote_as_of: currentQuote.quote_as_of,
+        current_price: currentQuote.price, quote_as_of: currentQuote.quote_as_of,
         return_1d: currentQuote.change_rate != null ? currentQuote.change_rate / 100 : null,
-        return_5d: null,
-        return_20d: null,
-        volatility_20d: null,
-        quote_is_stale: false,
+        return_5d: null, return_20d: null, volatility_20d: null, quote_is_stale: false,
       },
-      volume_data: null,
-      news_items: [],
+      volume_data: null, news_items: [],
     };
 
     const res = await fetch('/api/analyze', {
       method: 'POST',
-      headers: {
-        'content-type': 'application/json',
-        authorization: `Bearer ${session.access_token}`,
-      },
+      headers: { 'content-type': 'application/json', authorization: `Bearer ${session.access_token}` },
       body: JSON.stringify(payload),
     });
 
@@ -369,11 +326,15 @@ function renderAnalysis(data) {
   $('#volume-summary').textContent = data.volume_summary || '데이터가 부족합니다.';
   $('#news-summary').textContent = data.news_summary || '확인된 뉴스가 없습니다.';
 
-  const tip = data.tip || '이 분석은 참고용이며, 투자 결정은 본인의 판단과 책임 하에 이루어져야 합니다.';
-  $('#price-tip').textContent = tip;
-  $('#volume-tip').textContent = tip;
+  // ★ AI가 생성한 각각의 TIP 매핑
+  $('#price-tip').textContent = data.price_tip || '이 분석은 참고용이며...';
+  $('#volume-tip').textContent = data.volume_tip || '이 분석은 참고용이며...';
 
   $('#ai-fallback-note').hidden = !data.fallback;
+  if (data.fallback && data.debug) {
+    console.warn('AI Fallback 발생 원인:', data.debug);
+  }
+  
   renderNewsList(data.news_items || []);
 }
 
@@ -403,13 +364,10 @@ function renderNewsList(items) {
 
   items.slice(0, 5).forEach((item) => {
     const li = document.createElement('li');
-
     if (item.url) {
       const a = document.createElement('a');
       a.className = 'news-title';
-      a.href = item.url;
-      a.target = '_blank';
-      a.rel = 'noopener noreferrer';
+      a.href = item.url; a.target = '_blank'; a.rel = 'noopener noreferrer';
       a.textContent = item.title || '제목 없음';
       li.appendChild(a);
     } else {
@@ -432,19 +390,12 @@ function renderNewsList(items) {
       impact.textContent = item.impact_label;
       li.appendChild(impact);
     }
-
     list.appendChild(li);
   });
 }
 
-// ------------------------------------------------------------
-// 거래 내역 (CRUD) - 종목명으로 검색 및 코드 자동 매핑
-// ------------------------------------------------------------
 function setupTransactionForm() {
-  $('#transaction-form').addEventListener('submit', (e) => {
-    e.preventDefault();
-    saveTransaction();
-  });
+  $('#transaction-form').addEventListener('submit', (e) => { e.preventDefault(); saveTransaction(); });
   $('#tx-cancel-btn').addEventListener('click', resetTxForm);
 }
 
@@ -463,11 +414,7 @@ function resetTxForm() {
   setTxFormMode(null);
 }
 
-function showTxError(msg) {
-  const el = $('#tx-error');
-  el.textContent = msg;
-  el.hidden = false;
-}
+function showTxError(msg) { const el = $('#tx-error'); el.textContent = msg; el.hidden = false; }
 
 async function saveTransaction() {
   $('#tx-error').hidden = true;
@@ -489,22 +436,14 @@ async function saveTransaction() {
   btn.textContent = '종목 확인 중…';
 
   try {
-    // 입력된 이름에서 기존 괄호 코드가 있다면 제거
     const nameOnly = rawName.replace(/\(.*?\)/g, '').trim();
-
-    // 서버 quote API를 통해 종목코드 조회
     const res = await fetch(`/api/quote?ticker=${encodeURIComponent(nameOnly)}`);
     const qData = await res.json();
     if (!res.ok) throw new Error(qData.error || '종목을 찾을 수 없습니다.');
 
     const payload = {
-      user_id: session.user.id,
-      ticker: qData.ticker, // 서버에서 반환된 정확한 코드
-      stock_name: qData.stock_name || nameOnly,
-      transaction_type: type,
-      trade_date: tradeDate,
-      unit_price: price,
-      quantity: qty,
+      user_id: session.user.id, ticker: qData.ticker, stock_name: qData.stock_name || nameOnly,
+      transaction_type: type, trade_date: tradeDate, unit_price: price, quantity: qty,
     };
 
     if (type === 'SELL') {
@@ -521,7 +460,6 @@ async function saveTransaction() {
       ({ error } = await supabase.from('stock_transactions').insert(payload));
     }
     if (error) throw error;
-
     resetTxForm();
     await loadHoldings();
   } catch (err) {
@@ -538,8 +476,7 @@ async function canSell(ticker, quantity, excludeId = null) {
   let net = 0;
   for (const tx of data || []) {
     if (excludeId && tx.id === excludeId) continue;
-    if (tx.transaction_type === 'BUY') net += Number(tx.quantity);
-    else net -= Number(tx.quantity);
+    if (tx.transaction_type === 'BUY') net += Number(tx.quantity); else net -= Number(tx.quantity);
   }
   return quantity <= net + 1e-9;
 }
@@ -550,7 +487,6 @@ async function editTransaction(id) {
   const { data, error } = await supabase.from('stock_transactions').select('*').eq('id', id).eq('user_id', session.user.id).single();
   if (error || !data) { alert('거래를 불러올 수 없습니다.'); return; }
 
-  // 종목명만 표시되도록 설정 (저장 시 어차피 다시 조회함)
   $('#tx-stock-name').value = data.stock_name;
   $('#tx-type').value = data.transaction_type;
   $('#tx-date').value = data.trade_date;
@@ -570,17 +506,12 @@ async function deleteTransaction(id) {
   await loadHoldings();
 }
 
-// ------------------------------------------------------------
-// 보유 계산 및 요약 (미실현/실현 손익 계산 포함)
-// ------------------------------------------------------------
 async function loadHoldings() {
   if (!currentUser) return;
   const { data, error } = await supabase.from('stock_transactions').select('*').order('trade_date', { ascending: true }).order('created_at', { ascending: true });
   if (error) { console.error('loadHoldings error:', error.message); return; }
-
   transactions = data || [];
   const holdingsData = computeHoldings(transactions);
-  
   renderHoldingsList(holdingsData.currentHoldings);
   await renderHoldingsSummary(holdingsData);
 }
@@ -596,7 +527,6 @@ function computeHoldings(txs) {
     }
     const h = map.get(tx.ticker);
     h.transactions.push(tx);
-
     const q = Number(tx.quantity);
     const p = Number(tx.unit_price);
 
@@ -608,16 +538,13 @@ function computeHoldings(txs) {
       const sellQty = Math.min(q, h.qty);
       const costOfSold = sellQty * h.avgCost;
       const revenue = sellQty * p;
-      
       totalRealizedPnl += (revenue - costOfSold);
       totalRealizedCost += costOfSold;
-
       h.totalCost -= costOfSold;
       h.qty -= sellQty;
       h.avgCost = h.qty > 0 ? h.totalCost / h.qty : 0;
     }
   }
-
   const currentHoldings = Array.from(map.values()).filter((h) => h.qty > 0);
   return { currentHoldings, totalRealizedPnl, totalRealizedCost };
 }
@@ -627,20 +554,15 @@ async function renderHoldingsSummary(holdingsData) {
   let totalCost = 0;
   let totalCurrentValue = 0;
 
-  // 보유 종목의 현재가를 서버에서 병렬로 조회
   await Promise.all(currentHoldings.map(async (h) => {
     totalCost += h.totalCost;
     try {
       const res = await fetch(`/api/quote?ticker=${h.ticker}`);
       if (res.ok) {
         const q = await res.json();
-        if (q.price != null) {
-          totalCurrentValue += q.price * h.qty;
-          return;
-        }
+        if (q.price != null) { totalCurrentValue += q.price * h.qty; return; }
       }
     } catch {}
-    // 현재가 조회 실패 시 투자금액(원가)으로 대체
     totalCurrentValue += h.totalCost;
   }));
 
@@ -648,7 +570,6 @@ async function renderHoldingsSummary(holdingsData) {
   const unrealizedRate = totalCost > 0 ? (unrealizedPnl / totalCost) * 100 : 0;
   const realizedRate = totalRealizedCost > 0 ? (totalRealizedPnl / totalRealizedCost) * 100 : 0;
 
-  // UI 업데이트
   $('#total-cost').textContent = formatCurrency(totalCost);
   
   $('#total-value').innerHTML = `
@@ -689,7 +610,6 @@ function renderHoldingsList(holdings) {
     const left = document.createElement('div');
     const nameEl = document.createElement('h3');
     nameEl.className = 'holding-name';
-    // 종목명 (종목코드) 형태로 출력
     nameEl.textContent = `${h.stock_name} (${h.ticker})`;
     left.appendChild(nameEl);
     
@@ -740,15 +660,12 @@ function renderTransactionRow(tx) {
   const typeClass = tx.transaction_type === 'BUY' ? 'tx-type-buy' : 'tx-type-sell';
   const typeLabel = tx.transaction_type === 'BUY' ? '매수' : '매도';
 
-  // 수수료, 세금, 메모 삭제
   main.innerHTML = `
     <div>
       <span class="${typeClass}">${typeLabel}</span>
       ${formatNumber(tx.quantity)}주 × ${formatCurrency(tx.unit_price)}
     </div>
-    <div class="tx-date">
-      ${escapeHtml(tx.trade_date)}
-    </div>
+    <div class="tx-date">${escapeHtml(tx.trade_date)}</div>
   `;
   row.appendChild(main);
 

@@ -9,9 +9,6 @@
   <link rel="stylesheet" href="/assets/styles.css" />
 </head>
 <body>
-  <!-- ======================================================== -->
-  <!-- 로그인 화면 -->
-  <!-- ======================================================== -->
   <main id="screen-login" class="login-screen">
     <div class="login-wrap">
       <div class="login-header">
@@ -19,24 +16,15 @@
         <h1 class="login-title">주식 초보 분석</h1>
         <p class="login-subtitle">이름을 선택해 주세요</p>
       </div>
-
       <div class="login-card">
-        <div id="login-buttons" class="login-buttons">
-          <!-- JS가 버튼을 렌더링합니다 -->
-        </div>
+        <div id="login-buttons" class="login-buttons"></div>
         <p id="login-error" class="error-text" hidden></p>
         <p id="login-loading" class="login-loading" hidden>로그인 중…</p>
       </div>
-
-      <p class="login-footer-note">
-        이 앱은 분석·기록 도구이며, 증권사 주문을 자동으로 실행하지 않습니다.
-      </p>
+      <p class="login-footer-note">이 앱은 분석·기록 도구이며, 증권사 주문을 자동으로 실행하지 않습니다.</p>
     </div>
   </main>
 
-  <!-- ======================================================== -->
-  <!-- 앱 본체 (로그인 후에만 표시) -->
-  <!-- ======================================================== -->
   <div id="app-shell" hidden>
     <header class="app-header">
       <div class="header-row">
@@ -52,9 +40,6 @@
       </div>
     </header>
 
-    <!-- ==================================================== -->
-    <!-- 화면 A: 주식 분석 -->
-    <!-- ==================================================== -->
     <main id="screen-analysis" class="screen screen--active">
       <section class="card search-card">
         <label for="ticker-input" class="label">종목 검색 (종목명 또는 코드)</label>
@@ -95,9 +80,10 @@
           <p id="scenario-text" class="body-text">-</p>
         </div>
 
+        <!-- 텍스트 변경: 가격 분석 -->
         <div class="accordion" id="accordion-price">
           <button class="accordion-trigger" type="button" aria-expanded="false">
-            <span>가격 흐름</span><span class="accordion-icon">▾</span>
+            <span>가격 분석</span><span class="accordion-icon">▾</span>
           </button>
           <div class="accordion-panel">
             <p id="price-flow-summary" class="body-text">-</p>
@@ -108,9 +94,10 @@
           </div>
         </div>
 
+        <!-- 텍스트 변경: 거래량 분석 -->
         <div class="accordion" id="accordion-volume">
           <button class="accordion-trigger" type="button" aria-expanded="false">
-            <span>거래량</span><span class="accordion-icon">▾</span>
+            <span>거래량 분석</span><span class="accordion-icon">▾</span>
           </button>
           <div class="accordion-panel">
             <p id="volume-summary" class="body-text">-</p>
@@ -137,29 +124,14 @@
       </section>
     </main>
 
-    <!-- ==================================================== -->
-    <!-- 화면 B: 내 보유 주식 -->
-    <!-- ==================================================== -->
     <main id="screen-holdings" class="screen">
       <section class="card">
         <h2 class="section-title">보유 요약</h2>
         <div id="holdings-summary" class="summary-grid">
-          <div class="summary-item">
-            <span class="summary-label">총 투자 금액</span>
-            <span id="total-cost" class="summary-value">-</span>
-          </div>
-          <div class="summary-item">
-            <span class="summary-label">현재 평가 금액</span>
-            <span id="total-value" class="summary-value">-</span>
-          </div>
-          <div class="summary-item">
-            <span class="summary-label">평가 손익 (미실현)</span>
-            <span id="total-pnl" class="summary-value">-</span>
-          </div>
-          <div class="summary-item">
-            <span class="summary-label">실현 손익</span>
-            <span id="realized-pnl" class="summary-value">-</span>
-          </div>
+          <div class="summary-item"><span class="summary-label">총 투자 금액</span><span id="total-cost" class="summary-value">-</span></div>
+          <div class="summary-item"><span class="summary-label">현재 평가 금액</span><span id="total-value" class="summary-value">-</span></div>
+          <div class="summary-item"><span class="summary-label">평가 손익 (미실현)</span><span id="total-pnl" class="summary-value">-</span></div>
+          <div class="summary-item"><span class="summary-label">실현 손익</span><span id="realized-pnl" class="summary-value">-</span></div>
         </div>
         <p class="note-text">수수료·세금이 반영되지 않은 단순 계산 결과입니다.</p>
       </section>
@@ -168,24 +140,16 @@
         <h2 class="section-title" id="tx-form-title">거래 등록</h2>
         <form id="transaction-form" class="tx-form" novalidate>
           <input type="hidden" id="tx-id" />
-          <label class="label">종목명
-            <input id="tx-stock-name" type="text" placeholder="예: 삼성전자" required />
-          </label>
+          <label class="label">종목명 <input id="tx-stock-name" type="text" placeholder="예: 삼성전자" required /></label>
           <label class="label">거래 종류
             <select id="tx-type" required>
               <option value="BUY">매수</option>
               <option value="SELL">매도</option>
             </select>
           </label>
-          <label class="label">거래일
-            <input id="tx-date" type="date" required />
-          </label>
-          <label class="label">단가
-            <input id="tx-price" type="number" step="0.0001" min="0.0001" required />
-          </label>
-          <label class="label">수량
-            <input id="tx-qty" type="number" step="0.000001" min="0.000001" required />
-          </label>
+          <label class="label">거래일 <input id="tx-date" type="date" required /></label>
+          <label class="label">단가 <input id="tx-price" type="number" step="0.0001" min="0.0001" required /></label>
+          <label class="label">수량 <input id="tx-qty" type="number" step="0.000001" min="0.000001" required /></label>
           <button class="btn btn--primary btn--block" type="submit" id="tx-submit-btn">거래 저장</button>
           <button class="btn btn--block" type="button" id="tx-cancel-btn" hidden>취소</button>
           <p id="tx-error" class="error-text" hidden></p>
@@ -194,20 +158,13 @@
 
       <section class="card">
         <h2 class="section-title">보유 종목</h2>
-        <div id="holdings-list" class="holdings-list">
-          <p class="empty-text">아직 등록된 거래가 없습니다.</p>
-        </div>
+        <div id="holdings-list" class="holdings-list"><p class="empty-text">아직 등록된 거래가 없습니다.</p></div>
       </section>
     </main>
 
-    <!-- 하단 고정 메뉴 -->
     <nav class="bottom-nav">
-      <button class="nav-btn nav-btn--active" data-screen="analysis" type="button">
-        <span class="nav-icon">📊</span><span>주식 분석</span>
-      </button>
-      <button class="nav-btn" data-screen="holdings" type="button">
-        <span class="nav-icon">💼</span><span>내 보유 주식</span>
-      </button>
+      <button class="nav-btn nav-btn--active" data-screen="analysis" type="button"><span class="nav-icon">📊</span><span>주식 분석</span></button>
+      <button class="nav-btn" data-screen="holdings" type="button"><span class="nav-icon">💼</span><span>내 보유 주식</span></button>
     </nav>
   </div>
 
