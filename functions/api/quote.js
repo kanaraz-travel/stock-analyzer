@@ -26,12 +26,27 @@ export async function onRequestGet(context) {
   try {
     // 1) 입력값이 6자리 숫자(종목코드)가 아닌 경우, 네이버 금융 검색 API로 코드 조회
     if (!/^\d{6}$/.test(query)) {
+      // ★ 네이버 API가 서버 요청을 차단하지 않도록 브라우저 User-Agent 헤더 추가
       const searchRes = await fetch(
-        `https://ac.finance.naver.com/ac?q=${encodeURIComponent(query)}&q_enc=utf-8&st=111&r_format=json&r_enc=utf-8`
+        `https://ac.finance.naver.com/ac?q=${encodeURIComponent(query)}&q_enc=utf-8&st=111&r_format=json&r_enc=utf-8`,
+        {
+          headers: {
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+            'Accept': 'application/json, text/plain, */*',
+            'Accept-Language': 'ko-KR,ko;q=0.9,en-US;q=0.8,en;q=0.7',
+            'Referer': 'https://finance.naver.com/',
+          },
+        }
       );
+
       if (!searchRes.ok) {
-        return jsonResponse({ error: '종목 검색 중 오류가 발생했습니다. 잠시 후 다시 시도해 주세요.' }, 502);
+        console.error('Naver Search API Error:', searchRes.status);
+        return jsonResponse(
+          { error: '종목 검색 중 오류가 발생했습니다. 잠시 후 다시 시도해 주세요.' },
+          502
+        );
       }
+
       const searchData = await searchRes.json();
       const items = searchData?.items?.[0];
 
@@ -39,6 +54,7 @@ export async function onRequestGet(context) {
         return jsonResponse({ error: `'${query}'에 해당하는 종목을 찾을 수 없습니다.` }, 404);
       }
 
+      // 검색 결과 첫 번째 종목의 코드와 이름 추출
       ticker = items[0][1];
       stock_name = items[0][0];
     }
