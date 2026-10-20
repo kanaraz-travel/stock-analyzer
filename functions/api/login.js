@@ -1,9 +1,8 @@
 // functions/api/login.js
 // POST /api/login
 // Body: { name: '박필립' | '윤혜영' }
-// 서버가 service_role로 매직링크 토큰을 발급하고, 클라이언트가 verifyOtp로 세션 교환
 
-import { createClient } from 'https://esm.sh/@supabase/supabase-js@2';
+import { createClient } from '@supabase/supabase-js';
 
 const ALLOWED_USERS = {
   '박필립': 'philip@kanaraz-travel.test',
@@ -13,7 +12,6 @@ const ALLOWED_USERS = {
 export async function onRequestPost(context) {
   const { request, env } = context;
 
-  // 요청 파싱
   let body = {};
   try {
     body = await request.json();
@@ -31,7 +29,6 @@ export async function onRequestPost(context) {
     return jsonResponse({ error: '등록된 사용자가 아닙니다.' }, 400);
   }
 
-  // 환경변수 확인
   if (!env.SUPABASE_URL || !env.SUPABASE_SERVICE_ROLE_KEY) {
     console.error('login: missing SUPABASE_URL or SUPABASE_SERVICE_ROLE_KEY');
     return jsonResponse({ error: '서버 설정 오류입니다. 관리자에게 문의하세요.' }, 500);
@@ -52,7 +49,6 @@ export async function onRequestPost(context) {
     });
 
     if (error) {
-      // 등록되지 않은 이메일일 수 있음 — 사용자에게는 일반화된 메시지
       console.error('generateLink error:', error.message);
       return jsonResponse(
         { error: '로그인 세션을 생성하지 못했습니다. 관리자에게 문의하세요.' },

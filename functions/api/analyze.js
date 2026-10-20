@@ -6,13 +6,9 @@ import { createClient } from '@supabase/supabase-js';
 
 const RULESET_VERSION = 'RULESET_AI_V3_MULTI_AGENT';
 
-// ------------------------------------------------------------
-// 메인 엔드포인트
-// ------------------------------------------------------------
 export async function onRequestPost(context) {
   const { request, env } = context;
 
-  // 1) 인증 확인 (Supabase JWT)
   const authHeader = request.headers.get('authorization') || '';
   const token = authHeader.replace('Bearer ', '');
   if (!token) {
@@ -42,7 +38,6 @@ export async function onRequestPost(context) {
     return jsonResponse({ error: 'ticker와 stock_name은 필수입니다.' }, 400);
   }
 
-  // 2) 데이터 부족 시 판단 보류
   const dataSufficient = price_data && price_data.current_price != null;
 
   if (!dataSufficient) {
@@ -66,15 +61,12 @@ export async function onRequestPost(context) {
     return jsonResponse(fallbackSummary);
   }
 
-  // 3) 기존 규칙 기반 점수 계산 (AI 참고용 및 Fallback)
   const scoreResult = computeScore(price_data, volume_data, news_items);
 
-  // 4) 멀티 에이전트 실행 (분석 에이전트 → 심판 에이전트)
   let finalData = null;
   let isFallback = false;
 
   try {
-    // 4-1) 분석 에이전트: 데이터를 바탕으로 1차 분석 의견 생성
     const analysisResult = await runAnalysisAgent(env, {
       ticker,
       stock_name,
@@ -84,7 +76,6 @@ export async function onRequestPost(context) {
       rule_based_score: scoreResult,
     });
 
-    // 4-2) 심판 에이전트: 분석 결과와 규칙 기반 점수를 종합하여 최종 판단
     finalData = await runJudgeAgent(env, {
       ticker,
       stock_name,
@@ -94,7 +85,6 @@ export async function onRequestPost(context) {
       news_items,
     });
 
-    // 4-3) 심판 에이전트의 반환값 유효성 검증
     const validRecommendations = ['매수 추천', '매수 고려', '기다리기', '매도 고려', '매도 추천', '판단 보류'];
     if (!finalData || !validRecommendations.includes(finalData.recommendation)) {
       throw new Error('심판 에이전트의 응답이 유효하지 않습니다.');
@@ -103,7 +93,6 @@ export async function onRequestPost(context) {
     console.warn('Multi-agent analysis failed, falling back to rule-based logic:', e.message);
     isFallback = true;
 
-    // 4-4) AI 실패 시 규칙 기반 Fallback
     finalData = {
       recommendation: scoreResult.recommendation,
       overall_summary: `현재 규칙 기반 분석 결과 "${scoreResult.recommendation}"입니다. AI 분석이 일시적으로 제한되어 기본 지표로 판단했습니다.`,
@@ -114,7 +103,6 @@ export async function onRequestPost(context) {
     };
   }
 
-  // 5) 분석 결과 DB 저장
   const saved = await saveAnalysisRun(supabase, {
     user_id: userId,
     ticker,
@@ -149,10 +137,6 @@ export async function onRequestPost(context) {
   });
 }
 
-// ------------------------------------------------------------
-// 1) 분석 에이전트 (Analysis Agent)
-// 역할: 주어진 데이터를 바탕으로 1차 분석 의견(JSON)을 생성
-// ------------------------------------------------------------
 async function runAnalysisAgent(env, payload) {
   if (!env.AI) throw new Error('Workers AI binding not configured');
 
@@ -198,10 +182,6 @@ async function runAnalysisAgent(env, payload) {
   }
 }
 
-// ------------------------------------------------------------
-// 2) 심판 에이전트 (Judge Agent)
-// 역할: 분석 에이전트의 결과와 규칙 기반 점수를 종합하여 최종 5단계 판단
-// ------------------------------------------------------------
 async function runJudgeAgent(env, payload) {
   if (!env.AI) throw new Error('Workers AI binding not configured');
 
@@ -260,9 +240,6 @@ async function runJudgeAgent(env, payload) {
   }
 }
 
-// ------------------------------------------------------------
-// 기존 규칙 기반 스코어 (AI 실패 시 Fallback 및 참고용)
-// ------------------------------------------------------------
 function computeScore(price, volume, news) {
   let priceScore = 0;
   if (price.return_5d > 0.02) priceScore += 2;
@@ -309,9 +286,6 @@ function computeScore(price, volume, news) {
   return { totalScore, recommendation, priceScore, volumeScore, newsScore, riskPenalty };
 }
 
-// ------------------------------------------------------------
-// 유틸리티
-// ------------------------------------------------------------
 async function saveAnalysisRun(supabase, payload) {
   const { data, error } = await supabase
     .from('stock_analysis_runs')
