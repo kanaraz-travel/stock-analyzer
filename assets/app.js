@@ -10,13 +10,12 @@ const supabase = createClient(SUPABASE_URL, SUPABASE_ANON_KEY, {
 
 const ALLOWED_NAMES = ['박필립', '윤혜영'];
 let currentUser = null, currentQuote = null, transactions = [], editingTxId = null;
-let currentScreen = 'holdings'; // 초기 진입 탭을 내 보유 주식으로 설정
+let currentScreen = 'holdings';
 
 let countdown = 5;
 let countdownInterval = null;
 let isRefreshing = false;
 
-// 시세 캐시 메모리 (API 실패 시 0원 방지)
 const priceCache = new Map();
 
 const $ = (sel) => document.querySelector(sel);
@@ -37,7 +36,7 @@ async function handleAuthState(session) {
     $('#screen-login').hidden = true; $('#app-shell').hidden = false;
     $('#current-user-name').textContent = mapEmailToName(currentUser.email) || currentUser.email || '';
     
-    switchScreen('holdings'); // 내 보유 주식 탭으로 진입
+    switchScreen('holdings'); 
     updateMarketStatusBadge(getMarketStatusClient());
 
     await loadHoldings(); 
@@ -56,7 +55,7 @@ function mapEmailToName(email) {
 
 function resetState() {
   stopCountdown(); currentQuote = null; transactions = []; editingTxId = null;
-  priceCache.clear(); // 로그아웃 시 캐시 초기화
+  priceCache.clear();
   $('#quote-card').hidden = true; $('#analysis-result').hidden = true;
   $('#ticker-input').value = ''; $('#search-error').hidden = true;
   $('#transaction-form').reset(); $('#tx-id').value = ''; $('#tx-error').hidden = true;
@@ -296,15 +295,6 @@ function setupAnalyze() { $('#analyze-btn').addEventListener('click', () => runA
 async function runAnalysis(ticker, name, price, targetType = 'main', cardElement = null) {
   if (!ticker) return;
 
-  // 수동 refreshSession() 호출 제거. getSession()이 필요 시 자동으로 갱신합니다.
-  const { data: { session }, error: sessionError } = await supabase.auth.getSession();
-  
-  if (sessionError || !session || !session.access_token) {
-    alert('로그인 세션이 만료되었습니다. 다시 로그인해 주세요.');
-    await supabase.auth.signOut();
-    return;
-  }
-
   const btn = targetType === 'main' ? $('#analyze-btn') : cardElement.querySelector('.btn-ai-analyze');
   const originalText = btn.textContent;
   btn.disabled = true; btn.textContent = '분석 중…';
@@ -316,38 +306,56 @@ async function runAnalysis(ticker, name, price, targetType = 'main', cardElement
   }
 
   try {
+    let { data: { session } } = await supabase.auth.getSession();
+    if (!session) {
+      alert('로그인 세션이 없습니다. 다시 로그인해 주세요.');
+      await supabase.auth.signOut();
+      return;
+    }
+
     const payload = {
       ticker: ticker, stock_name: name || ticker, analysis_type: 'buy',
       price_data: { current_price: price, quote_as_of: new Date().toISOString(), return_1d: null, return_5d: null, return_20d: null, volatility_20d: null, quote_is_stale: false },
       volume_data: null, news_items: [],
     };
 
-    const res = await fetch('/api/analyze', { 
+    let res = await fetch('/api/analyze', { 
       method: 'POST', 
       headers: { 'content-type': 'application/json', authorization: `Bearer ${session.access_token}` }, 
       body: JSON.stringify(payload) 
     });
-    const data = await res.json(); 
-    
+
+    // 401 에러 발생 시 세션 강제 갱신 후 재시도
     if (res.status === 401) {
-      // 401 발생 시, 수동 refresh 대신 세션을 다시 읽어 자동 갱신 유도
-      const { data: { session: retrySession } } = await supabase.auth.getSession();
-      if (retrySession && retrySession.access_token) {
-        const retryRes = await fetch('/api/analyze', { 
+      console.warn('401 Unauthorized. Attempting to refresh session...');
+      await new Promise(r => setTimeout(r, 1000)); // 백그라운드 갱신 대기
+      
+      const { data: { session: retrySession }, error: refreshError } = await supabase.auth.refreshSession();
+      
+      if (refreshError || !retrySession) {
+        // 다른 탭에서 갱신했을 수 있으므로 getSession 한 번 더 시도
+        const { data: { session: lastSession } } = await supabase.auth.getSession();
+        if (lastSession && lastSession.access_token !== session.access_token) {
+          res = await fetch('/api/analyze', { 
+            method: 'POST', 
+            headers: { 'content-type': 'application/json', authorization: `Bearer ${lastSession.access_token}` }, 
+            body: JSON.stringify(payload) 
+          });
+        } else {
+          alert('세션이 만료되었습니다. 다시 로그인해 주세요.');
+          await supabase.auth.signOut();
+          return;
+        }
+      } else {
+        res = await fetch('/api/analyze', { 
           method: 'POST', 
           headers: { 'content-type': 'application/json', authorization: `Bearer ${retrySession.access_token}` }, 
           body: JSON.stringify(payload) 
         });
-        if (retryRes.ok) { 
-          const retryData = await retryRes.json(); 
-          if (targetType === 'main') renderAnalysisResult(retryData);
-          else renderInlineAnalysisResult(retryData, cardElement);
-          return; 
-        }
       }
-      throw new Error('인증이 만료되었습니다. 다시 로그인해 주세요.');
     }
-    
+
+    const data = await res.json(); 
     if (!res.ok) throw new Error(data.error || '분석에 실패했습니다.');
     
     if (targetType === 'main') {
