@@ -13,7 +13,7 @@ let currentUser = null, currentQuote = null, transactions = [], editingTxId = nu
 let selectedSellTarget = null;
 let currentScreen = 'buy';
 
-// 새로고침 및 카운트다운 상태
+// 새로고침 타이머 상태
 let countdown = 5;
 let countdownInterval = null;
 let isRefreshing = false;
@@ -36,12 +36,15 @@ async function handleAuthState(session) {
     $('#screen-login').hidden = true; $('#app-shell').hidden = false;
     $('#current-user-name').textContent = mapEmailToName(currentUser.email) || currentUser.email || '';
     
-    // 초기 진입 시 1회 DB 로드 및 시세 조회
+    // 초기 진입 시 시장 상태 배지 즉시 계산
+    const initialMarketStatus = getMarketStatusClient();
+    $('#market-status-badge').textContent = initialMarketStatus;
+
     await loadHoldings(); 
-    startAutoRefresh(); // 5초 자동 갱신 시작
+    startCountdown(); // 카운트다운 시작
   } else {
     $('#screen-login').hidden = false; $('#app-shell').hidden = true; resetState();
-    stopAutoRefresh();
+    stopCountdown();
   }
 }
 
@@ -52,7 +55,7 @@ function mapEmailToName(email) {
 }
 
 function resetState() {
-  stopAutoRefresh(); currentQuote = null; selectedSellTarget = null; transactions = []; editingTxId = null;
+  stopCountdown(); currentQuote = null; selectedSellTarget = null; transactions = []; editingTxId = null;
   $('#quote-card').hidden = true; $('#analysis-result').hidden = true;
   $('#sell-quote-card').hidden = true; $('#sell-analysis-result').hidden = true;
   $('#ticker-input').value = ''; $('#search-error').hidden = true;
@@ -97,69 +100,84 @@ function mapAuthError(msg) {
   return msg || '로그인에 실패했습니다.';
 }
 
-function setupLogoutButton() { $('#logout-btn').addEventListener('click', async () => { if (!confirm('로그아웃하시겠습니까?')) return; stopAutoRefresh(); await supabase.auth.signOut(); }); }
+function setupLogoutButton() { $('#logout-btn').addEventListener('click', async () => { if (!confirm('로그아웃하시겠습니까?')) return; stopCountdown(); await supabase.auth.signOut(); }); }
 
 // ------------------------------------------------------------
-// 5초 자동 갱신 및 카운트다운
+// 5초 카운트다운 및 새로고침 (자동 실행 X, 버튼 활성화 O)
 // ------------------------------------------------------------
-function startAutoRefresh() {
-  stopAutoRefresh();
+function startCountdown() {
+  stopCountdown();
   countdown = 5;
   updateRefreshButton();
   
-  countdownInterval = setInterval(async () => {
-    if (document.hidden) return;
+  countdownInterval = setInterval(() => {
+    if (document.hidden) return; // 백그라운드 시 일시정지
     
-    countdown--;
-    if (countdown <= 0) {
-      countdown = 5;
-      await performRefresh();
+    if (countdown > 0) countdown--;
+    
+    if (countdown === 0) {
+      clearInterval(countdownInterval);
+      countdownInterval = null;
     }
     updateRefreshButton();
   }, 1000);
 }
 
-function stopAutoRefresh() {
-  if (countdownInterval) clearInterval(countdownInterval);
-  countdownInterval = null;
+function stopCountdown() {
+  if (countdownInterval) { clearInterval(countdownInterval); countdownInterval = null; }
   updateRefreshButton();
-}
-
-async function performRefresh() {
-  if (isRefreshing) return;
-  isRefreshing = true;
-  try {
-    if (currentScreen === 'buy') {
-      if (currentQuote) await refreshQuoteSilently(currentQuote.ticker);
-    } else if (currentScreen === 'holdings') {
-      await refreshHoldingsView();
-    } else if (currentScreen === 'sell') {
-      await refreshSellView();
-    }
-  } finally {
-    isRefreshing = false;
-  }
 }
 
 function updateRefreshButton() {
   const btn = $('#refresh-btn');
   if (!btn) return;
-  if (document.hidden) {
-    btn.textContent = '새로고침 (일시중지)';
+  
+  if (isRefreshing) {
+    btn.textContent = '새로고침 중...';
+    btn.disabled = true;
+  } else if (countdown > 0) {
+    btn.textContent = `새로고침 (${countdown})`;
     btn.disabled = true;
   } else {
-    btn.textContent = `새로고침 (${countdown})`;
+    btn.textContent = '새로고침';
     btn.disabled = false;
   }
 }
 
 function setupRefreshButton() {
   $('#refresh-btn').addEventListener('click', async () => {
-    if (isRefreshing) return;
-    countdown = 5;
+    if (isRefreshing || countdown > 0) return;
+    
+    isRefreshing = true;
+    stopCountdown();
     updateRefreshButton();
-    await performRefresh();
+    
+    try {
+      await performRefresh();
+    } finally {
+      isRefreshing = false;
+      startCountdown(); // 완료 후 다시 카운트다운 시작
+    }
   });
+}
+
+async function performRefresh() {
+  if (currentScreen === 'buy') {
+    if (currentQuote) {
+      await refreshQuoteSilently(currentQuote.ticker);
+    } else {
+      // 검색된 종목이 없으면 보유 종목 중 첫 번째라도 조회
+      const holdings = computeHoldings(transactions).currentHoldings;
+      if (holdings.length > 0) {
+        $('#ticker-input').value = holdings[0].stock_name;
+        await handleSearch();
+      }
+    }
+  } else if (currentScreen === 'holdings') {
+    await refreshHoldingsView();
+  } else if (currentScreen === 'sell') {
+    await refreshSellView();
+  }
 }
 
 function setupVisibility() {
@@ -173,7 +191,23 @@ function setupVisibility() {
 }
 
 // ------------------------------------------------------------
-// 네비게이션 (탭 이동 시 DB 재조회 없이 화면만 전환)
+// 프론트엔드 시장 상태 계산 (KST 기준)
+// ------------------------------------------------------------
+function getMarketStatusClient() {
+  const now = new Date();
+  const kstTime = new Date(now.getTime() + (9 * 60 * 60 * 1000));
+  const day = kstTime.getUTCDay();
+  const timeVal = kstTime.getUTCHours() * 100 + kstTime.getUTCMinutes();
+  
+  if (day === 0 || day === 6) return '휴장 (주말)';
+  if (timeVal >= 900 && timeVal <= 1530) return '장중';
+  if (timeVal > 1530 && timeVal <= 1800) return '시간외 단일가';
+  if (timeVal > 1800) return '장마감';
+  return '장 개시 전';
+}
+
+// ------------------------------------------------------------
+// 네비게이션 (탭 이동 시 DB 재조회 없이 메모리 데이터 렌더링)
 // ------------------------------------------------------------
 function setupNavigation() {
   $$('.nav-btn').forEach((btn) => {
@@ -185,16 +219,17 @@ function setupNavigation() {
       $('#screen-holdings').classList.toggle('screen--active', target === 'holdings');
       $('#screen-sell').classList.toggle('screen--active', target === 'sell');
       
-      // 탭 이동 시 현재 메모리 데이터를 기반으로 화면만 갱신 (API 호출 최소화)
+      // 탭 이동 시 API/DB 재조회 없이 기존 메모리 데이터 기반으로 화면만 다시 그림
       if (target === 'holdings') {
-        await refreshHoldingsView();
+        const holdingsData = computeHoldings(transactions);
+        renderHoldingsList(holdingsData.currentHoldings);
+        // 정확한 평가금액은 새로고침 버튼을 눌러 갱신 유도
       } else if (target === 'sell') {
-        await refreshSellView();
+        const holdingsData = computeHoldings(transactions);
+        const priceMap = new Map();
+        if (selectedSellTarget) priceMap.set(selectedSellTarget.ticker, selectedSellTarget.current_price);
+        renderSellTargets(holdingsData.currentHoldings, priceMap);
       }
-      
-      // 탭 이동 시 카운트다운 리셋
-      countdown = 5;
-      updateRefreshButton();
     });
   });
 }
@@ -285,6 +320,11 @@ async function refreshHoldingsView(holdingsData) {
         if (q.price != null) { 
           totalCurrentValue += q.price * h.qty; 
           priceMap.set(h.ticker, q.price);
+          
+          // 초기 로드 시 배지 업데이트를 위해 첫 번째 종목의 시세 정보 활용
+          if (priceMap.size === 1) {
+            updateMarketBadges(q);
+          }
           continue; 
         } 
       }
