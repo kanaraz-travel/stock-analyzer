@@ -6,8 +6,9 @@
   --text-muted: #6b7280;
   --primary: #2563eb;
   --primary-dim: #93c5fd;
-  --positive: #10b981;
-  --negative: #ef4444;
+  /* 플러스는 빨간색, 마이너스는 파란색 */
+  --positive: #ef4444; /* Red */
+  --negative: #3b82f6; /* Blue */
   --warning: #f59e0b;
   --border: #e5e7eb;
   --radius: 16px;
@@ -31,8 +32,8 @@ body { max-width: 480px; margin: 0 auto; min-height: 100vh; }
 
 .badge { font-size: 11px; padding: 3px 8px; border-radius: 999px; background: var(--surface-2); color: var(--text-muted); border: 1px solid var(--border); }
 .badge--muted { opacity: 0.8; }
-.badge--positive { background: #ecfdf5; color: var(--positive); border-color: #a7f3d0; }
-.badge--negative { background: #fef2f2; color: var(--negative); border-color: #fecaca; }
+.badge--positive { background: #fef2f2; color: var(--positive); border-color: #fecaca; }
+.badge--negative { background: #eff6ff; color: var(--negative); border-color: #bfdbfe; }
 .badge--warning { background: #fffbeb; color: var(--warning); border-color: #fde68a; }
 
 .refresh-btn { background: var(--surface); border: 1px solid var(--border); border-radius: 8px; padding: 4px 10px; color: var(--text-muted); font-size: 11px; font-weight: 600; cursor: pointer; white-space: nowrap; transition: all 0.2s; }
@@ -77,8 +78,8 @@ body { max-width: 480px; margin: 0 auto; min-height: 100vh; }
 
 .analysis-head { display: flex; justify-content: space-between; align-items: center; margin-bottom: 12px; gap: 8px; flex-wrap: wrap; }
 .recommendation-badge { font-size: 18px; font-weight: 800; padding: 8px 16px; border-radius: 999px; background: var(--surface-2); }
-.recommendation-badge--buy { background: #ecfdf5; color: var(--positive); }
-.recommendation-badge--sell { background: #fef2f2; color: var(--negative); }
+.recommendation-badge--buy { background: #fef2f2; color: var(--positive); }
+.recommendation-badge--sell { background: #eff6ff; color: var(--negative); }
 .recommendation-badge--hold { background: #fffbeb; color: var(--warning); }
 .recommendation-badge--pending { background: var(--surface-2); color: var(--text-muted); }
 .analysis-timestamp { font-size: 11px; color: var(--text-muted); }
@@ -112,7 +113,6 @@ body { max-width: 480px; margin: 0 auto; min-height: 100vh; }
 .summary-value .negative, .summary-rate.negative { color: var(--negative); }
 .summary-rate { font-size: 12px; font-weight: 500; margin-left: 4px; }
 
-/* 보유 종목 카드 UI 개선 */
 .holdings-list { display: flex; flex-direction: column; gap: 10px; }
 .holding-card { background: var(--surface); border: 1px solid var(--border); border-radius: 12px; padding: 16px; }
 .holding-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 12px; }
@@ -122,17 +122,9 @@ body { max-width: 480px; margin: 0 auto; min-height: 100vh; }
 .holding-data { display: flex; justify-content: space-between; align-items: center; font-size: 13px; }
 .holding-data .dt { color: var(--text-muted); }
 .holding-data .dd { font-weight: 600; }
+.holding-data .dd.positive { color: var(--positive); }
+.holding-data .dd.negative { color: var(--negative); }
 .empty-text { color: var(--text-muted); font-size: 14px; text-align: center; padding: 20px 0; }
-
-.sell-target-item { display: flex; justify-content: space-between; align-items: center; background: var(--surface); border: 1px solid var(--border); border-radius: 12px; padding: 14px; cursor: pointer; transition: border-color 0.2s; }
-.sell-target-item:hover { border-color: var(--primary); }
-.sell-target-item.active { border-color: var(--primary); background: #eff6ff; }
-.sell-target-info { display: flex; flex-direction: column; gap: 4px; }
-.sell-target-name { font-weight: 700; font-size: 15px; }
-.sell-target-sub { font-size: 12px; color: var(--text-muted); }
-.sell-target-pnl { font-size: 14px; font-weight: 600; }
-.sell-target-pnl.pos { color: var(--positive); }
-.sell-target-pnl.neg { color: var(--negative); }
 
 .tx-toggle { width: 100%; padding: 10px; background: var(--surface-2); border: 1px solid var(--border); border-radius: 8px; color: var(--text-muted); font-size: 13px; cursor: pointer; }
 .tx-toggle:hover { color: var(--text); border-color: var(--text-muted); }
