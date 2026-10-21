@@ -33,6 +33,7 @@
         <div class="app-brand">주식 초보 분석</div>
         <div class="header-user">
           <span id="current-user-name" class="current-user-name"></span>
+          <button id="refresh-btn" class="icon-btn" type="button" title="새로고침">🔄</button>
           <button id="logout-btn" class="logout-btn" type="button">로그아웃</button>
         </div>
       </div>
@@ -167,16 +168,15 @@
         <div class="quote-head">
           <div>
             <h2 id="sell-stock-name" class="stock-name">-</h2>
-            <p id="sell-stock-ticker" class="stock-ticker">-</p>
           </div>
           <div class="quote-price-wrap">
             <div id="sell-current-price" class="current-price">-</div>
             <div id="sell-change-rate" class="change-rate">-</div>
           </div>
         </div>
-        <div class="quote-meta" style="margin-bottom: 12px;">
-          <span>평균 단가: <strong id="sell-avg-cost">-</strong></span>
-          <span>수익률: <strong id="sell-return-rate">-</strong></span>
+        <div class="quote-meta" style="margin-bottom: 12px; flex-direction: column; gap: 4px; align-items: flex-start;">
+          <span>내 평균 단가: <strong id="sell-avg-cost" style="font-size: 15px; color: var(--text);">-</strong></span>
+          <span>현재 수익률: <strong id="sell-return-rate" style="font-size: 15px;">-</strong></span>
         </div>
         <button id="sell-analyze-btn" class="btn btn--primary btn--block" type="button">AI 매도 분석하기</button>
       </section>

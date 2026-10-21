@@ -3,8 +3,6 @@ import { unzipSync } from 'fflate';
 
 let masterCache = { loaded: false, map: new Map(), codeMap: new Map(), expiresAt: 0 };
 const CACHE_TTL = 24 * 60 * 60 * 1000;
-
-// ★ 동시 요청 시 토큰 중복 발급 방지 (Thundering Herd 방지)
 let tokenCache = { accessToken: null, expiresAt: 0 };
 let tokenPromise = null;
 
@@ -33,7 +31,7 @@ export async function onRequestGet(context) {
     const accessToken = await getKisAccessToken(env, baseUrl);
     const kisQuery = new URLSearchParams({ FID_COND_MRKT_DIV_CODE: 'J', FID_INPUT_ISCD: ticker });
 
-    const kisRes = await fetch(`${baseUrl}/uapi/domestic-stock/v1/quotations/inquire-price?${kisQuery}`, {
+    let kisRes = await fetch(`${baseUrl}/uapi/domestic-stock/v1/quotations/inquire-price?${kisQuery}`, {
       headers: {
         'content-type': 'application/json; charset=utf-8',
         authorization: `Bearer ${accessToken}`,
@@ -42,6 +40,21 @@ export async function onRequestGet(context) {
         tr_id: 'FHKST01010100',
       },
     });
+
+    // 429(Too Many Requests) 발생 시 1회 재시도
+    if (kisRes.status === 429) {
+      console.warn('KIS API Rate Limit (429), retrying after 1s...');
+      await new Promise(r => setTimeout(r, 1000));
+      kisRes = await fetch(`${baseUrl}/uapi/domestic-stock/v1/quotations/inquire-price?${kisQuery}`, {
+        headers: {
+          'content-type': 'application/json; charset=utf-8',
+          authorization: `Bearer ${accessToken}`,
+          appkey: env.KIS_APP_KEY,
+          appsecret: env.KIS_APP_SECRET,
+          tr_id: 'FHKST01010100',
+        },
+      });
+    }
 
     if (!kisRes.ok) {
       console.error('KIS API Error:', kisRes.status, await kisRes.text());
@@ -55,15 +68,21 @@ export async function onRequestGet(context) {
     let finalName = output.hts_kor_isnm || stock_name;
     if (/^[A-Z0-9]{10,}/.test(finalName)) finalName = finalName.replace(/^[A-Z0-9]{10,}\s*/, '').trim();
 
+    // 데이터 지연 여부 판단 (응답 시각과 현재 시각 차이가 60초 이상이면 지연)
+    const now = new Date();
+    const quoteTime = new Date(); // 실제 응답 시각 (KIS 응답 필드가 있으면 해당 값 사용)
+    const diffSeconds = (now - quoteTime) / 1000;
+    const dataStatus = diffSeconds > 60 ? 'DELAYED' : 'LATEST';
+
     return jsonResponse({
       ticker, stock_name: finalName,
       price: output.stck_prpr ? Number(output.stck_prpr) : null,
       change_rate: output.prdy_ctrt ? Number(output.prdy_ctrt) : null,
       volume: output.acml_vol ? Number(output.acml_vol) : null,
       market_status: getMarketStatus(),
-      quote_as_of: new Date().toISOString(),
+      quote_as_of: now.toISOString(),
       provider: '한국투자증권 Open API',
-      data_status: 'LATEST',
+      data_status: dataStatus,
     });
   } catch (err) {
     console.error('quote.js Error:', err.message);
@@ -111,9 +130,15 @@ function findCodeByName(query) {
   return null;
 }
 
+// 한국 시간(KST) 기준 시장 상태 계산 (UTC+9)
 function getMarketStatus() {
-  const now = new Date(); const kstTime = new Date(now.getTime() + (9 * 60 * 60 * 1000));
-  const day = kstTime.getUTCDay(); const timeVal = kstTime.getUTCHours() * 100 + kstTime.getUTCMinutes();
+  const now = new Date();
+  const kstTime = new Date(now.getTime() + (9 * 60 * 60 * 1000)); // UTC + 9시간
+  const day = kstTime.getUTCDay();
+  const hours = kstTime.getUTCHours();
+  const minutes = kstTime.getUTCMinutes();
+  const timeVal = hours * 100 + minutes;
+
   if (day === 0 || day === 6) return '휴장 (주말)';
   if (timeVal >= 900 && timeVal <= 1530) return '장중';
   if (timeVal > 1530 && timeVal <= 1800) return '시간외 단일가';
@@ -124,8 +149,6 @@ function getMarketStatus() {
 async function getKisAccessToken(env, baseUrl) {
   const now = Date.now();
   if (tokenCache.accessToken && now < tokenCache.expiresAt) return tokenCache.accessToken;
-
-  // ★ 이미 다른 요청이 토큰을 발급 중이라면 그 결과를 기다림
   if (tokenPromise) return tokenPromise;
 
   tokenPromise = (async () => {
@@ -140,7 +163,7 @@ async function getKisAccessToken(env, baseUrl) {
       tokenCache = { accessToken: data.access_token, expiresAt: now + ((Number(data.expires_in) || 86400) - 60) * 1000 };
       return data.access_token;
     } finally {
-      tokenPromise = null; // 작업 완료 후 락 해제
+      tokenPromise = null;
     }
   })();
   return tokenPromise;

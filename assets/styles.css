@@ -24,6 +24,9 @@ body { max-width: 480px; margin: 0 auto; min-height: 100vh; }
 .badge--positive { background: rgba(61, 220, 151, 0.15); color: var(--positive); border-color: transparent; }
 .badge--negative { background: rgba(255, 107, 107, 0.15); color: var(--negative); border-color: transparent; }
 .badge--warning { background: rgba(255, 184, 77, 0.15); color: var(--warning); border-color: transparent; }
+
+.icon-btn { background: transparent; border: 1px solid var(--border); border-radius: 8px; padding: 6px 8px; color: var(--text-muted); font-size: 14px; cursor: pointer; display: flex; align-items: center; justify-content: center; }
+.icon-btn:hover { color: var(--text); border-color: var(--text-muted); }
 .logout-btn { background: transparent; border: 1px solid var(--border); border-radius: 8px; padding: 6px 12px; color: var(--text-muted); font-size: 12px; cursor: pointer; }
 .logout-btn:hover { color: var(--text); border-color: var(--text-muted); }
 
@@ -103,7 +106,7 @@ body { max-width: 480px; margin: 0 auto; min-height: 100vh; }
 .holding-meta dd { font-weight: 600; margin: 0; }
 .empty-text { color: var(--text-muted); font-size: 14px; text-align: center; padding: 20px 0; }
 
-/* 매도 분석 대상 선택 카드 (버튼 형태) */
+/* 매도 분석 대상 선택 카드 */
 .sell-target-item {
   display: flex; justify-content: space-between; align-items: center;
   background: var(--surface-2); border-radius: 12px; padding: 14px;
