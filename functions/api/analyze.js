@@ -1,7 +1,7 @@
 // functions/api/analyze.js
 import { createClient } from '@supabase/supabase-js';
 
-const RULESET_VERSION = 'RULESET_AI_V9_SHORT';
+const RULESET_VERSION = 'RULESET_AI_V10_NOUN';
 
 export async function onRequestPost(context) {
   const { request, env } = context;
@@ -27,7 +27,7 @@ export async function onRequestPost(context) {
   const dataSufficient = price_data && price_data.current_price != null;
   if (!dataSufficient) {
     return jsonResponse({
-      recommendation: '판단 보류', overall_summary: '데이터가 부족합니다.',
+      recommendation: '판단 보류', overall_summary: '데이터 부족',
       price_flow_summary: '-', volume_summary: '-', news_summary: '-', tip: '-', fallback: true,
     });
   }
@@ -48,12 +48,24 @@ export async function onRequestPost(context) {
       ticker, stock_name, analysis_result: analysisResult, rule_based_score: scoreResult, price_data, volume_data, news_items, analysis_type, holdings_data
     });
 
+    // ★ 심판 에이전트 응답 검증 유연화 (공백 제거 및 부분 포함 검사)
     const validRecs = analysis_type === 'sell' 
       ? ['매도 추천', '부분 매도 고려', '보유 유지', '추가 매수 고려', '매수 추천', '판단 보류']
       : ['매수 추천', '매수 고려', '기다리기', '매도 고려', '매도 추천', '판단 보류'];
 
-    if (!finalData || !validRecs.includes(finalData.recommendation)) {
-      throw new Error('심판 에이전트의 응답 형식이 유효하지 않습니다.');
+    if (!finalData || !finalData.recommendation) {
+      throw new Error('추천 등급 누락');
+    }
+    
+    const recClean = finalData.recommendation.replace(/\s+/g, '');
+    const isValid = validRecs.some(r => r.replace(/\s+/g, '') === recClean || r.replace(/\s+/g, '').includes(recClean));
+    
+    if (!isValid) {
+      // 강제로 가장 유사한 값 매핑 또는 Fallback
+      if (recClean.includes('매수')) finalData.recommendation = '매수 고려';
+      else if (recClean.includes('매도')) finalData.recommendation = '매도 고려';
+      else if (recClean.includes('보유') || recClean.includes('기다리')) finalData.recommendation = '기다리기';
+      else throw new Error(`알 수 없는 추천 등급: ${finalData.recommendation}`);
     }
   } catch (e) {
     console.error('Multi-agent analysis failed:', e.message);
@@ -61,11 +73,11 @@ export async function onRequestPost(context) {
     
     finalData = {
       recommendation: analysis_type === 'sell' ? '보유 유지' : scoreResult.recommendation,
-      overall_summary: `AI 분석이 일시적으로 제한되었습니다. (${e.message})`,
-      price_flow_summary: '가격 데이터를 바탕으로 계산되었습니다.',
-      volume_summary: volume_data ? '거래량 데이터를 바탕으로 계산되었습니다.' : '데이터 부족',
-      news_summary: news_items?.length ? '관련 뉴스가 있습니다.' : '데이터 부족',
-      tip: '참고용입니다.',
+      overall_summary: `AI 분석 제한됨 (${e.message})`,
+      price_flow_summary: '가격 데이터 계산됨.',
+      volume_summary: volume_data ? '거래량 데이터 계산됨.' : '데이터 부족',
+      news_summary: news_items?.length ? '뉴스 확인됨.' : '데이터 부족',
+      tip: '참고용.',
     };
   }
 
@@ -93,7 +105,7 @@ async function runAnalysisAgent(env, payload) {
   
   let holdingsContext = '';
   if (isSell && payload.holdings_data) {
-    holdingsContext = `(내 평균단가:${payload.holdings_data.avg_cost}원, 수익률:${payload.holdings_data.return_rate.toFixed(2)}%)`;
+    holdingsContext = `(평균단가:${payload.holdings_data.avg_cost}원, 수익률:${payload.holdings_data.return_rate.toFixed(2)}%)`;
   }
 
   const pd = payload.price_data;
@@ -111,17 +123,17 @@ async function runAnalysisAgent(env, payload) {
 
   let volumeStr = '없음';
   if (vd && vd.current_volume != null && vd.avg_volume_20 != null) {
-    volumeStr = `평균 대비 ${(vd.current_volume / vd.avg_volume_20).toFixed(2)}배`;
+    volumeStr = `평균대비 ${(vd.current_volume / vd.avg_volume_20).toFixed(2)}배`;
   }
 
   const newsStr = payload.news_items?.length > 0 ? '있음' : '없음';
 
-  const systemPrompt = `당신은 ${role}입니다. 반드시 JSON 형식으로만 짧게 응답하세요.`;
+  const systemPrompt = `당신은 ${role}입니다. 반드시 JSON 형식으로 응답하세요. 모든 문장은 '~함', '~임'으로 끝나는 명사형 어미를 사용하세요.`;
   const userPrompt = `
 [데이터] ${payload.stock_name}(${payload.ticker}) 현재가:${pd.current_price}원 ${holdingsContext}
 [지표] 1일등락:${changeRateStr} 1개월:${return1MStr} 20일선괴리:${ma20DispStr} 52주위치:${w52PosStr} 거래량:${volumeStr} 뉴스:${newsStr}
 
-[응답 JSON 스키마 - 모든 문장은 아주 간결하게 1문장으로 작성]
+[응답 JSON 스키마 - 각 1문장, 명사형 어미(~함) 사용]
 {
   "agent_opinion": "종합 의견 (1문장)",
   "price_flow_analysis": "가격 분석 (1문장)",
@@ -131,7 +143,7 @@ async function runAnalysisAgent(env, payload) {
 }`;
   
   const response = await env.AI.run('@cf/meta/llama-3.3-70b-instruct-fp8-fast', {
-    messages: [{ role: 'system', content: systemPrompt }, { role: 'user', content: userPrompt }], max_tokens: 512, // ★ 토큰 절반으로 축소
+    messages: [{ role: 'system', content: systemPrompt }, { role: 'user', content: userPrompt }], max_tokens: 512,
   });
   
   return extractJSON(response?.response || '');
@@ -140,7 +152,7 @@ async function runAnalysisAgent(env, payload) {
 async function runJudgeAgent(env, payload) {
   const isSell = payload.analysis_type === 'sell';
   
-  let systemPrompt = `당신은 최종 판단을 내리는 심판입니다. 반드시 JSON 형식으로 아주 짧게 응답하세요.`;
+  let systemPrompt = `당신은 최종 판단을 내리는 심판입니다. 반드시 JSON 형식으로 응답하세요. 모든 문장은 '~함', '~임'으로 끝나는 명사형 어미를 사용하세요.`;
   let schema = '';
 
   if (isSell) {
