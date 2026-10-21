@@ -20,7 +20,10 @@ export async function onRequestGet(context) {
   let stock_name = query;
 
   try {
-    if (!/^\d{6}$/.test(query)) {
+    // ★ 종목코드 패턴 완화: 6자리 숫자 또는 영문자 포함 신형 코드(예: 0158S0) 허용
+    const isDirectCode = /^[0-9A-Z]{6}$/i.test(query);
+
+    if (!isDirectCode) {
       await ensureMasterLoaded();
       const foundCode = findCodeByName(query);
       if (!foundCode) return jsonResponse({ error: `'${query}'에 해당하는 종목을 찾을 수 없습니다.` }, 404);
@@ -95,7 +98,7 @@ export async function onRequestGet(context) {
 }
 
 // ------------------------------------------------------------
-// 마스터 파일 로드: KOSPI(228자), KOSDAQ(222자) 구분 파싱
+// 마스터 파일 로드: 파이프(|) 구분자 우선 시도, 실패 시 고정폭 파싱
 // ------------------------------------------------------------
 async function ensureMasterLoaded() {
   if (masterCache.loaded && Date.now() < masterCache.expiresAt) return;
@@ -116,7 +119,17 @@ async function ensureMasterLoaded() {
       
       for (const filename in unzipped) {
         const content = new TextDecoder('euc-kr').decode(unzipped[filename]);
-        parseMasterFile(content, market.tailLen);
+        
+        // ★ 1차: 파이프(|) 구분자 방식 시도
+        const pipeResult = parsePipeSeparated(content);
+        if (pipeResult > 0) {
+          console.log(`[마스터] ${market.key}: 파이프 구분자 ${pipeResult}건 파싱 성공`);
+          continue;
+        }
+        
+        // ★ 2차: 고정폭 방식 (기존)
+        const fixedResult = parseFixedWidth(content, market.tailLen);
+        console.log(`[마스터] ${market.key}: 고정폭 ${fixedResult}건 파싱 성공`);
       }
     } catch (e) { console.error('Master file load error:', market.key, e.message); }
   }
@@ -125,36 +138,51 @@ async function ensureMasterLoaded() {
   masterCache.expiresAt = Date.now() + CACHE_TTL;
 }
 
-// ------------------------------------------------------------
-// 시장별 고정폭을 반영한 파싱 (핵심 수정)
-// - KOSPI: 뒤쪽 228자 고정폭
-// - KOSDAQ: 뒤쪽 222자 고정폭
-// - 앞쪽 가변 구간: [0:9] 단축코드, [9:21] 표준코드, [21:] 한글 종목명
-// ------------------------------------------------------------
-function parseMasterFile(text, tailLen) {
+// ★ 파이프(|) 구분자 파싱: "단축코드|표준코드|한글종목명|..."
+function parsePipeSeparated(text) {
+  let count = 0;
+  const lines = text.split('\n');
+  for (const line of lines) {
+    if (!line.trim()) continue;
+    const parts = line.split('|');
+    if (parts.length < 3) continue;
+    
+    const code = parts[0].trim();
+    const name = parts[2].trim();
+    
+    // 코드: 6자리 숫자 또는 영문자 포함 신형 코드
+    if (!/^[0-9A-Z]{6}$/i.test(code)) continue;
+    if (!name) continue;
+    
+    masterCache.map.set(name, code);
+    masterCache.codeMap.set(code, name);
+    count++;
+  }
+  return count;
+}
+
+// 고정폭 파싱 (기존 유지)
+function parseFixedWidth(text, tailLen) {
+  let count = 0;
   const lines = text.split('\n');
   for (const line of lines) {
     if (!line.trim()) continue;
     if (line.length <= tailLen) continue;
 
-    // 뒤쪽 고정폭(tailLen)을 제거한 앞쪽 가변 구간
     const head = line.substring(0, line.length - tailLen);
-    
-    // 단축코드: [0:9]에서 공백 제거
     const code = head.substring(0, 9).trim();
-    if (!/^\d{6}$/.test(code)) continue;
+    if (!/^[0-9A-Z]{6}$/i.test(code)) continue;
     
-    // 종목명: [21:] 이후 (표준코드 [9:21] 이후)
     let name = head.substring(21).trim();
     if (!name) continue;
-    
-    // 종목명 정리 (혹시 포함된 이상 문자 제거)
     name = name.replace(/[^\uAC00-\uD7A3a-zA-Z0-9\s().&-]/g, '').trim();
     if (!name) continue;
 
     masterCache.map.set(name, code);
     masterCache.codeMap.set(code, name);
+    count++;
   }
+  return count;
 }
 
 function findCodeByName(query) {
@@ -164,11 +192,11 @@ function findCodeByName(query) {
   for (const [name, code] of masterCache.map.entries()) {
     if (name.replace(/\s+/g, '').toLowerCase() === normalized) return code;
   }
-  // 2) 부분 일치 (쿼리가 종목명에 포함)
+  // 2) 쿼리가 종목명에 포함
   for (const [name, code] of masterCache.map.entries()) {
     if (name.replace(/\s+/g, '').toLowerCase().includes(normalized)) return code;
   }
-  // 3) 종목명이 쿼리에 포함 (예: "삼성전자우" 검색 시 "삼성전자"로 매칭)
+  // 3) 종목명이 쿼리에 포함
   for (const [name, code] of masterCache.map.entries()) {
     if (normalized.includes(name.replace(/\s+/g, '').toLowerCase())) return code;
   }
