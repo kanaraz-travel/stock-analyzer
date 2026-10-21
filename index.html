@@ -9,7 +9,7 @@
   <meta name="theme-color" content="#f3f4f6" />
   <title>주식 초보 AI분석기</title>
   <link rel="manifest" href="/public/manifest.webmanifest" />
-  <link rel="stylesheet" href="/assets/styles.css?v=1.0.5" />
+  <link rel="stylesheet" href="/assets/styles.css?v=1.0.6" />
 </head>
 <body>
   <main id="screen-login" class="login-screen">
@@ -73,7 +73,7 @@
         <button id="analyze-btn" class="btn btn--primary btn--block" type="button">AI 분석하기</button>
       </section>
 
-      <!-- 메인 분석 결과 (인라인 스타일로 통일) -->
+      <!-- 메인 분석 결과 -->
       <section id="analysis-result" class="card" hidden>
         <div class="analysis-head">
           <div id="recommendation-badge" class="recommendation-badge">-</div>
@@ -81,23 +81,33 @@
         </div>
         <p id="overall-summary" class="overall-summary" style="font-size:14px; margin-bottom:8px;">-</p>
         
-        <div style="font-size:13px; line-height:1.6; color:var(--text);">
+        <div style="font-size:13px; line-height:1.6; color:var(--text); margin-bottom: 12px;">
           <p><strong>가격 분석:</strong> <span id="price-flow-summary">-</span></p>
           <p><strong>거래량 분석:</strong> <span id="volume-summary">-</span></p>
-          <p><strong>최근 뉴스:</strong> <span id="news-summary">-</span></p>
         </div>
-        
-        <p id="ai-fallback-note" class="note-text" style="font-size:11px; margin-top:8px;" hidden>AI 일일 한도 초과로 기본 분석을 표시합니다.</p>
-        <p id="risk-note" class="risk-note">이 내용은 공개 데이터 기반의 참고 분석이며 가격 변동을 보장하지 않습니다.</p>
-        
-        <div class="accordion" style="margin-top: 12px;">
+
+        <!-- 뉴스 분석 아코디언 -->
+        <div class="accordion">
           <button class="accordion-trigger" type="button" aria-expanded="false">
-            <span>뉴스 출처 보기</span><span class="accordion-icon">▾</span>
+            <span>뉴스 분석</span><span class="accordion-icon">▾</span>
+          </button>
+          <div class="accordion-panel">
+            <p id="news-analysis-summary" class="body-text" style="font-size:13px; color:var(--text);">-</p>
+          </div>
+        </div>
+
+        <!-- 최근 뉴스 보기 아코디언 -->
+        <div class="accordion">
+          <button class="accordion-trigger" type="button" aria-expanded="false">
+            <span>최근 뉴스 보기</span><span class="accordion-icon">▾</span>
           </button>
           <div class="accordion-panel">
             <ul id="news-list" class="news-list"></ul>
           </div>
         </div>
+
+        <p id="ai-fallback-note" class="note-text" style="font-size:11px; margin-top:8px;" hidden>AI 일일 한도 초과로 기본 분석을 표시합니다.</p>
+        <p id="risk-note" class="risk-note">이 내용은 공개 데이터 기반의 참고 분석이며 가격 변동을 보장하지 않습니다.</p>
       </section>
     </main>
 
@@ -159,6 +169,6 @@
   </div>
 
   <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
-  <script src="/assets/app.js?v=1.0.5" type="module"></script>
+  <script src="/assets/app.js?v=1.0.6" type="module"></script>
 </body>
 </html>

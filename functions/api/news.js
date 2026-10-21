@@ -16,19 +16,23 @@ export async function onRequestGet(context) {
     });
 
     if (!res.ok) {
-      console.error('Google News RSS Error:', res.status);
       return jsonResponse({ error: '뉴스를 가져오지 못했습니다.' }, 502);
     }
 
     const xmlText = await res.text();
     const items = parseRssItems(xmlText).slice(0, 5);
 
+    // 최근 5일 이내의 기사만 필터링
+    const fiveDaysAgo = new Date();
+    fiveDaysAgo.setDate(fiveDaysAgo.getDate() - 5);
+    
+    const recentItems = items.filter(item => new Date(item.published_at) >= fiveDaysAgo);
+
     return jsonResponse({
-      items: items,
+      items: recentItems,
       delayed: true,
     });
   } catch (err) {
-    console.error('news.js Error:', err.message);
     return jsonResponse({ error: '뉴스를 가져오는 중 오류가 발생했습니다.' }, 502);
   }
 }
