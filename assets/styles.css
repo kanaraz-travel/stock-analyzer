@@ -66,9 +66,9 @@ body { max-width: 480px; margin: 0 auto; min-height: 100vh; }
 .risk-note { font-size: 11px; color: var(--text-muted); margin-top: 16px; line-height: 1.5; }
 .error-text { color: var(--color-down); font-size: 13px; margin-top: 8px; }
 
-/* ★ 분석 블록 간격 스타일 추가 */
+/* ★ 마지막 analysis-block의 margin/padding 완전 제거 (여백 버그 수정) */
 .analysis-block { margin-bottom: 16px; padding-bottom: 12px; border-bottom: 1px solid #f0f0f0; }
-.analysis-block:last-of-type { border-bottom: none; }
+.analysis-block:last-of-type { border-bottom: none; margin-bottom: 0; padding-bottom: 0; }
 .analysis-block-title { font-size: 13px; font-weight: 700; color: var(--primary); margin-bottom: 6px; }
 
 .news-list { list-style: none; margin-top: 10px; }
@@ -97,6 +97,7 @@ body { max-width: 480px; margin: 0 auto; min-height: 100vh; }
 .empty-text { color: var(--text-muted); font-size: 14px; text-align: center; padding: 20px 0; }
 .holding-actions { display: flex; gap: 8px; margin-bottom: 8px; }
 .holding-inline-result { margin-top: 16px; padding-top: 16px; border-top: 1px dashed var(--border); }
+.holding-inline-result .analysis-block:last-of-type { border-bottom: none; margin-bottom: 0; padding-bottom: 0; }
 .tx-toggle { width: 100%; padding: 10px; background: var(--surface-2); border: 1px solid var(--border); border-radius: 8px; color: var(--text-muted); font-size: 13px; cursor: pointer; }
 .tx-toggle:hover { color: var(--text); border-color: var(--text-muted); }
 .tx-list { margin-top: 12px; padding-top: 4px; border-top: 1px solid var(--border); }

@@ -9,7 +9,7 @@
   <meta name="theme-color" content="#f3f4f6" />
   <title>주식 초보 AI분석기</title>
   <link rel="manifest" href="/public/manifest.webmanifest" />
-  <link rel="stylesheet" href="/assets/styles.css?v=1.0.7" />
+  <link rel="stylesheet" href="/assets/styles.css?v=1.0.8" />
 </head>
 <body>
   <main id="screen-login" class="login-screen">
@@ -68,12 +68,11 @@
         </div>
         <div class="quote-meta">
           <span id="quote-as-of">시세 시각: -</span>
-          <span id="quote-provider">출처: -</span>
+          <!-- ★ 출처 제거 -->
         </div>
         <button id="analyze-btn" class="btn btn--primary btn--block" type="button">AI 분석하기</button>
       </section>
 
-      <!-- 메인 분석 결과 (아코디언 제거, 단순 카드 형태) -->
       <section id="analysis-result" class="card" hidden>
         <div class="analysis-head">
           <div id="recommendation-badge" class="recommendation-badge">-</div>
@@ -97,7 +96,7 @@
         </div>
 
         <p id="ai-fallback-note" class="note-text" style="font-size:11px; margin-top:8px;" hidden>AI 일일 한도 초과로 기본 분석을 표시합니다.</p>
-        <p id="risk-note" class="risk-note">이 내용은 공개 데이터 기반의 참고 분석이며 가격 변동을 보장하지 않습니다.</p>
+        <!-- ★ risk-note 제거 -->
       </section>
     </main>
 
@@ -159,6 +158,6 @@
   </div>
 
   <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
-  <script src="/assets/app.js?v=1.0.7" type="module"></script>
+  <script src="/assets/app.js?v=1.0.8" type="module"></script>
 </body>
 </html>
