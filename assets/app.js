@@ -22,6 +22,14 @@ const analysisCache = new Map();
 const $ = (sel) => document.querySelector(sel);
 const $$ = (sel) => document.querySelectorAll(sel);
 
+// ★ 보유 주식 테두리 색상 (랜덤/고정 파스텔 톤)
+const BORDER_COLORS = ['#ef4444', '#f97316', '#f59e0b', '#84cc16', '#10b981', '#06b6d4', '#3b82f6', '#6366f1', '#8b5cf6', '#d946ef', '#ec4899', '#f43f5e'];
+function getBorderColor(ticker) {
+  let hash = 0;
+  for (let i = 0; i < ticker.length; i++) hash = ticker.charCodeAt(i) + ((hash << 5) - hash);
+  return BORDER_COLORS[Math.abs(hash) % BORDER_COLORS.length];
+}
+
 async function init() {
   renderLoginButtons(); setupLogoutButton(); setupRefreshButton(); setupNavigation(); setupAccordions();
   setupSearch(); setupAnalyze(); setupTransactionForm(); setupVisibility();
@@ -201,10 +209,18 @@ function setupNavigation() {
   $$('.nav-btn').forEach((btn) => {
     btn.addEventListener('click', async () => {
       const target = btn.dataset.screen; switchScreen(target);
+      
+      // ★ 탭 이동 시 보유 요약 0 초기화 버그 수정: 캐시된 시세(priceCache)를 바탕으로 다시 계산
       if (target === 'holdings') { 
         const holdingsData = computeHoldings(transactions);
+        let totalCost = 0, totalCurrentValue = 0;
+        holdingsData.currentHoldings.forEach(h => {
+          totalCost += h.totalCost;
+          const price = priceCache.get(h.ticker) || h.avgCost;
+          totalCurrentValue += price * h.qty;
+        });
         renderHoldingsList(holdingsData.currentHoldings, priceCache);
-        renderHoldingsSummary(holdingsData, 0, 0); 
+        renderHoldingsSummary(holdingsData, totalCost, totalCurrentValue); 
       } else if (target === 'analysis') {
         await refreshAnalysisHoldings();
       }
@@ -318,6 +334,8 @@ async function refreshAnalysisHoldings() {
     const card = document.createElement('div');
     card.className = 'holding-card';
     card.setAttribute('data-ticker', h.ticker);
+    card.style.borderColor = getBorderColor(h.ticker); // ★ 테두리 색상 적용
+    card.style.borderWidth = '2px';
     
     const header = document.createElement('div'); header.className = 'holding-header';
     const nameEl = document.createElement('h3'); nameEl.className = 'holding-name'; nameEl.textContent = h.stock_name;
@@ -632,6 +650,8 @@ function renderHoldingsList(holdings, priceMap) {
 
     const card = document.createElement('div'); card.className = 'holding-card';
     card.setAttribute('data-ticker', h.ticker);
+    card.style.borderColor = getBorderColor(h.ticker); // ★ 테두리 색상 적용
+    card.style.borderWidth = '2px';
     
     const header = document.createElement('div'); header.className = 'holding-header';
     const nameEl = document.createElement('h3'); nameEl.className = 'holding-name'; nameEl.textContent = h.stock_name;
