@@ -3,10 +3,16 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no" />
+  <!-- 캐시 방지 메타 태그 -->
+  <meta http-equiv="Cache-Control" content="no-cache, no-store, must-revalidate" />
+  <meta http-equiv="Pragma" content="no-cache" />
+  <meta http-equiv="Expires" content="0" />
+  
   <meta name="theme-color" content="#f3f4f6" />
   <title>주식 초보 AI분석기</title>
   <link rel="manifest" href="/public/manifest.webmanifest" />
-  <link rel="stylesheet" href="/assets/styles.css" />
+  <!-- 버전 쿼리 추가로 캐시 무효화 -->
+  <link rel="stylesheet" href="/assets/styles.css?v=1.0.1" />
 </head>
 <body>
   <main id="screen-login" class="login-screen">
@@ -113,7 +119,7 @@
       </section>
     </main>
 
-    <!-- 화면 B: 내 보유 주식 (기본 진입) -->
+    <!-- 화면 B: 내 보유 주식 -->
     <main id="screen-holdings" class="screen screen--active">
       <section class="card">
         <h2 class="section-title">보유 요약</h2>
@@ -175,6 +181,7 @@
   </div>
 
   <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
-  <script src="/assets/app.js" type="module"></script>
+  <!-- 버전 쿼리 추가로 캐시 무효화 -->
+  <script src="/assets/app.js?v=1.0.1" type="module"></script>
 </body>
 </html>

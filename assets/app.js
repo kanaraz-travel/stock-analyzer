@@ -10,11 +10,14 @@ const supabase = createClient(SUPABASE_URL, SUPABASE_ANON_KEY, {
 
 const ALLOWED_NAMES = ['박필립', '윤혜영'];
 let currentUser = null, currentQuote = null, transactions = [], editingTxId = null;
-let currentScreen = 'holdings'; // 초기 진입 탭을 내 보유 주식으로 설정
+let currentScreen = 'holdings';
 
 let countdown = 5;
 let countdownInterval = null;
 let isRefreshing = false;
+
+// 시세 캐시 메모리 (API 실패 시 0원 방지)
+const priceCache = new Map();
 
 const $ = (sel) => document.querySelector(sel);
 const $$ = (sel) => document.querySelectorAll(sel);
@@ -34,7 +37,7 @@ async function handleAuthState(session) {
     $('#screen-login').hidden = true; $('#app-shell').hidden = false;
     $('#current-user-name').textContent = mapEmailToName(currentUser.email) || currentUser.email || '';
     
-    switchScreen('holdings'); // 내 보유 주식 탭으로 진입
+    switchScreen('holdings'); 
     updateMarketStatusBadge(getMarketStatusClient());
 
     await loadHoldings(); 
@@ -53,6 +56,7 @@ function mapEmailToName(email) {
 
 function resetState() {
   stopCountdown(); currentQuote = null; transactions = []; editingTxId = null;
+  priceCache.clear(); // 로그아웃 시 캐시 초기화
   $('#quote-card').hidden = true; $('#analysis-result').hidden = true;
   $('#ticker-input').value = ''; $('#search-error').hidden = true;
   $('#transaction-form').reset(); $('#tx-id').value = ''; $('#tx-error').hidden = true;
@@ -172,7 +176,8 @@ function setupNavigation() {
       const target = btn.dataset.screen; switchScreen(target);
       if (target === 'holdings') { 
         const holdingsData = computeHoldings(transactions);
-        renderHoldingsList(holdingsData.currentHoldings, new Map());
+        // 탭 이동 시에는 캐시된 가격 정보를 사용하여 즉시 렌더링
+        renderHoldingsList(holdingsData.currentHoldings, priceCache);
         renderHoldingsSummary(holdingsData, 0, 0); 
       }
     });
@@ -188,7 +193,12 @@ async function handleSearch() {
   try {
     const res = await fetch(`/api/quote?ticker=${encodeURIComponent(query)}`); const data = await res.json();
     if (!res.ok) throw new Error(data.error || '시세를 가져오지 못했습니다.');
-    currentQuote = data; renderQuote(data); updateMarketStatusBadge(data.market_status); updateDataStatusBadge(data.data_status);
+    if (data.price == null) throw new Error('종목의 시세 정보가 없습니다.');
+    
+    currentQuote = data; 
+    if (data.price > 0) priceCache.set(data.ticker, data.price); // 캐시 업데이트
+    
+    renderQuote(data); updateMarketStatusBadge(data.market_status); updateDataStatusBadge(data.data_status);
   } catch (err) {
     errorEl.textContent = err.message || '시세를 가져오지 못했습니다. 잠시 후 다시 확인해 주세요.'; errorEl.hidden = false; $('#quote-card').hidden = true; $('#analysis-result').hidden = true;
     updateDataStatusBadge('ERROR');
@@ -197,7 +207,7 @@ async function handleSearch() {
 
 function renderQuote(q) {
   $('#quote-card').hidden = false; $('#stock-name').textContent = q.stock_name || q.ticker;
-  $('#current-price').textContent = q.price != null ? formatNumber(q.price) + '원' : '-';
+  $('#current-price').textContent = q.price != null && q.price > 0 ? formatNumber(q.price) + '원' : '-';
   const changeEl = $('#change-rate');
   if (q.change_rate != null) {
     const sign = q.change_rate > 0 ? '+' : '';
@@ -217,7 +227,10 @@ async function refreshQuoteSilently(ticker) {
       return; 
     }
     const data = await res.json();
-    if (currentQuote?.ticker === ticker) { currentQuote = data; renderQuote(data); updateMarketStatusBadge(data.market_status); updateDataStatusBadge(data.data_status); }
+    if (currentQuote?.ticker === ticker) { 
+      if (data.price > 0) priceCache.set(ticker, data.price); // 캐시 업데이트
+      currentQuote = data; renderQuote(data); updateMarketStatusBadge(data.market_status); updateDataStatusBadge(data.data_status); 
+    }
   } catch (err) { 
     console.error(`[시세조회 에러] ${ticker}:`, err);
     updateDataStatusBadge('ERROR'); 
@@ -237,43 +250,46 @@ async function loadHoldings() {
 async function refreshHoldingsView(holdingsData) {
   if (!holdingsData) holdingsData = computeHoldings(transactions);
   const { currentHoldings } = holdingsData;
-  let totalCost = 0, totalCurrentValue = 0; const priceMap = new Map();
+  let totalCost = 0, totalCurrentValue = 0;
+  const currentPriceMap = new Map();
   
   if (currentHoldings.length === 0) { 
-    renderHoldingsList([], priceMap);
+    renderHoldingsList([], currentPriceMap);
     renderHoldingsSummary(holdingsData, 0, 0); 
     return; 
   }
 
   for (const h of currentHoldings) {
     totalCost += h.totalCost;
-    let success = false;
+    let price = null;
     try {
       const res = await fetch(`/api/quote?ticker=${h.ticker}`);
       if (res.ok) { 
         const q = await res.json(); 
-        if (priceMap.size === 0) { updateMarketStatusBadge(q.market_status); updateDataStatusBadge(q.data_status); }
-        if (q.price != null) { 
-          totalCurrentValue += q.price * h.qty; 
-          priceMap.set(h.ticker, q.price); 
-          success = true;
-        } else {
-          console.warn(`[시세 데이터 없음] ${h.stock_name}(${h.ticker}) - 응답에 가격 정보가 없습니다.`);
+        if (currentPriceMap.size === 0) { updateMarketStatusBadge(q.market_status); updateDataStatusBadge(q.data_status); }
+        if (q.price != null && q.price > 0) { 
+          price = q.price;
+          priceCache.set(h.ticker, q.price); // 정상 가격 캐시 저장
         }
       } else {
-        const errData = await res.json().catch(() => ({}));
-        console.warn(`[시세조회 실패] ${h.stock_name}(${h.ticker}): HTTP ${res.status}, 사유: ${errData.error || '알 수 없음'}`);
+        console.warn(`[시세조회 실패] ${h.stock_name}(${h.ticker}): HTTP ${res.status}`);
       }
     } catch (err) { 
       console.error(`[시세조회 에러] ${h.stock_name}(${h.ticker}):`, err);
       updateDataStatusBadge('ERROR'); 
     }
     
-    if (!success) totalCurrentValue += h.totalCost;
+    // API 실패 시 캐시된 가격 사용, 그것도 없으면 원가 사용
+    if (!price) {
+      price = priceCache.get(h.ticker) || h.avgCost;
+    }
+    
+    currentPriceMap.set(h.ticker, price);
+    totalCurrentValue += price * h.qty;
     await new Promise(r => setTimeout(r, 300)); // 300ms 대기
   }
   
-  renderHoldingsList(currentHoldings, priceMap);
+  renderHoldingsList(currentHoldings, currentPriceMap);
   renderHoldingsSummary(holdingsData, totalCost, totalCurrentValue);
 }
 
@@ -358,7 +374,6 @@ function renderAnalysisResult(data) {
   renderNewsList(data.news_items || []);
 }
 
-// 내 보유 주식 카드 내 인라인 분석 결과 렌더링
 function renderInlineAnalysisResult(data, cardElement) {
   const container = cardElement.querySelector('.holding-inline-result');
   if (!container) return;
@@ -438,7 +453,7 @@ function renderHoldingsList(holdings, priceMap) {
   if (holdings.length === 0) { const p = document.createElement('p'); p.className = 'empty-text'; p.textContent = '아직 등록된 거래가 없습니다.'; list.appendChild(p); return; }
   
   holdings.forEach((h) => {
-    const currentPrice = priceMap.get(h.ticker) || h.avgCost;
+    const currentPrice = priceMap.get(h.ticker) || h.avgCost; // 캐시된 가격 혹은 원가
     const valuation = currentPrice * h.qty;
     const pnl = valuation - h.totalCost;
     const returnRate = h.totalCost > 0 ? (pnl / h.totalCost) * 100 : 0;

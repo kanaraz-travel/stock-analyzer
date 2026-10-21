@@ -31,7 +31,7 @@ export async function onRequestGet(context) {
     const accessToken = await getKisAccessToken(env, baseUrl);
     const kisQuery = new URLSearchParams({ FID_COND_MRKT_DIV_CODE: 'J', FID_INPUT_ISCD: ticker });
 
-    // ★ 재시도 로직 (최대 2회, 지수 백오프)
+    // 재시도 로직 (최대 2회, 지수 백오프)
     let kisRes;
     let lastError;
     for (let attempt = 0; attempt < 2; attempt++) {
@@ -46,14 +46,13 @@ export async function onRequestGet(context) {
           },
         });
 
-        // 429(Too Many Requests) 또는 502(Bad Gateway) 발생 시 재시도
         if (kisRes.status === 429 || kisRes.status === 502) {
           lastError = new Error(`KIS API ${kisRes.status} Error`);
           console.warn(`KIS API ${kisRes.status} error for ${ticker}, retrying (${attempt + 1}/2)...`);
-          await new Promise(r => setTimeout(r, 1000 * (attempt + 1))); // 1초, 2초 대기
+          await new Promise(r => setTimeout(r, 1000 * (attempt + 1)));
           continue;
         }
-        break; // 성공 또는 재시도 불가 에러면 루프 탈출
+        break;
       } catch (err) {
         lastError = err;
         await new Promise(r => setTimeout(r, 1000 * (attempt + 1)));
@@ -79,12 +78,16 @@ export async function onRequestGet(context) {
     let finalName = output.hts_kor_isnm || stock_name;
     if (/^[A-Z0-9]{10,}/.test(finalName)) finalName = finalName.replace(/^[A-Z0-9]{10,}\s*/, '').trim();
 
+    // ★ 가격이 0이거나 비정상적인 값이면 null로 반환하여 프런트엔드에서 '0원'으로 표시되지 않도록 방어
+    const rawPrice = Number(output.stck_prpr);
+    const price = (rawPrice && rawPrice > 0) ? rawPrice : null;
+
     const now = new Date();
     const dataStatus = 'LATEST'; // KIS 응답이 정상이면 최신으로 간주
 
     return jsonResponse({
       ticker, stock_name: finalName,
-      price: output.stck_prpr ? Number(output.stck_prpr) : null,
+      price: price, // 방어된 가격 반환
       change_rate: output.prdy_ctrt ? Number(output.prdy_ctrt) : null,
       volume: output.acml_vol ? Number(output.acml_vol) : null,
       market_status: getMarketStatus(),
@@ -98,4 +101,91 @@ export async function onRequestGet(context) {
   }
 }
 
-// ... (ensureMasterLoaded, parseMasterFile, findCodeByName, getMarketStatus, getKisAccessToken 함수는 이전과 동일)
+// ------------------------------------------------------------
+// 마스터 파일 로드 및 파싱 (KOSPI/KOSDAQ 종목명 검색용)
+// ------------------------------------------------------------
+async function ensureMasterLoaded() {
+  if (masterCache.loaded && Date.now() < masterCache.expiresAt) return;
+  const urls = ['https://new.real.download.dws.co.kr/common/master/kospi_code.mst.zip', 'https://new.real.download.dws.co.kr/common/master/kosdaq_code.mst.zip'];
+  masterCache.map.clear(); masterCache.codeMap.clear();
+  for (const url of urls) {
+    try {
+      const res = await fetch(url); if (!res.ok) continue;
+      const buf = await res.arrayBuffer(); const unzipped = unzipSync(new Uint8Array(buf));
+      for (const filename in unzipped) { parseMasterFile(new TextDecoder('euc-kr').decode(unzipped[filename])); }
+    } catch (e) { console.error('Master file load error:', e.message); }
+  }
+  masterCache.loaded = true; masterCache.expiresAt = Date.now() + CACHE_TTL;
+}
+
+function parseMasterFile(text) {
+  const lines = text.split('\n');
+  for (const line of lines) {
+    if (!line.trim()) continue;
+    const code = line.substring(0, 6).trim();
+    if (!/^\d{6}$/.test(code)) continue;
+    let name = '';
+    for (let start = 9; start < 30; start++) {
+      const candidate = line.substring(start, start + 20).trim();
+      if (/[가-힣]/.test(candidate)) { name = candidate.split(/\s{2,}/)[0].trim(); break; }
+    }
+    if (name) { masterCache.map.set(name, code); masterCache.codeMap.set(code, name); }
+  }
+}
+
+function findCodeByName(query) {
+  const normalized = query.replace(/\s+/g, '').toLowerCase();
+  for (const [name, code] of masterCache.map.entries()) {
+    if (name.replace(/\s+/g, '').toLowerCase() === normalized) return code;
+  }
+  for (const [name, code] of masterCache.map.entries()) {
+    if (name.replace(/\s+/g, '').toLowerCase().includes(normalized)) return code;
+  }
+  return null;
+}
+
+// ------------------------------------------------------------
+// 시장 상태 텍스트 반환 (KST 기준)
+// ------------------------------------------------------------
+function getMarketStatus() {
+  const now = new Date();
+  const kstTime = new Date(now.getTime() + (9 * 60 * 60 * 1000));
+  const day = kstTime.getUTCDay();
+  const timeVal = kstTime.getUTCHours() * 100 + kstTime.getUTCMinutes();
+
+  if (day === 0 || day === 6) return '휴장 (주말)';
+  if (timeVal >= 900 && timeVal < 1530) return '정규장 09:00~15:30';
+  if (timeVal >= 1530 && timeVal < 1600) return '장 마감 (대기)';
+  if (timeVal >= 1600 && timeVal <= 2000) return '애프터마켓 16:00~20:00';
+  return '장마감';
+}
+
+// ------------------------------------------------------------
+// KIS 접근토큰 발급 (Lock 및 캐시 적용)
+// ------------------------------------------------------------
+async function getKisAccessToken(env, baseUrl) {
+  const now = Date.now();
+  if (tokenCache.accessToken && now < tokenCache.expiresAt) return tokenCache.accessToken;
+  if (tokenPromise) return tokenPromise;
+
+  tokenPromise = (async () => {
+    try {
+      const res = await fetch(`${baseUrl}/oauth2/tokenP`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ grant_type: 'client_credentials', appkey: env.KIS_APP_KEY, appsecret: env.KIS_APP_SECRET }),
+      });
+      if (!res.ok) throw new Error(`KIS Token Error (${res.status})`);
+      const data = await res.json();
+      tokenCache = { accessToken: data.access_token, expiresAt: now + ((Number(data.expires_in) || 86400) - 60) * 1000 };
+      return data.access_token;
+    } finally {
+      tokenPromise = null;
+    }
+  })();
+  return tokenPromise;
+}
+
+function jsonResponse(body, status = 200) {
+  return new Response(JSON.stringify(body), { status, headers: { 'content-type': 'application/json; charset=utf-8' } });
+}
