@@ -247,6 +247,7 @@ async function refreshHoldingsView(holdingsData) {
 
   for (const h of currentHoldings) {
     totalCost += h.totalCost;
+    let success = false;
     try {
       const res = await fetch(`/api/quote?ticker=${h.ticker}`);
       if (res.ok) { 
@@ -255,19 +256,21 @@ async function refreshHoldingsView(holdingsData) {
         if (q.price != null) { 
           totalCurrentValue += q.price * h.qty; 
           priceMap.set(h.ticker, q.price); 
-          continue; 
+          success = true;
         } else {
           console.warn(`[시세 데이터 없음] ${h.stock_name}(${h.ticker}) - 응답에 가격 정보가 없습니다.`);
         }
       } else {
-        console.warn(`[시세조회 실패] ${h.stock_name}(${h.ticker}): HTTP ${res.status}`);
+        const errData = await res.json().catch(() => ({}));
+        console.warn(`[시세조회 실패] ${h.stock_name}(${h.ticker}): HTTP ${res.status}, 사유: ${errData.error || '알 수 없음'}`);
       }
     } catch (err) { 
       console.error(`[시세조회 에러] ${h.stock_name}(${h.ticker}):`, err);
       updateDataStatusBadge('ERROR'); 
     }
-    totalCurrentValue += h.totalCost;
-    await new Promise(r => setTimeout(r, 250));
+    
+    if (!success) totalCurrentValue += h.totalCost;
+    await new Promise(r => setTimeout(r, 300)); // 300ms 대기
   }
   
   renderHoldingsList(currentHoldings, priceMap);
@@ -461,7 +464,6 @@ function renderHoldingsList(holdings, priceMap) {
     `;
     card.appendChild(grid);
 
-    // 버튼 2개를 한 줄에 배치
     const actionRow = document.createElement('div');
     actionRow.className = 'holding-actions';
     
@@ -481,7 +483,6 @@ function renderHoldingsList(holdings, priceMap) {
     
     card.appendChild(actionRow);
 
-    // 인라인 분석 결과 영역
     const inlineResult = document.createElement('div');
     inlineResult.className = 'holding-inline-result';
     inlineResult.hidden = true;
