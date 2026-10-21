@@ -4,7 +4,7 @@ export async function onRequestGet(context) {
   const url = new URL(request.url);
   const ticker = (url.searchParams.get('ticker') || '').trim();
 
-  if (!/^\d{6}$/.test(ticker)) return jsonResponse({ error: '종목코드는 6자리 숫자여야 합니다.' }, 400);
+  if (!/^[0-9A-Z]{6}$/i.test(ticker)) return jsonResponse({ error: '종목코드 형식이 올바르지 않습니다.' }, 400);
 
   const baseUrl = env.KIS_BASE_URL || 'https://openapi.koreainvestment.com:9443';
   if (!env.KIS_APP_KEY || !env.KIS_APP_SECRET) return jsonResponse({ error: 'KIS API 키가 설정되지 않았습니다.' }, 500);
@@ -49,27 +49,45 @@ export async function onRequestGet(context) {
     }
 
     const output2 = data.output2 || [];
-    if (output2.length < 20) return jsonResponse({ error: '과거 데이터가 부족합니다.' }, 404);
+    if (output2.length < 20) {
+      return jsonResponse({ 
+        error: '과거 데이터가 부족합니다.', 
+        data_available: false,
+        return_1m: null,
+        ma20_disparity: null,
+        current_volume: null,
+        avg_volume_20: null,
+      }, 404);
+    }
 
     const currentPrice = Number(output2[0].stck_clpr);
+    const currentVolume = Number(output2[0].acml_vol || 0);
     const price20DaysAgo = Number(output2[19].stck_clpr);
     const return1M = ((currentPrice - price20DaysAgo) / price20DaysAgo) * 100;
 
     let sum20Price = 0;
     let sum20Volume = 0;
+    let validVolumeDays = 0;
     for (let i = 0; i < 20; i++) {
       sum20Price += Number(output2[i].stck_clpr);
-      sum20Volume += Number(output2[i].acml_vol || 0);
+      const v = Number(output2[i].acml_vol || 0);
+      if (v > 0) {
+        sum20Volume += v;
+        validVolumeDays++;
+      }
     }
     const ma20 = sum20Price / 20;
     const ma20Disparity = ((currentPrice - ma20) / ma20) * 100;
-    const avgVolume20 = sum20Volume / 20;
+    const avgVolume20 = validVolumeDays > 0 ? Math.round(sum20Volume / validVolumeDays) : null;
 
     return jsonResponse({
       ticker,
+      data_available: true,
       return_1m: Number(return1M.toFixed(2)),
       ma20_disparity: Number(ma20Disparity.toFixed(2)),
-      avg_volume_20: Math.round(avgVolume20),
+      current_volume: currentVolume > 0 ? currentVolume : null,
+      avg_volume_20: avgVolume20,
+      valid_volume_days: validVolumeDays,
     });
   } catch (err) {
     console.error('history.js Error:', err.message);

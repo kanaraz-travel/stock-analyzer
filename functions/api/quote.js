@@ -20,7 +20,7 @@ export async function onRequestGet(context) {
   let stock_name = query;
 
   try {
-    // ★ 종목코드 패턴 완화: 6자리 숫자 또는 영문자 포함 신형 코드(예: 0158S0) 허용
+    // 종목코드 패턴 완화: 6자리 숫자 또는 영문자 포함 신형 코드(예: 0158S0) 허용
     const isDirectCode = /^[0-9A-Z]{6}$/i.test(query);
 
     if (!isDirectCode) {
@@ -80,11 +80,15 @@ export async function onRequestGet(context) {
     const w52Hgpr = output.w52_hgpr ? Number(output.w52_hgpr) : null;
     const w52Lwpr = output.w52_lwpr ? Number(output.w52_lwpr) : null;
 
+    // 거래량 처리: 0이거나 유효하지 않으면 null로 통일
+    const rawVolume = Number(output.acml_vol);
+    const volume = (rawVolume && rawVolume > 0) ? rawVolume : null;
+
     return jsonResponse({
       ticker, stock_name: finalName,
       price: price,
       change_rate: output.prdy_ctrt ? Number(output.prdy_ctrt) : null,
-      volume: output.acml_vol ? Number(output.acml_vol) : null,
+      volume: volume,
       w52_hgpr: w52Hgpr,
       w52_lwpr: w52Lwpr,
       market_status: getMarketStatus(),
@@ -120,14 +124,14 @@ async function ensureMasterLoaded() {
       for (const filename in unzipped) {
         const content = new TextDecoder('euc-kr').decode(unzipped[filename]);
         
-        // ★ 1차: 파이프(|) 구분자 방식 시도
+        // 1차: 파이프(|) 구분자 방식 시도
         const pipeResult = parsePipeSeparated(content);
         if (pipeResult > 0) {
           console.log(`[마스터] ${market.key}: 파이프 구분자 ${pipeResult}건 파싱 성공`);
           continue;
         }
         
-        // ★ 2차: 고정폭 방식 (기존)
+        // 2차: 고정폭 방식 (기존)
         const fixedResult = parseFixedWidth(content, market.tailLen);
         console.log(`[마스터] ${market.key}: 고정폭 ${fixedResult}건 파싱 성공`);
       }
@@ -138,7 +142,7 @@ async function ensureMasterLoaded() {
   masterCache.expiresAt = Date.now() + CACHE_TTL;
 }
 
-// ★ 파이프(|) 구분자 파싱: "단축코드|표준코드|한글종목명|..."
+// 파이프(|) 구분자 파싱
 function parsePipeSeparated(text) {
   let count = 0;
   const lines = text.split('\n');
@@ -150,7 +154,6 @@ function parsePipeSeparated(text) {
     const code = parts[0].trim();
     const name = parts[2].trim();
     
-    // 코드: 6자리 숫자 또는 영문자 포함 신형 코드
     if (!/^[0-9A-Z]{6}$/i.test(code)) continue;
     if (!name) continue;
     
@@ -188,15 +191,12 @@ function parseFixedWidth(text, tailLen) {
 function findCodeByName(query) {
   const normalized = query.replace(/\s+/g, '').toLowerCase();
   
-  // 1) 완전 일치
   for (const [name, code] of masterCache.map.entries()) {
     if (name.replace(/\s+/g, '').toLowerCase() === normalized) return code;
   }
-  // 2) 쿼리가 종목명에 포함
   for (const [name, code] of masterCache.map.entries()) {
     if (name.replace(/\s+/g, '').toLowerCase().includes(normalized)) return code;
   }
-  // 3) 종목명이 쿼리에 포함
   for (const [name, code] of masterCache.map.entries()) {
     if (normalized.includes(name.replace(/\s+/g, '').toLowerCase())) return code;
   }

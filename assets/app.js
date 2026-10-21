@@ -238,7 +238,6 @@ async function handleSearch() {
   } finally { btn.disabled = false; btn.textContent = '조회'; }
 }
 
-// ★ 출처 표시 제거
 function renderQuote(q) {
   $('#quote-card').hidden = false; $('#stock-name').textContent = q.stock_name || q.ticker;
   $('#current-price').textContent = q.price != null && q.price > 0 ? formatNumber(q.price) + '원' : '-';
@@ -249,7 +248,6 @@ function renderQuote(q) {
     changeEl.className = 'change-rate ' + (q.change_rate > 0 ? 'positive' : q.change_rate < 0 ? 'negative' : '');
   } else { changeEl.textContent = '-'; changeEl.className = 'change-rate'; }
   $('#quote-as-of').textContent = `시세 시각: ${q.quote_as_of ? formatDateTime(q.quote_as_of) : '-'}`;
-  // 출처 표시 삭제
   if (analysisCache.has(q.ticker)) {
     renderAnalysisResult(analysisCache.get(q.ticker), false);
   } else {
@@ -307,7 +305,6 @@ async function refreshHoldingsView(holdingsData) {
 
 function setupAnalyze() { $('#analyze-btn').addEventListener('click', () => runAnalysis(currentQuote?.ticker, currentQuote?.stock_name, currentQuote?.price, 'main')); }
 
-// ★ 거래량 데이터 버그 수정: 분석 대상 종목의 최신 시세를 직접 조회
 async function runAnalysis(ticker, name, price, targetType = 'main', cardElement = null) {
   if (!ticker) return;
   const btn = targetType === 'main' ? $('#analyze-btn') : cardElement.querySelector('.btn-ai-analyze');
@@ -323,7 +320,6 @@ async function runAnalysis(ticker, name, price, targetType = 'main', cardElement
     let { data: { session } } = await supabase.auth.getSession();
     if (!session) { alert('로그인 세션이 없습니다.'); await supabase.auth.signOut(); return; }
 
-    // ★ 분석 대상 종목의 최신 시세 직접 조회 (currentQuote는 다른 종목일 수 있음)
     let freshQuote = null;
     try {
       const qRes = await fetch(`/api/quote?ticker=${encodeURIComponent(ticker)}`);
@@ -332,7 +328,6 @@ async function runAnalysis(ticker, name, price, targetType = 'main', cardElement
 
     const actualPrice = freshQuote?.price ?? price;
     const actualChangeRate = freshQuote?.change_rate ?? null;
-    const actualVolume = freshQuote?.volume ?? null;
     const w52Hgpr = freshQuote?.w52_hgpr ?? null;
     const w52Lwpr = freshQuote?.w52_lwpr ?? null;
 
@@ -366,12 +361,16 @@ async function runAnalysis(ticker, name, price, targetType = 'main', cardElement
       if (histRes.ok) { historyData = await histRes.json(); }
     } catch { console.warn('뉴스/과거데이터 로드 실패'); }
 
+    // 거래량 데이터 폴백: quote.volume → history.current_volume 순서
+    const currentVolume = freshQuote?.volume ?? historyData?.current_volume ?? null;
     const avgVolume20 = historyData?.avg_volume_20 ?? null;
     const volumeData = {
-      current_volume: actualVolume,
+      current_volume: currentVolume,
       avg_volume_20: avgVolume20,
-      ratio_5d: (actualVolume && avgVolume20) ? (actualVolume / avgVolume20) : null,
+      ratio_5d: (currentVolume && avgVolume20 && avgVolume20 > 0) ? (currentVolume / avgVolume20) : null,
     };
+
+    console.log('[분석 데이터] 거래량:', volumeData, '/ 히스토리:', historyData);
 
     const payload = {
       ticker, stock_name: name || ticker, analysis_type: holdingsData ? 'sell' : 'buy',

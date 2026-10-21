@@ -1,7 +1,7 @@
 // functions/api/analyze.js
 import { createClient } from '@supabase/supabase-js';
 
-const RULESET_VERSION = 'RULESET_AI_V15_STABLE';
+const RULESET_VERSION = 'RULESET_AI_V16_DIAGNOSTIC';
 
 export async function onRequestPost(context) {
   const { request, env } = context;
@@ -27,7 +27,8 @@ export async function onRequestPost(context) {
   if (!dataSufficient) {
     return jsonResponse({
       recommendation: '판단 보류', overall_summary: '데이터가 부족하여 판단을 보류함.',
-      price_flow_summary: '-', volume_summary: '-', news_analysis: '-', fallback: true,
+      price_flow_summary: '-', volume_summary: '-', news_analysis: '- (비정상)', fallback: true,
+      news_agent_status: 'error',
     });
   }
 
@@ -35,11 +36,12 @@ export async function onRequestPost(context) {
   let finalData = null;
   let isFallback = false;
   let debugInfo = null;
+  let newsAgentStatus = 'unknown';
 
   try {
     if (!env.AI) throw new Error('Workers AI binding(env.AI)이 설정되지 않았습니다.');
 
-    // ★ 1. DB에서 직전 분석 결과 가져오기 (이전 판단 컨텍스트 확보)
+    // 1. DB에서 직전 분석 결과 조회
     const { data: prevRuns } = await supabase
       .from('stock_analysis_runs')
       .select('recommendation, analyzed_at')
@@ -51,43 +53,47 @@ export async function onRequestPost(context) {
     const previousRun = prevRuns && prevRuns.length > 0 ? prevRuns[0] : null;
     const previousRec = previousRun ? previousRun.recommendation : null;
 
-    // 2. 가격/거래량 분석 에이전트 (Temperature 0.1 적용)
+    // 2. 가격/거래량 분석 에이전트
     const analysisResult = await runAnalysisAgent(env, {
       ticker, stock_name, price_data, volume_data, analysis_type, holdings_data
     });
 
-    // 3. 뉴스 분석 에이전트 (Temperature 0.1 적용)
+    // 3. 뉴스 분석 에이전트
     const newsAnalysisResult = await runNewsAgent(env, {
       ticker, stock_name, news_items
     });
+    newsAgentStatus = newsAnalysisResult.status || 'success';
 
-    // 4. 심판 에이전트 (이전 판단 컨텍스트 및 Temperature 0.1 적용)
+    // 4. 심판 에이전트
     const judgeResult = await runJudgeAgent(env, {
       ticker, stock_name, 
       analysis_result: analysisResult, 
       news_analysis_result: newsAnalysisResult, 
       analysis_type, 
       holdings_data,
-      previous_recommendation: previousRec // ★ 직전 판단 주입
+      previous_recommendation: previousRec
     });
 
-    // ★ 5. 확신도(Confidence) 기반 판단 유지 (히스테리시스)
+    // 5. 확신도 기반 판단 유지
     let finalRecommendation = judgeResult.recommendation;
     let finalSummary = judgeResult.overall_summary;
     const confidence = judgeResult.confidence || 1.0;
 
-    // 이전 판단이 존재하고, 현재 판단과 다르며, 확신도가 0.8 미만이면 판단 번복 방지
     if (previousRec && previousRec !== finalRecommendation && confidence < 0.8) {
       finalRecommendation = previousRec;
-      finalSummary = `[판단 유지] ${finalSummary} (확신도 ${(confidence * 100).toFixed(0)}%로 직전 판단 유지)`;
+      finalSummary = `[판단 유지] ${finalSummary} (확신도 ${(confidence * 100).toFixed(0)}%)`;
     }
+
+    // 뉴스 분석 텍스트에 상태 표시 부착
+    let newsAnalysisText = newsAnalysisResult.news_analysis || '뉴스 데이터 없음.';
+    newsAnalysisText += newsAgentStatus === 'success' ? ' (정상)' : ' (비정상)';
 
     finalData = {
       recommendation: finalRecommendation,
       overall_summary: finalSummary,
       price_flow_summary: analysisResult.price_flow_analysis || '-',
       volume_summary: analysisResult.volume_analysis || '-',
-      news_analysis: newsAnalysisResult.news_analysis || '-',
+      news_analysis: newsAnalysisText,
     };
 
     const validRecs = analysis_type === 'sell' 
@@ -111,8 +117,9 @@ export async function onRequestPost(context) {
       overall_summary: `AI 분석이 일시적으로 제한됨. (${e.message})`,
       price_flow_summary: '가격 데이터 계산됨.',
       volume_summary: volume_data ? '거래량 데이터 계산됨.' : '데이터 부족',
-      news_analysis: '뉴스 분석 실패.',
+      news_analysis: '뉴스 분석 실패. (비정상)',
     };
+    newsAgentStatus = 'error';
   }
 
   await saveAnalysisRun(supabase, {
@@ -129,6 +136,7 @@ export async function onRequestPost(context) {
     score: scoreResult.totalScore, recommendation: finalData.recommendation,
     overall_summary: finalData.overall_summary, price_flow_summary: finalData.price_flow_summary,
     volume_summary: finalData.volume_summary, news_analysis: finalData.news_analysis,
+    news_agent_status: newsAgentStatus,
     ruleset_version: RULESET_VERSION, data_status: 'LATEST', fallback: isFallback, debug: debugInfo,
   });
 }
@@ -140,10 +148,7 @@ async function runAnalysisAgent(env, payload) {
   let holdingsContext = '';
   if (isSell && payload.holdings_data) {
     const hd = payload.holdings_data;
-    holdingsContext = `(평균단가:${hd.avg_cost}원, 수익률:${hd.return_rate.toFixed(2)}%, 보유:${hd.quantity}주`;
-    if (hd.first_buy_date) holdingsContext += `, 최초매수:${hd.first_buy_date}`;
-    if (hd.last_sell_date) holdingsContext += `, 최근매도:${hd.last_sell_date}`;
-    holdingsContext += ')';
+    holdingsContext = `(평균단가:${hd.avg_cost}원, 수익률:${hd.return_rate.toFixed(2)}%, 보유:${hd.quantity}주)`;
   }
 
   const pd = payload.price_data;
@@ -153,14 +158,23 @@ async function runAnalysisAgent(env, payload) {
   const ma20DispStr = pd.ma20_disparity != null ? `${pd.ma20_disparity > 0 ? '+' : ''}${pd.ma20_disparity.toFixed(2)}%` : '없음';
   
   let w52PosStr = '없음';
-  if (pd.w52_hgpr != null && pd.w52_lwpr != null && pd.current_price != null) {
+  if (pd.w52_hgpr != null && pd.w52_lwpr != null && pd.current_price != null && pd.w52_hgpr > pd.w52_lwpr) {
     const pos = ((pd.current_price - pd.w52_lwpr) / (pd.w52_hgpr - pd.w52_lwpr)) * 100;
     w52PosStr = `${pos.toFixed(1)}%`;
   }
 
-  let volumeStr = '없음';
-  if (vd && vd.current_volume != null && vd.avg_volume_20 != null) {
-    volumeStr = `평균대비 ${(vd.current_volume / vd.avg_volume_20).toFixed(2)}배`;
+  // 거래량 데이터 진단 및 문자열화
+  let volumeStr = '데이터 없음';
+  if (vd) {
+    const cur = vd.current_volume;
+    const avg = vd.avg_volume_20;
+    if (cur != null && avg != null && avg > 0) {
+      volumeStr = `평균대비 ${(cur / avg).toFixed(2)}배 (오늘:${cur.toLocaleString()}주 / 20일평균:${avg.toLocaleString()}주)`;
+    } else if (cur != null) {
+      volumeStr = `오늘 ${cur.toLocaleString()}주 (평균 데이터 미확보)`;
+    } else if (avg != null) {
+      volumeStr = `20일 평균 ${avg.toLocaleString()}주 (오늘 데이터 미확보)`;
+    }
   }
 
   const systemPrompt = `당신은 ${role}입니다. 20영업일 데이터를 기반으로 분석하여 반드시 JSON으로 응답하세요. '~함', '~임' 체를 사용하세요.`;
@@ -177,19 +191,23 @@ async function runAnalysisAgent(env, payload) {
   const response = await env.AI.run('@cf/meta/llama-3.3-70b-instruct-fp8-fast', {
     messages: [{ role: 'system', content: systemPrompt }, { role: 'user', content: userPrompt }], 
     max_tokens: 1024,
-    temperature: 0.1, // ★ Temperature 0.1 적용 (일관성 향상)
+    temperature: 0.1,
   });
   return extractJSON(response?.response || '{}');
 }
 
 async function runNewsAgent(env, payload) {
   if (!payload.news_items || payload.news_items.length === 0) {
-    return { news_analysis: '최근 5일 이내 확인된 관련 뉴스가 없음.' };
+    return { 
+      news_analysis: '최근 5일 이내 확인된 관련 뉴스가 없음.', 
+      status: 'success'
+    };
   }
 
-  const newsStr = payload.news_items.map((n, i) => `[${i+1}] ${n.title} (${n.published_at ? n.published_at.slice(0,10) : '날짜미상'})`).join('\n');
+  try {
+    const newsStr = payload.news_items.map((n, i) => `[${i+1}] ${n.title} (${n.published_at ? n.published_at.slice(0,10) : '날짜미상'})`).join('\n');
 
-  const systemPrompt = `당신은 주식 뉴스 분석가입니다. 다음 뉴스 목록에서 '${payload.stock_name}'의 주가에 실질적으로 영향을 줄 수 있는 뉴스만 선별하세요.
+    const systemPrompt = `당신은 주식 뉴스 분석가입니다. 다음 뉴스 목록에서 '${payload.stock_name}'의 주가에 실질적으로 영향을 줄 수 있는 뉴스만 선별하세요.
 [규칙]
 1. 목록에 있는 뉴스만 참고하세요.
 2. 스포츠, 연예, 정치 뉴스는 제외하세요.
@@ -197,7 +215,7 @@ async function runNewsAgent(env, payload) {
 4. 관련 뉴스가 있으면 1~2문장으로 요약하세요.
 반드시 JSON으로 응답하세요.`;
 
-  const userPrompt = `
+    const userPrompt = `
 [종목] ${payload.stock_name} (${payload.ticker})
 [최근 5일 뉴스]
 ${newsStr}
@@ -207,15 +225,23 @@ ${newsStr}
   "news_analysis": "주가 영향 뉴스 1~2문장 요약 또는 '주가에 영향을 줄 만한 뉴스가 없음'"
 }`;
 
-  const response = await env.AI.run('@cf/meta/llama-3.3-70b-instruct-fp8-fast', {
-    messages: [{ role: 'system', content: systemPrompt }, { role: 'user', content: userPrompt }], 
-    max_tokens: 512,
-    temperature: 0.1, // ★ Temperature 0.1 적용
-  });
-  return extractJSON(response?.response || '{}');
+    const response = await env.AI.run('@cf/meta/llama-3.3-70b-instruct-fp8-fast', {
+      messages: [{ role: 'system', content: systemPrompt }, { role: 'user', content: userPrompt }], 
+      max_tokens: 512,
+      temperature: 0.1,
+    });
+    
+    const parsed = extractJSON(response?.response || '{}');
+    if (!parsed.news_analysis) {
+      return { news_analysis: 'AI가 뉴스 분석 결과를 반환하지 않음.', status: 'error' };
+    }
+    return { news_analysis: parsed.news_analysis, status: 'success' };
+  } catch (e) {
+    console.error('뉴스 에이전트 오류:', e.message);
+    return { news_analysis: `뉴스 분석 오류: ${e.message}`, status: 'error' };
+  }
 }
 
-// ★ 심판 에이전트: 이전 판단 컨텍스트 및 히스테리시스 프롬프트 적용
 async function runJudgeAgent(env, payload) {
   const isSell = payload.analysis_type === 'sell';
   const prevRec = payload.previous_recommendation;
@@ -252,7 +278,7 @@ ${schema}`;
   const response = await env.AI.run('@cf/meta/llama-3.3-70b-instruct-fp8-fast', {
     messages: [{ role: 'system', content: systemPrompt }, { role: 'user', content: userPrompt }], 
     max_tokens: 512,
-    temperature: 0.1, // ★ Temperature 0.1 적용
+    temperature: 0.1,
   });
   return extractJSON(response?.response || '{}');
 }
