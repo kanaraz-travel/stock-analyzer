@@ -1,9 +1,10 @@
 // functions/api/analyze.js
 import { createClient } from '@supabase/supabase-js';
 
-const RULESET_VERSION = 'RULESET_AI_V5_FIXED';
+const RULESET_VERSION = 'RULESET_AI_V7_METRICS';
 
 export async function onRequestPost(context) {
+  // ... (이전 인증 및 기본 로직 동일)
   const { request, env } = context;
   const authHeader = request.headers.get('authorization') || '';
   const token = authHeader.replace('Bearer ', '');
@@ -28,7 +29,7 @@ export async function onRequestPost(context) {
   if (!dataSufficient) {
     return jsonResponse({
       recommendation: '판단 보류', overall_summary: '현재가 데이터가 부족해 분석을 진행할 수 없습니다.',
-      price_flow_summary: '-', volume_summary: '-', news_summary: '-', price_tip: '-', volume_tip: '-', tip: '데이터가 부족합니다.', fallback: true,
+      price_flow_summary: '-', volume_summary: '-', news_summary: '-', tip: '데이터가 부족합니다.', fallback: true,
     });
   }
 
@@ -38,14 +39,12 @@ export async function onRequestPost(context) {
   let debugInfo = null;
 
   try {
-    if (!env.AI) throw new Error('Workers AI binding(env.AI)이 설정되지 않았습니다. Cloudflare 대시보드에서 AI 바인딩을 추가해 주세요.');
+    if (!env.AI) throw new Error('Workers AI binding(env.AI)이 설정되지 않았습니다.');
 
-    // 에이전트 1: 분석
     const analysisResult = await runAnalysisAgent(env, {
       ticker, stock_name, price_data, volume_data, news_items, rule_based_score: scoreResult, analysis_type, holdings_data
     });
 
-    // 에이전트 2: 심판
     finalData = await runJudgeAgent(env, {
       ticker, stock_name, analysis_result: analysisResult, rule_based_score: scoreResult, price_data, news_items, analysis_type, holdings_data
     });
@@ -55,10 +54,10 @@ export async function onRequestPost(context) {
       : ['매수 추천', '매수 고려', '기다리기', '매도 고려', '매도 추천', '판단 보류'];
 
     if (!finalData || !validRecs.includes(finalData.recommendation)) {
-      throw new Error('심판 에이전트의 응답 형식이 유효하지 않습니다. (추천 등급 누락)');
+      throw new Error('심판 에이전트의 응답 형식이 유효하지 않습니다.');
     }
   } catch (e) {
-    console.error('Multi-agent analysis failed:', e.message); // Cloudflare 로그에 출력됨
+    console.error('Multi-agent analysis failed:', e.message);
     isFallback = true; 
     debugInfo = e.message;
     
@@ -68,8 +67,6 @@ export async function onRequestPost(context) {
       price_flow_summary: '최근 가격 흐름 데이터를 바탕으로 계산된 결과입니다.',
       volume_summary: '거래량 데이터를 바탕으로 계산된 결과입니다.',
       news_summary: news_items?.length ? '최근 확인된 뉴스가 있습니다.' : '확인된 주요 뉴스가 없습니다.',
-      price_tip: '이 분석은 참고용이며, 투자 결정의 책임은 본인에게 있습니다.',
-      volume_tip: '이 분석은 참고용이며, 투자 결정의 책임은 본인에게 있습니다.',
       tip: '이 분석은 참고용입니다.',
     };
   }
@@ -88,8 +85,7 @@ export async function onRequestPost(context) {
     score: scoreResult.totalScore, recommendation: finalData.recommendation,
     overall_summary: finalData.overall_summary, price_flow_summary: finalData.price_flow_summary,
     volume_summary: finalData.volume_summary, news_summary: finalData.news_summary,
-    price_tip: finalData.price_tip || finalData.tip, volume_tip: finalData.volume_tip || finalData.tip,
-    ruleset_version: RULESET_VERSION, data_status: 'LATEST', fallback: isFallback, debug: debugInfo,
+    tip: finalData.tip, ruleset_version: RULESET_VERSION, data_status: 'LATEST', fallback: isFallback, debug: debugInfo,
   });
 }
 
@@ -105,18 +101,41 @@ async function runAnalysisAgent(env, payload) {
 - 보유 수량: ${payload.holdings_data.quantity}주`;
   }
 
-  const systemPrompt = `당신은 ${role}입니다. 제공된 [데이터]를 바탕으로 현재 주식의 상태를 분석하세요. 반드시 제공된 JSON 스키마 형식으로만 응답해야 합니다.`;
+  // ★ 4가지 지표 계산 및 문자열화
+  const pd = payload.price_data;
+  const changeRateStr = pd.change_rate != null ? `${pd.change_rate > 0 ? '+' : ''}${pd.change_rate.toFixed(2)}%` : '데이터 없음';
+  const return1MStr = pd.return_1m != null ? `${pd.return_1m > 0 ? '+' : ''}${pd.return_1m.toFixed(2)}%` : '데이터 없음';
+  const ma20DispStr = pd.ma20_disparity != null ? `${pd.ma20_disparity > 0 ? '+' : ''}${pd.ma20_disparity.toFixed(2)}%` : '데이터 없음';
+  
+  let w52PosStr = '데이터 없음';
+  if (pd.w52_hgpr != null && pd.w52_lwpr != null && pd.current_price != null) {
+    // 52주 레인지 내 위치 계산 (0%가 최저, 100%가 최고)
+    const pos = ((pd.current_price - pd.w52_lwpr) / (pd.w52_hgpr - pd.w52_lwpr)) * 100;
+    w52PosStr = `${pos.toFixed(1)}% (최저가 ${pd.w52_lwpr}원, 최고가 ${pd.w52_hgpr}원)`;
+  }
+
+  const newsStr = payload.news_items?.length > 0
+    ? payload.news_items.map((n) => `- ${n.title} (${n.source_name || '출처 미상'})`).join('\n')
+    : '최근 확인된 주요 뉴스가 없습니다.';
+
+  const systemPrompt = `당신은 ${role}입니다. 제공된 [데이터]와 [종합 판단 지표]를 바탕으로 현재 주식의 상태를 분석하세요. 반드시 제공된 JSON 스키마 형식으로만 응답해야 합니다.`;
   const userPrompt = `
-[데이터]
+[기본 데이터]
 - 종목명: ${payload.stock_name} (${payload.ticker})
-- 현재가: ${payload.price_data.current_price}원
-- 등락률: ${payload.price_data.return_1d ? (payload.price_data.return_1d * 100).toFixed(2) + '%' : '알 수 없음'}${holdingsContext}
-- 최근 뉴스: ${payload.news_items?.map((n) => n.title).join(', ') || '없음'}
+- 현재가: ${pd.current_price}원${holdingsContext}
+- 최근 뉴스:
+${newsStr}
+
+[종합 판단 지표]
+- 1일 등락률(전일 대비): ${changeRateStr}
+- 1개월 수익률: ${return1MStr}
+- 20일 이동평균 대비 괴리율: ${ma20DispStr} (높을수록 단기 과열, 낮을수록 침체)
+- 52주 레인지 내 위치: ${w52PosStr} (100%에 가까울수록 고점, 0%에 가까울수록 저점)
 
 [응답 JSON 스키마]
 {
   "agent_opinion": "분석 에이전트의 종합 의견 (2문장)",
-  "price_flow_analysis": "가격 흐름 분석 (1~2문장)",
+  "price_flow_analysis": "가격 흐름 및 종합 지표 분석 (1~2문장)",
   "volume_analysis": "거래량 분석 (1~2문장)",
   "news_impact_analysis": "뉴스/공시 영향 분석 (1~2문장)",
   "risk_factors": "주요 리스크 요인 (1문장)"
@@ -130,37 +149,29 @@ async function runAnalysisAgent(env, payload) {
 }
 
 async function runJudgeAgent(env, payload) {
+  // ... (이전 로직과 동일, 프롬프트에 4가지 지표를 요약해서 전달)
   const isSell = payload.analysis_type === 'sell';
   
   let systemPrompt = '';
   let schema = '';
 
   if (isSell) {
-    systemPrompt = `당신은 최종 매도 판단을 내리는 심판 에이전트입니다. 분석 에이전트의 의견과 사용자의 수익률을 종합하여 최종 결정을 내리세요. 반드시 JSON 형식으로만 응답하세요.
-- 매도 추천: 즉시 매도 고려
-- 부분 매도 고려: 일부 이익 실현 고려
-- 보유 유지: 계속 보유
-- 추가 매수 고려: 저가 매수 기회
-- 판단 보류: 데이터 부족`;
+    systemPrompt = `당신은 최종 매도 판단을 내리는 심판 에이전트입니다. 분석 에이전트의 의견과 사용자의 수익률을 종합하여 최종 결정을 내리세요. 반드시 JSON 형식으로만 응답하세요.`;
     schema = `{
   "recommendation": "매도 추천" | "부분 매도 고려" | "보유 유지" | "추가 매수 고려" | "판단 보류",
-  "overall_summary": "최종 판단 이유 요약 (초보자용, 2문장)",
-  "price_flow_summary": "가격 흐름에 대한 최종 분석 (1~2문장)",
-  "volume_summary": "거래량에 대한 최종 분석 (1~2문장)",
-  "news_summary": "뉴스/공시 영향 (1~2문장)",
-  "price_tip": "가격 상황에서의 TIP (1문장)",
-  "volume_tip": "거래량 상황에서의 TIP (1문장)"
+  "overall_summary": "최종 판단 이유 요약 (2문장)",
+  "price_flow_summary": "가격 흐름 분석 (1~2문장)",
+  "volume_summary": "거래량 분석 (1~2문장)",
+  "news_summary": "뉴스/공시 영향 (1~2문장)"
 }`;
   } else {
     systemPrompt = `당신은 최종 매수 판단을 내리는 심판 에이전트입니다. 분석 에이전트의 의견을 종합하여 아래 5단계 중 하나를 결정하세요. 반드시 JSON 형식으로만 응답하세요.`;
     schema = `{
   "recommendation": "매수 추천" | "매수 고려" | "기다리기" | "매도 고려" | "매도 추천",
-  "overall_summary": "최종 판단 이유 요약 (초보자용, 2문장)",
-  "price_flow_summary": "가격 흐름에 대한 최종 분석 (1~2문장)",
-  "volume_summary": "거래량에 대한 최종 분석 (1~2문장)",
-  "news_summary": "뉴스/공시 영향 (1~2문장)",
-  "price_tip": "가격 상황에서의 TIP (1문장)",
-  "volume_tip": "거래량 상황에서의 TIP (1문장)"
+  "overall_summary": "최종 판단 이유 요약 (2문장)",
+  "price_flow_summary": "가격 흐름 분석 (1~2문장)",
+  "volume_summary": "거래량 분석 (1~2문장)",
+  "news_summary": "뉴스/공시 영향 (1~2문장)"
 }`;
   }
 
@@ -181,34 +192,24 @@ ${schema}`;
   return extractJSON(response?.response || '');
 }
 
-// ★ 수정된 extractJSON: 문자열과 객체를 모두 처리
 function extractJSON(data) {
   if (data == null) throw new Error('AI 응답이 비어있습니다.');
-  
-  // 이미 객체인 경우 (Cloudflare Workers AI가 JSON을 파싱해서 반환한 경우)
-  if (typeof data === 'object') {
-    return data;
-  }
-  
-  // 문자열인 경우 JSON 추출
+  if (typeof data === 'object') return data;
   const text = String(data);
   const jsonStart = text.indexOf('{');
   const jsonEnd = text.lastIndexOf('}');
-  if (jsonStart === -1 || jsonEnd === -1) {
-    throw new Error('AI 응답에서 JSON을 찾을 수 없습니다. 원본: ' + text.slice(0, 100));
-  }
-  
-  const jsonStr = text.substring(jsonStart, jsonEnd + 1);
+  if (jsonStart === -1 || jsonEnd === -1) throw new Error('AI 응답에서 JSON을 찾을 수 없습니다.');
   try {
-    return JSON.parse(jsonStr);
+    return JSON.parse(text.substring(jsonStart, jsonEnd + 1));
   } catch (e) {
-    throw new Error('AI 응답 JSON 파싱 실패: ' + e.message + ' (원본: ' + jsonStr.slice(0, 100) + ')');
+    throw new Error('AI 응답 JSON 파싱 실패: ' + e.message);
   }
 }
 
 function computeScore(price, volume, news, type) {
   let score = 0;
-  if (price.return_1d > 0.02) score += 1; else if (price.return_1d < -0.02) score -= 1;
+  const rate = price.change_rate || (price.return_1d ? price.return_1d * 100 : 0);
+  if (rate > 2) score += 1; else if (rate < -2) score -= 1;
   return { totalScore: score, recommendation: score > 0 ? '매수 고려' : '기다리기' };
 }
 

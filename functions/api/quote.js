@@ -31,7 +31,6 @@ export async function onRequestGet(context) {
     const accessToken = await getKisAccessToken(env, baseUrl);
     const kisQuery = new URLSearchParams({ FID_COND_MRKT_DIV_CODE: 'J', FID_INPUT_ISCD: ticker });
 
-    // 재시도 로직 (최대 2회, 지수 백오프)
     let kisRes;
     let lastError;
     for (let attempt = 0; attempt < 2; attempt++) {
@@ -48,7 +47,6 @@ export async function onRequestGet(context) {
 
         if (kisRes.status === 429 || kisRes.status === 502) {
           lastError = new Error(`KIS API ${kisRes.status} Error`);
-          console.warn(`KIS API ${kisRes.status} error for ${ticker}, retrying (${attempt + 1}/2)...`);
           await new Promise(r => setTimeout(r, 1000 * (attempt + 1)));
           continue;
         }
@@ -60,47 +58,45 @@ export async function onRequestGet(context) {
     }
 
     if (!kisRes || !kisRes.ok) {
-      const errText = kisRes ? await kisRes.text() : (lastError?.message || 'Unknown error');
-      console.error(`KIS API Final Error for ${ticker}:`, kisRes?.status, errText.slice(0, 300));
-      return jsonResponse({ error: '시세를 가져오지 못했습니다. 잠시 후 다시 확인해 주세요.', detail: kisRes?.status }, 502);
+      return jsonResponse({ error: '시세를 가져오지 못했습니다.' }, 502);
     }
 
     let data;
     try { data = await kisRes.json(); } catch { return jsonResponse({ error: '시세 응답을 처리하지 못했습니다.' }, 502); }
     
-    // KIS 응답 코드 확인 (rt_cd가 '0'이 아니면 에러)
     if (data.rt_cd && data.rt_cd !== '0') {
-      console.error(`KIS API Business Error for ${ticker}: rt_cd=${data.rt_cd}, msg=${data.msg1}`);
-      return jsonResponse({ error: `시세 조회 실패: ${data.msg1 || '알 수 없는 오류'}`, detail: data.rt_cd }, 502);
+      return jsonResponse({ error: `시세 조회 실패: ${data.msg1 || '알 수 없는 오류'}` }, 502);
     }
 
     const output = data.output || {};
     let finalName = output.hts_kor_isnm || stock_name;
     if (/^[A-Z0-9]{10,}/.test(finalName)) finalName = finalName.replace(/^[A-Z0-9]{10,}\s*/, '').trim();
 
-    // 가격이 0이거나 비정상적인 값이면 null로 반환하여 프런트엔드에서 '0원'으로 표시되지 않도록 방어
     const rawPrice = Number(output.stck_prpr);
     const price = (rawPrice && rawPrice > 0) ? rawPrice : null;
+
+    // ★ 52주 최고/최저가 추가
+    const w52Hgpr = output.w52_hgpr ? Number(output.w52_hgpr) : null;
+    const w52Lwpr = output.w52_lwpr ? Number(output.w52_lwpr) : null;
 
     return jsonResponse({
       ticker, stock_name: finalName,
       price: price,
       change_rate: output.prdy_ctrt ? Number(output.prdy_ctrt) : null,
       volume: output.acml_vol ? Number(output.acml_vol) : null,
+      w52_hgpr: w52Hgpr,
+      w52_lwpr: w52Lwpr,
       market_status: getMarketStatus(),
       quote_as_of: new Date().toISOString(),
       provider: '한국투자증권 Open API',
       data_status: 'LATEST',
     });
   } catch (err) {
-    console.error('quote.js Unexpected Error:', err.message);
-    return jsonResponse({ error: '시세를 가져오지 못했습니다. 잠시 후 다시 확인해 주세요.' }, 502);
+    return jsonResponse({ error: '시세를 가져오지 못했습니다.' }, 502);
   }
 }
 
-// ------------------------------------------------------------
-// 마스터 파일 로드 및 파싱 (KOSPI/KOSDAQ 종목명 검색용)
-// ------------------------------------------------------------
+// ... (ensureMasterLoaded, parseMasterFile, findCodeByName, getMarketStatus, getKisAccessToken, jsonResponse 함수는 이전과 동일하므로 생략하지 않고 포함)
 async function ensureMasterLoaded() {
   if (masterCache.loaded && Date.now() < masterCache.expiresAt) return;
   const urls = ['https://new.real.download.dws.co.kr/common/master/kospi_code.mst.zip', 'https://new.real.download.dws.co.kr/common/master/kosdaq_code.mst.zip'];
@@ -141,15 +137,11 @@ function findCodeByName(query) {
   return null;
 }
 
-// ------------------------------------------------------------
-// 시장 상태 텍스트 반환 (KST 기준)
-// ------------------------------------------------------------
 function getMarketStatus() {
   const now = new Date();
   const kstTime = new Date(now.getTime() + (9 * 60 * 60 * 1000));
   const day = kstTime.getUTCDay();
   const timeVal = kstTime.getUTCHours() * 100 + kstTime.getUTCMinutes();
-
   if (day === 0 || day === 6) return '휴장 (주말)';
   if (timeVal >= 900 && timeVal < 1530) return '정규장 09:00~15:30';
   if (timeVal >= 1530 && timeVal < 1600) return '장 마감 (대기)';
@@ -157,9 +149,6 @@ function getMarketStatus() {
   return '장마감';
 }
 
-// ------------------------------------------------------------
-// KIS 접근토큰 발급 (Lock 및 캐시 적용)
-// ------------------------------------------------------------
 async function getKisAccessToken(env, baseUrl) {
   const now = Date.now();
   if (tokenCache.accessToken && now < tokenCache.expiresAt) return tokenCache.accessToken;

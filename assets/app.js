@@ -313,10 +313,37 @@ async function runAnalysis(ticker, name, price, targetType = 'main', cardElement
       return;
     }
 
+    // ★ 1. 뉴스 및 과거 데이터(history) 병렬 로드
+    let newsItems = [];
+    let historyData = {};
+    
+    try {
+      const [newsRes, histRes] = await Promise.all([
+        fetch(`/api/news?ticker=${encodeURIComponent(name)}`),
+        fetch(`/api/history?ticker=${encodeURIComponent(ticker)}`)
+      ]);
+      
+      if (newsRes.ok) { const nd = await newsRes.json(); newsItems = nd.items || []; }
+      if (histRes.ok) { historyData = await histRes.json(); }
+    } catch (fetchErr) {
+      console.warn('뉴스/과거데이터 로드 실패:', fetchErr);
+    }
+
+    // ★ 2. 4가지 지표를 포함한 Payload 구성
     const payload = {
       ticker: ticker, stock_name: name || ticker, analysis_type: 'buy',
-      price_data: { current_price: price, quote_as_of: new Date().toISOString(), return_1d: null, return_5d: null, return_20d: null, volatility_20d: null, quote_is_stale: false },
-      volume_data: null, news_items: [],
+      price_data: { 
+        current_price: price, 
+        quote_as_of: new Date().toISOString(), 
+        change_rate: currentQuote?.change_rate ?? null,
+        return_1m: historyData?.return_1m ?? null,
+        ma20_disparity: historyData?.ma20_disparity ?? null,
+        w52_hgpr: currentQuote?.w52_hgpr ?? null,
+        w52_lwpr: currentQuote?.w52_lwpr ?? null,
+        return_1d: null, return_5d: null, return_20d: null, volatility_20d: null, quote_is_stale: false 
+      },
+      volume_data: null, 
+      news_items: newsItems,
     };
 
     let res = await fetch('/api/analyze', { 
@@ -325,33 +352,22 @@ async function runAnalysis(ticker, name, price, targetType = 'main', cardElement
       body: JSON.stringify(payload) 
     });
 
-    // 401 에러 발생 시 세션 강제 갱신 후 재시도
     if (res.status === 401) {
       console.warn('401 Unauthorized. Attempting to refresh session...');
-      await new Promise(r => setTimeout(r, 1000)); // 백그라운드 갱신 대기
-      
+      await new Promise(r => setTimeout(r, 1000)); 
       const { data: { session: retrySession }, error: refreshError } = await supabase.auth.refreshSession();
       
       if (refreshError || !retrySession) {
-        // 다른 탭에서 갱신했을 수 있으므로 getSession 한 번 더 시도
         const { data: { session: lastSession } } = await supabase.auth.getSession();
         if (lastSession && lastSession.access_token !== session.access_token) {
-          res = await fetch('/api/analyze', { 
-            method: 'POST', 
-            headers: { 'content-type': 'application/json', authorization: `Bearer ${lastSession.access_token}` }, 
-            body: JSON.stringify(payload) 
-          });
+          res = await fetch('/api/analyze', { method: 'POST', headers: { 'content-type': 'application/json', authorization: `Bearer ${lastSession.access_token}` }, body: JSON.stringify(payload) });
         } else {
           alert('세션이 만료되었습니다. 다시 로그인해 주세요.');
           await supabase.auth.signOut();
           return;
         }
       } else {
-        res = await fetch('/api/analyze', { 
-          method: 'POST', 
-          headers: { 'content-type': 'application/json', authorization: `Bearer ${retrySession.access_token}` }, 
-          body: JSON.stringify(payload) 
-        });
+        res = await fetch('/api/analyze', { method: 'POST', headers: { 'content-type': 'application/json', authorization: `Bearer ${retrySession.access_token}` }, body: JSON.stringify(payload) });
       }
     }
 
@@ -360,7 +376,6 @@ async function runAnalysis(ticker, name, price, targetType = 'main', cardElement
     
     if (targetType === 'main') {
       renderAnalysisResult(data); 
-      fetchNewsSilently(ticker);
     } else {
       renderInlineAnalysisResult(data, cardElement);
     }
@@ -372,6 +387,7 @@ async function runAnalysis(ticker, name, price, targetType = 'main', cardElement
   }
 }
 
+// ... (renderAnalysisResult, renderInlineAnalysisResult, fetchNewsSilently, renderNewsList, computeHoldings, renderHoldingsSummary, renderHoldingsList, renderTransactionRow, setupTransactionForm 등 나머지 함수는 이전과 동일하므로 생략하지 않고 포함)
 function renderAnalysisResult(data) {
   $('#analysis-result').hidden = false;
   const badge = $('#recommendation-badge'); badge.textContent = data.recommendation || '판단 보류'; badge.className = 'recommendation-badge';
@@ -385,11 +401,11 @@ function renderAnalysisResult(data) {
   $('#price-flow-summary').textContent = data.price_flow_summary || '데이터가 부족합니다.';
   $('#volume-summary').textContent = data.volume_summary || '데이터가 부족합니다.';
   $('#news-summary').textContent = data.news_summary || '확인된 뉴스가 없습니다.';
-  $('#price-tip').textContent = data.price_tip || '참고용입니다.';
-  $('#volume-tip').textContent = data.volume_tip || '참고용입니다.';
+  
   $('#ai-fallback-note').hidden = !data.fallback;
   if (data.fallback && data.debug) console.warn('AI Fallback 발생 원인:', data.debug);
-  renderNewsList(data.news_items || []);
+  
+  renderNewsList(data.sources || []);
 }
 
 function renderInlineAnalysisResult(data, cardElement) {
@@ -414,28 +430,28 @@ function renderInlineAnalysisResult(data, cardElement) {
       <p><strong>가격 분석:</strong> ${data.price_flow_summary || '-'}</p>
       <p><strong>거래량 분석:</strong> ${data.volume_summary || '-'}</p>
       <p><strong>최근 뉴스:</strong> ${data.news_summary || '-'}</p>
-      <div class="tip-box" style="margin-top:8px; font-size:12px;"><strong>주식 TIP</strong>${data.price_tip || '참고용입니다.'}</div>
     </div>
     ${data.fallback ? `<p class="note-text" style="font-size:11px; margin-top:8px;">AI 일일 한도 초과로 기본 분석을 표시합니다.</p>` : ''}
   `;
 }
 
-async function fetchNewsSilently(ticker) {
-  try {
-    const res = await fetch(`/api/news?ticker=${encodeURIComponent(ticker)}`);
-    if (!res.ok) return; const data = await res.json();
-    if (Array.isArray(data.items) && data.items.length > 0) { renderNewsList(data.items); $('#news-delay-note').hidden = !data.delayed; }
-  } catch {}
-}
-
-function renderNewsList(items) {
+function renderNewsList(sources) {
   const list = $('#news-list'); list.innerHTML = '';
-  if (!Array.isArray(items) || items.length === 0) { const li = document.createElement('li'); li.className = 'note-text'; li.textContent = '표시할 뉴스/공시가 없습니다.'; list.appendChild(li); return; }
-  items.slice(0, 5).forEach((item) => {
+  if (!Array.isArray(sources) || sources.length === 0) { 
+    const li = document.createElement('li'); 
+    li.className = 'note-text'; 
+    li.textContent = '표시할 뉴스/공시가 없습니다.'; 
+    list.appendChild(li); 
+    return; 
+  }
+  sources.slice(0, 5).forEach((item) => {
     const li = document.createElement('li');
-    if (item.url) { const a = document.createElement('a'); a.className = 'news-title'; a.href = item.url; a.target = '_blank'; a.rel = 'noopener noreferrer'; a.textContent = item.title || '제목 없음'; li.appendChild(a); }
-    else { const span = document.createElement('span'); span.className = 'news-title'; span.textContent = item.title || '제목 없음'; li.appendChild(span); }
-    const meta = document.createElement('div'); meta.className = 'news-meta'; meta.textContent = `${item.source_name || '출처 미상'} · ${item.published_at ? formatDateTime(item.published_at) : '시각 미상'}`; li.appendChild(meta);
+    if (item.url) { 
+      const a = document.createElement('a'); a.className = 'news-title'; a.href = item.url; a.target = '_blank'; a.rel = 'noopener noreferrer'; a.textContent = item.title || '제목 없음'; li.appendChild(a); 
+    }
+    else { 
+      const span = document.createElement('span'); span.className = 'news-title'; span.textContent = item.title || '제목 없음'; li.appendChild(span); 
+    }
     list.appendChild(li);
   });
 }
