@@ -1,12 +1,13 @@
 // functions/api/news.js
+const MAX_URL_LENGTH = 2048;
+
 export async function onRequestGet(context) {
   const { request } = context;
   const url = new URL(request.url);
   const query = (url.searchParams.get('ticker') || '').trim();
 
-  if (!query) return jsonResponse({ error: '종목명을 입력해 주세요.' }, 400);
+  if (!query || query.length > 50) return jsonResponse({ error: '종목명이 유효하지 않습니다.' }, 400);
 
-  // 네이버 금융 뉴스 RSS (한국 주식 특화)
   const naverRssUrl = `https://finance.naver.com/news/news_search.naver?q=${encodeURIComponent(query)}&rss=1`;
 
   try {
@@ -16,7 +17,6 @@ export async function onRequestGet(context) {
         'Accept': 'application/rss+xml, application/xml, text/xml',
       },
     });
-
     if (!res.ok) {
       console.error('Naver News RSS Error:', res.status);
       return jsonResponse({ error: '뉴스를 가져오지 못했습니다.' }, 502);
@@ -24,57 +24,77 @@ export async function onRequestGet(context) {
 
     const xmlText = await res.text();
     let items = parseRssItems(xmlText);
+    const fetchedAt = new Date().toISOString();
 
-    // 최근 5일 이내 필터링
+    // ★ 개선 #6: 최근 5일 + 유효 발행 시각 확인 (없으면 제외)
     const fiveDaysAgo = new Date();
     fiveDaysAgo.setDate(fiveDaysAgo.getDate() - 5);
-    
-    let recentItems = items.filter(item => {
-      if (!item.published_at) return true; // 날짜 없으면 포함
-      return new Date(item.published_at) >= fiveDaysAgo;
-    });
 
-    // 최대 5개 반환
-    recentItems = recentItems.slice(0, 5);
+    items = items
+      .filter(item => {
+        if (typeof item.title !== 'string' || item.title.length === 0 || item.title.length > 500) return false;
+        if (typeof item.url !== 'string' || item.url.length > MAX_URL_LENGTH || !/^https?:\/\//i.test(item.url)) return false;
+        if (!item.published_at) return false;
+        const t = new Date(item.published_at);
+        if (isNaN(t.getTime())) return false;
+        if (t < fiveDaysAgo) return false;
+        return true;
+      })
+      .map(item => ({
+        title: item.title.slice(0, 500),
+        url: item.url,
+        published_at: item.published_at,
+        source_name: item.source_name || '네이버 금융',
+        fetched_at: fetchedAt,
+      }))
+      .slice(0, 5);
 
-    return jsonResponse({ items: recentItems, delayed: false });
+    return jsonResponse({ items, delayed: false });
   } catch (err) {
     console.error('news.js Error:', err.message);
     return jsonResponse({ error: '뉴스를 가져오는 중 오류가 발생했습니다.' }, 502);
   }
 }
 
+// ★ 개선 #6: URL 중복 제거 + 발행 시각 없는 기사는 스킵
 function parseRssItems(xml) {
   const items = [];
+  const seenUrls = new Set();
   const itemRegex = /<item>([\s\S]*?)<\/item>/g;
   let match;
-
   while ((match = itemRegex.exec(xml)) !== null) {
-    const itemContent = match[1];
-    const titleMatch = itemContent.match(/<title>(.*?)<\/title>/);
-    const linkMatch = itemContent.match(/<link>(.*?)<\/link>/);
-    const pubDateMatch = itemContent.match(/<pubDate>(.*?)<\/pubDate>/);
-    const sourceMatch = itemContent.match(/<source[^>]*>(.*?)<\/source>/);
+    const content = match[1];
+    const titleMatch = content.match(/<title>(.*?)<\/title>/);
+    const linkMatch = content.match(/<link>(.*?)<\/link>/);
+    const pubDateMatch = content.match(/<pubDate>(.*?)<\/pubDate>/);
+    const sourceMatch = content.match(/<source[^>]*>(.*?)<\/source>/);
 
-    if (titleMatch && linkMatch) {
-      items.push({
-        title: decodeHtmlEntities(titleMatch[1].replace(/<!\[CDATA\[|\]\]>/g, '')),
-        url: linkMatch[1].replace(/<!\[CDATA\[|\]\]>/g, ''),
-        published_at: pubDateMatch ? new Date(pubDateMatch[1]).toISOString() : null,
-        source_name: sourceMatch ? decodeHtmlEntities(sourceMatch[1]) : '네이버 금융',
-      });
-    }
+    if (!titleMatch || !linkMatch) continue;
+
+    const url = linkMatch[1].replace(/<!\[CDATA\[|\]\]>/g, '').trim();
+    if (!url || !/^https?:\/\//i.test(url) || url.length > MAX_URL_LENGTH) continue;
+
+    const urlKey = url.toLowerCase();
+    if (seenUrls.has(urlKey)) continue;
+    seenUrls.add(urlKey);
+
+    // ★ 발행 시각 없으면 제외
+    if (!pubDateMatch) continue;
+    const pubDate = new Date(pubDateMatch[1]);
+    if (isNaN(pubDate.getTime())) continue;
+
+    items.push({
+      title: decodeHtmlEntities(titleMatch[1].replace(/<!\[CDATA\[|\]\]>/g, '')),
+      url,
+      published_at: pubDate.toISOString(),
+      source_name: sourceMatch ? decodeHtmlEntities(sourceMatch[1]) : '네이버 금융',
+    });
   }
   return items;
 }
 
 function decodeHtmlEntities(str) {
-  return str
-    .replace(/&amp;/g, '&')
-    .replace(/&lt;/g, '<')
-    .replace(/&gt;/g, '>')
-    .replace(/&quot;/g, '"')
-    .replace(/&#39;/g, "'");
+  return str.replace(/&amp;/g, '&').replace(/&lt;/g, '<').replace(/&gt;/g, '>').replace(/&quot;/g, '"').replace(/&#39;/g, "'");
 }
 
 function jsonResponse(body, status = 200) {

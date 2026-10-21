@@ -9,7 +9,7 @@
   <meta name="theme-color" content="#f3f4f6" />
   <title>주식 초보 AI분석기</title>
   <link rel="manifest" href="/public/manifest.webmanifest" />
-  <link rel="stylesheet" href="/assets/styles.css?v=1.0.8" />
+  <link rel="stylesheet" href="/assets/styles.css?v=1.0.9" />
 </head>
 <body>
   <main id="screen-login" class="login-screen">
@@ -68,7 +68,7 @@
         </div>
         <div class="quote-meta">
           <span id="quote-as-of">시세 시각: -</span>
-          <!-- ★ 출처 제거 -->
+          <!-- ★ 출처 제거 (개선 명세서) -->
         </div>
         <button id="analyze-btn" class="btn btn--primary btn--block" type="button">AI 분석하기</button>
       </section>
@@ -79,24 +79,24 @@
           <div id="analysis-timestamp" class="analysis-timestamp">분석 시각: -</div>
         </div>
         <p id="overall-summary" class="overall-summary" style="font-size:14px; margin-bottom:14px;">-</p>
-        
+
         <div class="analysis-block">
           <h4 class="analysis-block-title">가격 분석</h4>
           <p id="price-flow-summary" class="body-text">-</p>
         </div>
-        
+
         <div class="analysis-block">
           <h4 class="analysis-block-title">거래량 분석</h4>
           <p id="volume-summary" class="body-text">-</p>
         </div>
-        
+
         <div class="analysis-block">
           <h4 class="analysis-block-title">뉴스 분석</h4>
           <p id="news-analysis-summary" class="body-text">-</p>
         </div>
 
         <p id="ai-fallback-note" class="note-text" style="font-size:11px; margin-top:8px;" hidden>AI 일일 한도 초과로 기본 분석을 표시합니다.</p>
-        <!-- ★ risk-note 제거 -->
+        <!-- ★ risk-note 제거 (개선 명세서) -->
       </section>
     </main>
 
@@ -158,6 +158,6 @@
   </div>
 
   <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
-  <script src="/assets/app.js?v=1.0.8" type="module"></script>
+  <script src="/assets/app.js?v=1.0.9" type="module"></script>
 </body>
 </html>
