@@ -313,25 +313,40 @@ async function runAnalysis(ticker, name, price, targetType = 'main', cardElement
       return;
     }
 
-    // ★ 1. 뉴스 및 과거 데이터(history) 병렬 로드
+    // ★ 1. 내 보유 정보 계산 (수량, 평균단가, 수익률)
+    let holdingsData = null;
+    const txForTicker = transactions.filter(t => t.ticker === ticker);
+    if (txForTicker.length > 0) {
+      const result = computeHoldings(txForTicker).currentHoldings[0];
+      if (result && result.qty > 0) {
+        holdingsData = {
+          quantity: result.qty,
+          avg_cost: result.avgCost,
+          return_rate: ((price - result.avgCost) / result.avgCost) * 100,
+          total_cost: result.totalCost
+        };
+      }
+    }
+
+    // ★ 2. 뉴스 및 과거 데이터 병렬 로드
     let newsItems = [];
     let historyData = {};
-    
     try {
       const [newsRes, histRes] = await Promise.all([
         fetch(`/api/news?ticker=${encodeURIComponent(name)}`),
         fetch(`/api/history?ticker=${encodeURIComponent(ticker)}`)
       ]);
-      
       if (newsRes.ok) { const nd = await newsRes.json(); newsItems = nd.items || []; }
       if (histRes.ok) { historyData = await histRes.json(); }
     } catch (fetchErr) {
       console.warn('뉴스/과거데이터 로드 실패:', fetchErr);
     }
 
-    // ★ 2. 4가지 지표를 포함한 Payload 구성
+    // ★ 3. AI에게 전달할 Payload 구성
     const payload = {
-      ticker: ticker, stock_name: name || ticker, analysis_type: 'buy',
+      ticker: ticker, 
+      stock_name: name || ticker, 
+      analysis_type: holdingsData ? 'sell' : 'buy', // 보유 중이면 sell 관점
       price_data: { 
         current_price: price, 
         quote_as_of: new Date().toISOString(), 
@@ -344,6 +359,7 @@ async function runAnalysis(ticker, name, price, targetType = 'main', cardElement
       },
       volume_data: null, 
       news_items: newsItems,
+      holdings_data: holdingsData // ★ 계산된 보유 정보 포함!
     };
 
     let res = await fetch('/api/analyze', { 
@@ -387,7 +403,6 @@ async function runAnalysis(ticker, name, price, targetType = 'main', cardElement
   }
 }
 
-// ... (renderAnalysisResult, renderInlineAnalysisResult, fetchNewsSilently, renderNewsList, computeHoldings, renderHoldingsSummary, renderHoldingsList, renderTransactionRow, setupTransactionForm 등 나머지 함수는 이전과 동일하므로 생략하지 않고 포함)
 function renderAnalysisResult(data) {
   $('#analysis-result').hidden = false;
   const badge = $('#recommendation-badge'); badge.textContent = data.recommendation || '판단 보류'; badge.className = 'recommendation-badge';
