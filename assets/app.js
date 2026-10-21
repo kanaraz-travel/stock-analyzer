@@ -500,6 +500,7 @@ async function runAnalysis(ticker, name, price, targetType = 'main', cardElement
       const detail = Array.isArray(data.details) ? `\n${data.details.join('\n')}` : '';
       throw new Error((data.error || '분석 실패') + detail);
     }
+    data.analyzed_at = new Date().toISOString(); // ★ 분석 시각을 캐시에 함께 저장
     analysisCache.set(ticker, data);
     if (targetType === 'main') { renderAnalysisResult(data, currentScreen === 'analysis'); }
     else { renderInlineAnalysisResult(data, cardElement, true); }
@@ -532,7 +533,7 @@ function renderAnalysisResult(data, scrollTo = true) {
   else if (rec.includes('기다리기') || rec.includes('보유')) badge.classList.add('recommendation-badge--hold');
   else badge.classList.add('recommendation-badge--pending');
 
-  const tsStr = formatDateTime(new Date().toISOString());
+  const tsStr = formatDateTime(data.analyzed_at || new Date().toISOString()); // ★ 캐시된 결과는 실제 분석 시각 표시
   const qualityLabel = data.data_quality?.label ? ` · 데이터 ${data.data_quality.label}` : '';
   const verifiedLabel = data.data_quality && data.data_quality.quote_time_verified === false
     ? ' · 시세 기준시각 미확인' : '';
@@ -564,7 +565,7 @@ function renderInlineAnalysisResult(data, cardElement, scrollTo = true) {
 
   const headDiv = document.createElement('div'); headDiv.className = 'analysis-head';
   const badge = document.createElement('div'); badge.className = `recommendation-badge ${badgeClass}`; badge.textContent = rec;
-  const ts = document.createElement('div'); ts.className = 'analysis-timestamp'; ts.textContent = formatDateTime(new Date().toISOString());
+  const ts = document.createElement('div'); ts.className = 'analysis-timestamp'; ts.textContent = formatDateTime(data.analyzed_at || new Date().toISOString());
   headDiv.appendChild(badge); headDiv.appendChild(ts); container.appendChild(headDiv);
 
   const summary = document.createElement('p');
@@ -823,6 +824,13 @@ async function saveTransaction() {
     const res = await fetch(`/api/quote?ticker=${encodeURIComponent(nameOnly)}`);
     const qData = await res.json();
     if (!res.ok) throw new Error(qData.error || '종목을 찾을 수 없습니다.');
+
+    // ★ 수정: 입력값과 확정된 종목명이 다르면 저장 전에 확인
+    const normIn = nameOnly.replace(/\s+/g, '').toLowerCase();
+    const normResolved = String(qData.stock_name || '').replace(/\s+/g, '').toLowerCase();
+    if (normIn !== normResolved && !confirm(`'${nameOnly}' → ${qData.stock_name}(${qData.ticker})로 저장할까요?`)) {
+      throw new Error('거래 저장을 취소했습니다.');
+    }
 
     // ★ 개선 #1: 거래일 기준 canSell
     if (type === 'SELL') {

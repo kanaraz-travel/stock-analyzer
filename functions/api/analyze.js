@@ -88,6 +88,10 @@ export async function onRequestPost(context) {
   let fallbackReason = null;
   let newsAgentStatus = 'unknown';
 
+  const validRecs = analysis_type === 'sell'
+    ? ['매도 추천', '부분 매도 고려', '보유 유지', '추가 매수 고려', '매수 추천', '판단 보류']
+    : ['매수 추천', '매수 고려', '기다리기', '매도 고려', '매도 추천', '판단 보류'];
+
   try {
     if (!env.AI) throw new Error('AI_NOT_CONFIGURED');
 
@@ -97,8 +101,12 @@ export async function onRequestPost(context) {
         .from('stock_analysis_runs')
         .select('recommendation, analyzed_at')
         .eq('user_id', userId).eq('ticker', ticker)
+        .eq('market_facts->>analysis_type', analysis_type || 'buy') // ★ 매수/매도 분석 어휘가 섞이지 않게
+        .neq('recommendation', '판단 보류')                          // ★ 실패/보류 결과가 다음 판단을 붙잡지 않게
         .order('analyzed_at', { ascending: false }).limit(1);
-      if (prevRuns && prevRuns.length > 0) previousRec = prevRuns[0].recommendation;
+      if (prevRuns && prevRuns.length > 0 && validRecs.includes(prevRuns[0].recommendation)) {
+        previousRec = prevRuns[0].recommendation;
+      }
     } catch (dbErr) { console.warn('[analyze] prev runs query failed:', dbErr.message); }
 
     const analysisResult = await runAnalysisAgent(env, {
@@ -134,7 +142,7 @@ export async function onRequestPost(context) {
     }
 
     // ★ 데이터 지연 / 시세 대체 → 강한 추천 하향
-    if (dataQuality.status === 'STALE') {
+    if (dataQuality.status === 'STALE' && !isStale) {
       if (finalRecommendation === '매수 추천') { finalRecommendation = '매수 고려'; finalSummary = `[데이터 지연으로 강도 하향] ${finalSummary}`; }
       else if (finalRecommendation === '매도 추천') { finalRecommendation = '매도 고려'; finalSummary = `[데이터 지연으로 강도 하향] ${finalSummary}`; }
     }
@@ -156,17 +164,22 @@ export async function onRequestPost(context) {
       news_analysis: newsAnalysisText,
     };
 
-    const validRecs = analysis_type === 'sell'
-      ? ['매도 추천', '부분 매도 고려', '보유 유지', '추가 매수 고려', '매수 추천', '판단 보류']
-      : ['매수 추천', '매수 고려', '기다리기', '매도 고려', '매도 추천', '판단 보류'];
     if (!finalData.recommendation) throw new Error('RECOMMENDATION_MISSING');
     const recClean = String(finalData.recommendation).replace(/\s+/g, '');
     const isValid = validRecs.some(r => r.replace(/\s+/g, '') === recClean || r.replace(/\s+/g, '').includes(recClean));
     if (!isValid) {
-      if (recClean.includes('매수')) finalData.recommendation = '매수 고려';
-      else if (recClean.includes('매도')) finalData.recommendation = '매도 고려';
-      else if (recClean.includes('보유') || recClean.includes('기다리')) finalData.recommendation = '기다리기';
-      else throw new Error('RECOMMENDATION_INVALID');
+      // ★ 수정: 분석 유형에 맞는 어휘로만 보정
+      if (analysis_type === 'sell') {
+        if (recClean.includes('매도')) finalData.recommendation = '부분 매도 고려';
+        else if (recClean.includes('매수')) finalData.recommendation = '추가 매수 고려';
+        else if (recClean.includes('보유') || recClean.includes('기다리')) finalData.recommendation = '보유 유지';
+        else throw new Error('RECOMMENDATION_INVALID');
+      } else {
+        if (recClean.includes('매수')) finalData.recommendation = '매수 고려';
+        else if (recClean.includes('매도')) finalData.recommendation = '매도 고려';
+        else if (recClean.includes('보유') || recClean.includes('기다리')) finalData.recommendation = '기다리기';
+        else throw new Error('RECOMMENDATION_INVALID');
+      }
     }
   } catch (e) {
     // ★ 상세 오류는 서버 로그에만
@@ -222,6 +235,11 @@ function computeDataQuality(price_data) {
   const marketStatus = price_data?.market_status || '';
   const serverTimeStr = price_data?.server_time || null;
   const quoteTimeStr = price_data?.quote_as_of || null;
+
+  // ★ 수정: 시세 재조회 실패(이전 가격 사용) → UNKNOWN(판단 보류)로 빠지지 않고 STALE 경로로
+  if (price_data?.price_source === 'STALE') {
+    return { status: 'STALE', label: '시세 재조회 실패 (이전 가격 사용)', quote_time_verified: false };
+  }
 
   if (quoteTimeStr) {
     const qt = new Date(quoteTimeStr);
@@ -324,11 +342,17 @@ async function runAnalysisAgent(env, payload) {
   let volumeStr = '데이터 없음';
   if (vd) {
     const cur = vd.current_volume, avg = vd.avg_volume_20;
-    if (cur != null && avg != null && avg > 0) volumeStr = `평균대비 ${(cur / avg).toFixed(2)}배`;
+    const intraday = String(pd.market_status || '').includes('정규장');
+    if (cur != null && avg != null && avg > 0) {
+      // ★ 수정: 장중 누적 거래량은 하루치 평균과 직접 비교하지 않음
+      volumeStr = intraday
+        ? `장중 누적 ${cur.toLocaleString()}주 (직전 20거래일 평균 ${avg.toLocaleString()}주, 장중이라 하루 거래량과 직접 비교 불가)`
+        : `평균대비 ${(cur / avg).toFixed(2)}배`;
+    }
     else if (cur != null) volumeStr = `오늘 ${cur.toLocaleString()}주 (평균 미확보)`;
     else if (avg != null) volumeStr = `20일 평균 ${avg.toLocaleString()}주 (오늘 미확보)`;
   }
-  const systemPrompt = `당신은 ${role}입니다. 20영업일 데이터를 기반으로 분석하여 반드시 JSON으로 응답하세요. '~함', '~임' 체를 사용하세요.`;
+  const systemPrompt = `당신은 ${role}입니다. 20영업일 데이터를 기반으로 분석하여 반드시 JSON으로 응답하세요. '~함', '~임' 체를 사용하세요. 장중 누적 거래량은 하루 평균과 직접 비교해 많다/적다고 단정하지 마세요.`;
   const userPrompt = `[데이터] ${payload.stock_name}(${payload.ticker}) 현재가:${pd.current_price}원 ${holdingsContext}
 [지표] 1일등락:${changeRateStr} 1개월:${return1MStr} 20일선괴리:${ma20DispStr} 52주위치:${w52PosStr} 거래량:${volumeStr}
 

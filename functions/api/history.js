@@ -12,11 +12,10 @@ export async function onRequestGet(context) {
   try {
     const accessToken = await getKisAccessToken(env, baseUrl);
 
+    // ★ 수정: KST 기준 날짜, 긴 연휴를 감안해 조회 범위 60일
     const now = new Date();
-    const endDate = now.toISOString().slice(0, 10).replace(/-/g, '');
-    const startDateObj = new Date(now);
-    startDateObj.setDate(startDateObj.getDate() - 40);
-    const startDate = startDateObj.toISOString().slice(0, 10).replace(/-/g, '');
+    const endDate = toKstDateStr(now);
+    const startDate = toKstDateStr(new Date(now.getTime() - 60 * 24 * 60 * 60 * 1000));
 
     const query = new URLSearchParams({
       FID_COND_MRKT_DIV_CODE: 'J',
@@ -48,7 +47,10 @@ export async function onRequestGet(context) {
       return jsonResponse({ error: `과거 시세 조회 실패: ${data.msg1}` }, 502);
     }
 
-    const output2 = data.output2 || [];
+    // ★ 수정: 빈 행/0원 행 제거 + 날짜 내림차순 정렬 보장
+    const output2 = (data.output2 || [])
+      .filter((r) => r && r.stck_bsop_date && Number(r.stck_clpr) > 0)
+      .sort((a, b) => String(b.stck_bsop_date).localeCompare(String(a.stck_bsop_date)));
     if (output2.length < 20) {
       return jsonResponse({ 
         error: '과거 데이터가 부족합니다.', 
@@ -66,18 +68,19 @@ export async function onRequestGet(context) {
     const return1M = ((currentPrice - price20DaysAgo) / price20DaysAgo) * 100;
 
     let sum20Price = 0;
-    let sum20Volume = 0;
-    let validVolumeDays = 0;
-    for (let i = 0; i < 20; i++) {
-      sum20Price += Number(output2[i].stck_clpr);
-      const v = Number(output2[i].acml_vol || 0);
-      if (v > 0) {
-        sum20Volume += v;
-        validVolumeDays++;
-      }
-    }
+    for (let i = 0; i < 20; i++) sum20Price += Number(output2[i].stck_clpr);
     const ma20 = sum20Price / 20;
     const ma20Disparity = ((currentPrice - ma20) / ma20) * 100;
+
+    // ★ 수정: 장중에는 오늘 행의 거래량이 '일부'이므로 20일 평균에서 제외 (직전 완결 거래일 20개 기준)
+    const todayPartial = output2[0].stck_bsop_date === toKstDateStr(now) && isRegularSessionKst(now);
+    const volRows = (todayPartial ? output2.slice(1) : output2).slice(0, 20);
+    let sum20Volume = 0;
+    let validVolumeDays = 0;
+    for (const r of volRows) {
+      const v = Number(r.acml_vol || 0);
+      if (v > 0) { sum20Volume += v; validVolumeDays++; }
+    }
     const avgVolume20 = validVolumeDays > 0 ? Math.round(sum20Volume / validVolumeDays) : null;
 
     return jsonResponse({
@@ -88,11 +91,23 @@ export async function onRequestGet(context) {
       current_volume: currentVolume > 0 ? currentVolume : null,
       avg_volume_20: avgVolume20,
       valid_volume_days: validVolumeDays,
+      today_partial: todayPartial,
     });
   } catch (err) {
     console.error('history.js Error:', err.message);
     return jsonResponse({ error: '과거 시세를 가져오는 중 오류가 발생했습니다.' }, 502);
   }
+}
+
+function toKstDateStr(d) {
+  return new Date(d.getTime() + 9 * 60 * 60 * 1000).toISOString().slice(0, 10).replace(/-/g, '');
+}
+
+function isRegularSessionKst(d) {
+  const k = new Date(d.getTime() + 9 * 60 * 60 * 1000);
+  const day = k.getUTCDay();
+  const t = k.getUTCHours() * 100 + k.getUTCMinutes();
+  return day !== 0 && day !== 6 && t >= 900 && t < 1530;
 }
 
 let tokenCache = { accessToken: null, expiresAt: 0 };

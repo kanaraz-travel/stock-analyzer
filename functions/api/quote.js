@@ -1,8 +1,11 @@
 // functions/api/quote.js
 import { unzipSync } from 'fflate';
 
-let masterCache = { loaded: false, map: new Map(), codeMap: new Map(), expiresAt: 0 };
+let masterCache = { loaded: false, map: new Map(), codeMap: new Map(), expiresAt: 0, retryAfter: 0 };
+let masterPromise = null;
 const CACHE_TTL = 24 * 60 * 60 * 1000;
+const PARTIAL_RETRY_TTL = 5 * 60 * 1000; // 일부 시장만 로드됐을 때 재시도 간격
+const FAIL_RETRY_MS = 30 * 1000;           // 전부 실패했을 때 재시도 간격
 let tokenCache = { accessToken: null, expiresAt: 0 };
 let tokenPromise = null;
 
@@ -25,9 +28,18 @@ export async function onRequestGet(context) {
 
     if (!isDirectCode) {
       await ensureMasterLoaded();
-      const foundCode = findCodeByName(query);
-      if (!foundCode) return jsonResponse({ error: `'${query}'에 해당하는 종목을 찾을 수 없습니다.` }, 404);
-      ticker = foundCode;
+      if (masterCache.map.size === 0) {
+        return jsonResponse({ error: '종목 목록을 불러오지 못했습니다. 잠시 후 다시 시도해 주세요.' }, 503);
+      }
+      const found = findCodeByName(query);
+      if (!found) return jsonResponse({ error: `'${query}'에 해당하는 종목을 찾을 수 없습니다.` }, 404);
+      if (found.candidates) {
+        return jsonResponse({
+          error: `'${query}'에 해당하는 종목이 여러 개입니다: ${found.candidates.join(', ')} … 정확한 종목명을 입력해 주세요.`,
+          candidates: found.candidates,
+        }, 409);
+      }
+      ticker = found.code;
       stock_name = masterCache.codeMap.get(ticker) || query;
     }
 
@@ -108,32 +120,58 @@ export async function onRequestGet(context) {
 }
 
 async function ensureMasterLoaded() {
-  if (masterCache.loaded && Date.now() < masterCache.expiresAt) return;
+  const now = Date.now();
+  if (masterCache.loaded && now < masterCache.expiresAt) return;
+  if (now < masterCache.retryAfter) return; // 방금 실패했으면 잠깐 쉬었다가 재시도
+  if (!masterPromise) masterPromise = loadMaster().finally(() => { masterPromise = null; });
+  await masterPromise;
+}
+
+// ★ 수정: 임시 Map에 먼저 적재 → 성공했을 때만 교체. 실패 시 기존 캐시를 유지하고 짧게 재시도.
+async function loadMaster() {
   const markets = [
     { key: 'kospi', url: 'https://new.real.download.dws.co.kr/common/master/kospi_code.mst.zip', tailLen: 228 },
     { key: 'kosdaq', url: 'https://new.real.download.dws.co.kr/common/master/kosdaq_code.mst.zip', tailLen: 222 },
   ];
-  masterCache.map.clear(); masterCache.codeMap.clear();
+  const nextMap = new Map();
+  const nextCodeMap = new Map();
+  let failed = false;
+
   for (const market of markets) {
     try {
       const res = await fetch(market.url);
-      if (!res.ok) continue;
+      if (!res.ok) { console.error('Master file HTTP error:', market.key, res.status); failed = true; continue; }
       const buf = await res.arrayBuffer();
       const unzipped = unzipSync(new Uint8Array(buf));
+      let marketCount = 0;
       for (const filename in unzipped) {
         const content = new TextDecoder('euc-kr').decode(unzipped[filename]);
-        const pipeResult = parsePipeSeparated(content);
-        if (pipeResult > 0) { console.log(`[마스터] ${market.key}: 파이프 ${pipeResult}건`); continue; }
-        const fixedResult = parseFixedWidth(content, market.tailLen);
+        const pipeResult = parsePipeSeparated(content, nextMap, nextCodeMap);
+        if (pipeResult > 0) { console.log(`[마스터] ${market.key}: 파이프 ${pipeResult}건`); marketCount += pipeResult; continue; }
+        const fixedResult = parseFixedWidth(content, market.tailLen, nextMap, nextCodeMap);
         console.log(`[마스터] ${market.key}: 고정폭 ${fixedResult}건`);
+        marketCount += fixedResult;
       }
-    } catch (e) { console.error('Master file load error:', market.key, e.message); }
+      if (marketCount === 0) failed = true;
+    } catch (e) { console.error('Master file load error:', market.key, e.message); failed = true; }
   }
-  masterCache.loaded = true;
-  masterCache.expiresAt = Date.now() + CACHE_TTL;
+
+  const now = Date.now();
+  if (nextMap.size > 0 && (!failed || nextMap.size >= masterCache.map.size)) {
+    masterCache.map = nextMap;
+    masterCache.codeMap = nextCodeMap;
+  }
+  masterCache.loaded = masterCache.map.size > 0;
+  if (!masterCache.loaded) {
+    masterCache.retryAfter = now + FAIL_RETRY_MS;   // 전부 실패: 24시간 캐시하지 않음
+    masterCache.expiresAt = 0;
+  } else {
+    masterCache.retryAfter = 0;
+    masterCache.expiresAt = now + (failed ? PARTIAL_RETRY_TTL : CACHE_TTL);
+  }
 }
 
-function parsePipeSeparated(text) {
+function parsePipeSeparated(text, map, codeMap) {
   let count = 0;
   for (const line of text.split('\n')) {
     if (!line.trim()) continue;
@@ -143,14 +181,14 @@ function parsePipeSeparated(text) {
     const name = parts[2].trim();
     if (!/^[0-9A-Z]{6}$/i.test(code)) continue;
     if (!name || name.length > 50) continue;
-    masterCache.map.set(name, code);
-    masterCache.codeMap.set(code, name);
+    map.set(name, code);
+    codeMap.set(code, name);
     count++;
   }
   return count;
 }
 
-function parseFixedWidth(text, tailLen) {
+function parseFixedWidth(text, tailLen, map, codeMap) {
   let count = 0;
   for (const line of text.split('\n')) {
     if (!line.trim()) continue;
@@ -162,23 +200,29 @@ function parseFixedWidth(text, tailLen) {
     if (!name || name.length > 50) continue;
     name = name.replace(/[^\uAC00-\uD7A3a-zA-Z0-9\s().&-]/g, '').trim();
     if (!name) continue;
-    masterCache.map.set(name, code);
-    masterCache.codeMap.set(code, name);
+    map.set(name, code);
+    codeMap.set(code, name);
     count++;
   }
   return count;
 }
 
+// ★ 수정: 정확히 일치 → 그대로 / 부분일치 1건 → 그대로 / 여러 건 → 후보 목록 반환(임의 선택 금지)
+//   (기존의 "검색어가 종목명을 포함" 역방향 매칭은 엉뚱한 종목이 잡혀서 제거)
 function findCodeByName(query) {
-  const normalized = query.replace(/\s+/g, '').toLowerCase();
+  const norm = (s) => s.replace(/\s+/g, '').toLowerCase();
+  const q = norm(query);
+  if (!q) return null;
+  const partial = [];
   for (const [name, code] of masterCache.map.entries()) {
-    if (name.replace(/\s+/g, '').toLowerCase() === normalized) return code;
+    const n = norm(name);
+    if (n === q) return { code };
+    if (n.includes(q)) partial.push({ name, code });
   }
-  for (const [name, code] of masterCache.map.entries()) {
-    if (name.replace(/\s+/g, '').toLowerCase().includes(normalized)) return code;
-  }
-  for (const [name, code] of masterCache.map.entries()) {
-    if (normalized.includes(name.replace(/\s+/g, '').toLowerCase())) return code;
+  if (partial.length === 1) return { code: partial[0].code };
+  if (partial.length > 1) {
+    partial.sort((a, b) => a.name.length - b.name.length);
+    return { candidates: partial.slice(0, 5).map((p) => `${p.name}(${p.code})`) };
   }
   return null;
 }
