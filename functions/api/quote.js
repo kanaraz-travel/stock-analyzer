@@ -94,42 +94,83 @@ export async function onRequestGet(context) {
   }
 }
 
+// ------------------------------------------------------------
+// 마스터 파일 로드: KOSPI(228자), KOSDAQ(222자) 구분 파싱
+// ------------------------------------------------------------
 async function ensureMasterLoaded() {
   if (masterCache.loaded && Date.now() < masterCache.expiresAt) return;
-  const urls = ['https://new.real.download.dws.co.kr/common/master/kospi_code.mst.zip', 'https://new.real.download.dws.co.kr/common/master/kosdaq_code.mst.zip'];
+  
+  const markets = [
+    { key: 'kospi', url: 'https://new.real.download.dws.co.kr/common/master/kospi_code.mst.zip', tailLen: 228 },
+    { key: 'kosdaq', url: 'https://new.real.download.dws.co.kr/common/master/kosdaq_code.mst.zip', tailLen: 222 },
+  ];
+  
   masterCache.map.clear(); masterCache.codeMap.clear();
-  for (const url of urls) {
+  
+  for (const market of markets) {
     try {
-      const res = await fetch(url); if (!res.ok) continue;
-      const buf = await res.arrayBuffer(); const unzipped = unzipSync(new Uint8Array(buf));
-      for (const filename in unzipped) { parseMasterFile(new TextDecoder('euc-kr').decode(unzipped[filename])); }
-    } catch (e) { console.error('Master file load error:', e.message); }
+      const res = await fetch(market.url);
+      if (!res.ok) continue;
+      const buf = await res.arrayBuffer();
+      const unzipped = unzipSync(new Uint8Array(buf));
+      
+      for (const filename in unzipped) {
+        const content = new TextDecoder('euc-kr').decode(unzipped[filename]);
+        parseMasterFile(content, market.tailLen);
+      }
+    } catch (e) { console.error('Master file load error:', market.key, e.message); }
   }
-  masterCache.loaded = true; masterCache.expiresAt = Date.now() + CACHE_TTL;
+  
+  masterCache.loaded = true;
+  masterCache.expiresAt = Date.now() + CACHE_TTL;
 }
 
-function parseMasterFile(text) {
+// ------------------------------------------------------------
+// 시장별 고정폭을 반영한 파싱 (핵심 수정)
+// - KOSPI: 뒤쪽 228자 고정폭
+// - KOSDAQ: 뒤쪽 222자 고정폭
+// - 앞쪽 가변 구간: [0:9] 단축코드, [9:21] 표준코드, [21:] 한글 종목명
+// ------------------------------------------------------------
+function parseMasterFile(text, tailLen) {
   const lines = text.split('\n');
   for (const line of lines) {
     if (!line.trim()) continue;
-    const code = line.substring(0, 6).trim();
+    if (line.length <= tailLen) continue;
+
+    // 뒤쪽 고정폭(tailLen)을 제거한 앞쪽 가변 구간
+    const head = line.substring(0, line.length - tailLen);
+    
+    // 단축코드: [0:9]에서 공백 제거
+    const code = head.substring(0, 9).trim();
     if (!/^\d{6}$/.test(code)) continue;
-    let name = '';
-    for (let start = 9; start < 30; start++) {
-      const candidate = line.substring(start, start + 20).trim();
-      if (/[가-힣]/.test(candidate)) { name = candidate.split(/\s{2,}/)[0].trim(); break; }
-    }
-    if (name) { masterCache.map.set(name, code); masterCache.codeMap.set(code, name); }
+    
+    // 종목명: [21:] 이후 (표준코드 [9:21] 이후)
+    let name = head.substring(21).trim();
+    if (!name) continue;
+    
+    // 종목명 정리 (혹시 포함된 이상 문자 제거)
+    name = name.replace(/[^\uAC00-\uD7A3a-zA-Z0-9\s().&-]/g, '').trim();
+    if (!name) continue;
+
+    masterCache.map.set(name, code);
+    masterCache.codeMap.set(code, name);
   }
 }
 
 function findCodeByName(query) {
   const normalized = query.replace(/\s+/g, '').toLowerCase();
+  
+  // 1) 완전 일치
   for (const [name, code] of masterCache.map.entries()) {
     if (name.replace(/\s+/g, '').toLowerCase() === normalized) return code;
   }
+  // 2) 부분 일치 (쿼리가 종목명에 포함)
   for (const [name, code] of masterCache.map.entries()) {
     if (name.replace(/\s+/g, '').toLowerCase().includes(normalized)) return code;
+  }
+  // 3) 종목명이 쿼리에 포함 (예: "삼성전자우" 검색 시 "삼성전자"로 매칭)
+  for (const [name, code] of masterCache.map.entries()) {
+    if (normalized.includes(name.replace(/\s+/g, '').toLowerCase())) return code;
   }
   return null;
 }

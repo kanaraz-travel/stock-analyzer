@@ -1,7 +1,7 @@
 // functions/api/analyze.js
 import { createClient } from '@supabase/supabase-js';
 
-const RULESET_VERSION = 'RULESET_AI_V13_NEWS_SMART';
+const RULESET_VERSION = 'RULESET_AI_V14_NEWS_FIXED';
 
 export async function onRequestPost(context) {
   const { request, env } = context;
@@ -9,7 +9,10 @@ export async function onRequestPost(context) {
   const token = authHeader.replace('Bearer ', '');
   if (!token) return jsonResponse({ error: '인증이 필요합니다.' }, 401);
 
-  const supabase = createClient(env.SUPABASE_URL, env.SUPABASE_ANON_KEY, { global: { headers: { Authorization: `Bearer ${token}` } } });
+  const supabase = createClient(env.SUPABASE_URL, env.SUPABASE_ANON_KEY, {
+    global: { headers: { Authorization: `Bearer ${token}` } },
+  });
+
   const { data: userData, error: userError } = await supabase.auth.getUser();
   if (userError || !userData?.user) return jsonResponse({ error: '인증이 필요합니다.' }, 401);
   const userId = userData.user.id;
@@ -22,7 +25,10 @@ export async function onRequestPost(context) {
 
   const dataSufficient = price_data && price_data.current_price != null;
   if (!dataSufficient) {
-    return jsonResponse({ recommendation: '판단 보류', overall_summary: '데이터 부족', price_flow_summary: '-', volume_summary: '-', news_analysis: '-', fallback: true });
+    return jsonResponse({
+      recommendation: '판단 보류', overall_summary: '데이터가 부족하여 판단을 보류함.',
+      price_flow_summary: '-', volume_summary: '-', news_analysis: '-', fallback: true,
+    });
   }
 
   const scoreResult = computeScore(price_data, volume_data, news_items, analysis_type);
@@ -33,9 +39,20 @@ export async function onRequestPost(context) {
   try {
     if (!env.AI) throw new Error('Workers AI binding(env.AI)이 설정되지 않았습니다.');
 
-    const analysisResult = await runAnalysisAgent(env, { ticker, stock_name, price_data, volume_data, analysis_type, holdings_data });
-    const newsAnalysisResult = await runNewsAgent(env, { ticker, stock_name, news_items });
-    const judgeResult = await runJudgeAgent(env, { ticker, stock_name, analysis_result: analysisResult, news_analysis_result: newsAnalysisResult, analysis_type, holdings_data });
+    // 1. 가격/거래량 분석 에이전트
+    const analysisResult = await runAnalysisAgent(env, {
+      ticker, stock_name, price_data, volume_data, analysis_type, holdings_data
+    });
+
+    // 2. 뉴스 분석 에이전트
+    const newsAnalysisResult = await runNewsAgent(env, {
+      ticker, stock_name, news_items
+    });
+
+    // 3. 심판 에이전트
+    const judgeResult = await runJudgeAgent(env, {
+      ticker, stock_name, analysis_result: analysisResult, news_analysis_result: newsAnalysisResult, analysis_type, holdings_data
+    });
 
     finalData = {
       recommendation: judgeResult.recommendation,
@@ -91,6 +108,7 @@ export async function onRequestPost(context) {
 async function runAnalysisAgent(env, payload) {
   const isSell = payload.analysis_type === 'sell';
   const role = isSell ? '주식 매도 분석가' : '주식 매수 분석가';
+  
   let holdingsContext = '';
   if (isSell && payload.holdings_data) {
     const hd = payload.holdings_data;
@@ -99,16 +117,19 @@ async function runAnalysisAgent(env, payload) {
     if (hd.last_sell_date) holdingsContext += `, 최근매도:${hd.last_sell_date}`;
     holdingsContext += ')';
   }
+
   const pd = payload.price_data;
   const vd = payload.volume_data;
   const changeRateStr = pd.change_rate != null ? `${pd.change_rate > 0 ? '+' : ''}${pd.change_rate.toFixed(2)}%` : '없음';
   const return1MStr = pd.return_1m != null ? `${pd.return_1m > 0 ? '+' : ''}${pd.return_1m.toFixed(2)}%` : '없음';
   const ma20DispStr = pd.ma20_disparity != null ? `${pd.ma20_disparity > 0 ? '+' : ''}${pd.ma20_disparity.toFixed(2)}%` : '없음';
+  
   let w52PosStr = '없음';
   if (pd.w52_hgpr != null && pd.w52_lwpr != null && pd.current_price != null) {
     const pos = ((pd.current_price - pd.w52_lwpr) / (pd.w52_hgpr - pd.w52_lwpr)) * 100;
     w52PosStr = `${pos.toFixed(1)}%`;
   }
+
   let volumeStr = '없음';
   if (vd && vd.current_volume != null && vd.avg_volume_20 != null) {
     volumeStr = `평균대비 ${(vd.current_volume / vd.avg_volume_20).toFixed(2)}배 (오늘:${vd.current_volume.toLocaleString()}주 / 20일평균:${vd.avg_volume_20.toLocaleString()}주)`;
@@ -133,7 +154,6 @@ async function runAnalysisAgent(env, payload) {
   return extractJSON(response?.response || '{}');
 }
 
-// ★ 뉴스 분석 에이전트 고도화
 async function runNewsAgent(env, payload) {
   if (!payload.news_items || payload.news_items.length === 0) {
     return { news_analysis: '최근 5일 이내 확인된 관련 뉴스가 없음.' };
@@ -141,23 +161,16 @@ async function runNewsAgent(env, payload) {
 
   const newsStr = payload.news_items.map((n, i) => `[${i+1}] ${n.title} (${n.published_at ? n.published_at.slice(0,10) : '날짜미상'})`).join('\n');
 
+  // ★ 프롬프트 개선: 뉴스가 있으면 반드시 분석하도록 강제
   const systemPrompt = `당신은 주식 뉴스 분석가입니다. 다음 뉴스 목록에서 '${payload.stock_name}'의 주가에 실질적으로 영향을 줄 수 있는 뉴스만 선별하세요.
 
-[제외할 뉴스]
-- 스포츠 뉴스 (야구단, 축구단, 선수 이적/방출 등)
-- 연예/정치/사회 일반 뉴스
-- 홍보성/광고성 기사
-
-[포함할 뉴스]
-- 실적(매출/영업이익), 공시, 주요 계약/수주
-- 신제품 출시, 사업 구조조정, M&A
-- 규제, 소송, 배당, 자사주 매입
-- 산업 트렌드, 원자재 가격, 환율 등 거시적 영향
-
 [규칙]
-- 목록에 있는 뉴스만 참고하세요. 목록에 없는 내용을 지어내지 마세요.
-- 관련 뉴스가 있으면 '~함', '~임' 체로 1~2문장 요약
-- 관련 뉴스가 전혀 없으면 정확히 "주가에 영향을 줄 만한 뉴스가 없음"이라고만 출력하세요.
+1. 목록에 있는 뉴스만 참고하세요. 목록에 없는 내용을 지어내지 마세요.
+2. 스포츠(야구/축구/선수/구단 등), 연예, 정치, 일반 사회 뉴스는 제외하세요.
+3. 실적, 공시, 계약, 신제품, 규제, 소송, 배당, 자사주, M&A 등 주가에 직결되는 뉴스는 반드시 포함하세요.
+4. 목록에 주가 관련 뉴스가 1개라도 있으면, 반드시 그 내용을 1~2문장으로 요약하세요.
+5. 주가 관련 뉴스가 전혀 없을 때만 "주가에 영향을 줄 만한 뉴스가 없음"이라고 출력하세요.
+6. '~함', '~임' 체를 사용하세요.
 반드시 JSON 형식으로 응답하세요.`;
 
   const userPrompt = `
@@ -178,6 +191,7 @@ ${newsStr}
 
 async function runJudgeAgent(env, payload) {
   const isSell = payload.analysis_type === 'sell';
+  
   let holdingsContext = '';
   if (payload.holdings_data) {
     const hd = payload.holdings_data;
@@ -187,6 +201,7 @@ async function runJudgeAgent(env, payload) {
   } else {
     holdingsContext = '사용자는 해당 종목을 보유하고 있지 않음.';
   }
+
   const systemPrompt = `당신은 최종 판단을 내리는 심판입니다. 분석 결과와 사용자 보유 상황을 종합하여 반드시 JSON으로 응답하세요. '~함', '~임' 체를 사용하세요.`;
   let schema = isSell
     ? `{"recommendation": "매도 추천" | "부분 매도 고려" | "보유 유지" | "추가 매수 고려" | "판단 보류", "overall_summary": "판단 이유 (1~2문장)"}`
