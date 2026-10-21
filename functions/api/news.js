@@ -1,17 +1,12 @@
 // functions/api/news.js
-// GET /api/news?ticker=삼성전자
-
 export async function onRequestGet(context) {
   const { request } = context;
   const url = new URL(request.url);
   const query = (url.searchParams.get('ticker') || '').trim();
 
-  if (!query) {
-    return jsonResponse({ error: '종목명을 입력해 주세요.' }, 400);
-  }
+  if (!query) return jsonResponse({ error: '종목명을 입력해 주세요.' }, 400);
 
   try {
-    // Google News RSS 검색 URL (한국어, 최근 1개월)
     const rssUrl = `https://news.google.com/rss/search?q=${encodeURIComponent(query)}&hl=ko&gl=KR&ceid=KR:ko`;
     
     const res = await fetch(rssUrl, {
@@ -26,11 +21,11 @@ export async function onRequestGet(context) {
     }
 
     const xmlText = await res.text();
-    const items = parseRssItems(xmlText).slice(0, 5); // 최대 5개
+    const items = parseRssItems(xmlText).slice(0, 5);
 
     return jsonResponse({
       items: items,
-      delayed: true, // 뉴스는 약간의 지연이 있을 수 있음을 명시
+      delayed: true,
     });
   } catch (err) {
     console.error('news.js Error:', err.message);
@@ -38,7 +33,6 @@ export async function onRequestGet(context) {
   }
 }
 
-// 간단한 RSS XML 파서
 function parseRssItems(xml) {
   const items = [];
   const itemRegex = /<item>([\s\S]*?)<\/item>/g;
@@ -60,7 +54,6 @@ function parseRssItems(xml) {
       });
     }
   }
-
   return items;
 }
 

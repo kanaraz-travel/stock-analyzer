@@ -74,8 +74,6 @@ export async function onRequestGet(context) {
 
     const rawPrice = Number(output.stck_prpr);
     const price = (rawPrice && rawPrice > 0) ? rawPrice : null;
-
-    // ★ 52주 최고/최저가 추가
     const w52Hgpr = output.w52_hgpr ? Number(output.w52_hgpr) : null;
     const w52Lwpr = output.w52_lwpr ? Number(output.w52_lwpr) : null;
 
@@ -96,7 +94,6 @@ export async function onRequestGet(context) {
   }
 }
 
-// ... (ensureMasterLoaded, parseMasterFile, findCodeByName, getMarketStatus, getKisAccessToken, jsonResponse 함수는 이전과 동일하므로 생략하지 않고 포함)
 async function ensureMasterLoaded() {
   if (masterCache.loaded && Date.now() < masterCache.expiresAt) return;
   const urls = ['https://new.real.download.dws.co.kr/common/master/kospi_code.mst.zip', 'https://new.real.download.dws.co.kr/common/master/kosdaq_code.mst.zip'];

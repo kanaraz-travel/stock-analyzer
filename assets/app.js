@@ -17,6 +17,7 @@ let countdownInterval = null;
 let isRefreshing = false;
 
 const priceCache = new Map();
+const analysisCache = new Map();
 
 const $ = (sel) => document.querySelector(sel);
 const $$ = (sel) => document.querySelectorAll(sel);
@@ -55,11 +56,13 @@ function mapEmailToName(email) {
 
 function resetState() {
   stopCountdown(); currentQuote = null; transactions = []; editingTxId = null;
-  priceCache.clear();
+  priceCache.clear(); analysisCache.clear();
   $('#quote-card').hidden = true; $('#analysis-result').hidden = true;
+  $('#analysis-holdings-section').hidden = true;
   $('#ticker-input').value = ''; $('#search-error').hidden = true;
   $('#transaction-form').reset(); $('#tx-id').value = ''; $('#tx-error').hidden = true;
   setTxFormMode(null); $('#holdings-list').innerHTML = '<p class="empty-text">아직 등록된 거래가 없습니다.</p>';
+  $('#analysis-holdings-list').innerHTML = '<p class="empty-text">보유 중인 종목이 없습니다.</p>';
   ['#total-cost', '#total-value', '#total-pnl', '#realized-pnl'].forEach((id) => { $(id).textContent = '-'; });
   $$('.login-name-btn').forEach((b) => (b.disabled = false));
   $('#login-error').hidden = true; $('#login-loading').hidden = true;
@@ -132,7 +135,10 @@ function setupRefreshButton() {
 }
 
 async function performRefresh() {
-  if (currentScreen === 'analysis') { if (currentQuote) await refreshQuoteSilently(currentQuote.ticker); }
+  if (currentScreen === 'analysis') { 
+    if (currentQuote) await refreshQuoteSilently(currentQuote.ticker);
+    await refreshAnalysisHoldings();
+  }
   else if (currentScreen === 'holdings') { await refreshHoldingsView(); }
 }
 
@@ -167,6 +173,28 @@ function switchScreen(target) {
   $$('.nav-btn').forEach((b) => b.classList.toggle('nav-btn--active', b.dataset.screen === target));
   $('#screen-analysis').classList.toggle('screen--active', target === 'analysis');
   $('#screen-holdings').classList.toggle('screen--active', target === 'holdings');
+  
+  if (target === 'analysis') {
+    restoreAnalysisResults();
+  }
+}
+
+function restoreAnalysisResults() {
+  if (currentQuote && analysisCache.has(currentQuote.ticker)) {
+    renderAnalysisResult(analysisCache.get(currentQuote.ticker), false);
+  }
+  
+  transactions.forEach(tx => {
+    if (analysisCache.has(tx.ticker)) {
+      const card = document.querySelector(`.holding-card[data-ticker="${tx.ticker}"]`);
+      if (card) {
+        const inlineResult = card.querySelector('.holding-inline-result');
+        if (inlineResult) {
+          renderInlineAnalysisResult(analysisCache.get(tx.ticker), card, false);
+        }
+      }
+    }
+  });
 }
 
 function setupNavigation() {
@@ -177,6 +205,8 @@ function setupNavigation() {
         const holdingsData = computeHoldings(transactions);
         renderHoldingsList(holdingsData.currentHoldings, priceCache);
         renderHoldingsSummary(holdingsData, 0, 0); 
+      } else if (target === 'analysis') {
+        await refreshAnalysisHoldings();
       }
     });
   });
@@ -213,7 +243,13 @@ function renderQuote(q) {
     changeEl.className = 'change-rate ' + (q.change_rate > 0 ? 'positive' : q.change_rate < 0 ? 'negative' : '');
   } else { changeEl.textContent = '-'; changeEl.className = 'change-rate'; }
   $('#quote-as-of').textContent = `시세 시각: ${q.quote_as_of ? formatDateTime(q.quote_as_of) : '-'}`;
-  $('#quote-provider').textContent = `출처: ${q.provider || '-'}`; $('#analysis-result').hidden = true;
+  $('#quote-provider').textContent = `출처: ${q.provider || '-'}`; 
+  
+  if (analysisCache.has(q.ticker)) {
+    renderAnalysisResult(analysisCache.get(q.ticker), false);
+  } else {
+    $('#analysis-result').hidden = true;
+  }
 }
 
 async function refreshQuoteSilently(ticker) {
@@ -243,6 +279,82 @@ async function loadHoldings() {
   if (error) { console.error('loadHoldings error:', error.message); return; }
   transactions = data || []; 
   await refreshHoldingsView();
+  await refreshAnalysisHoldings(); 
+}
+
+async function refreshAnalysisHoldings() {
+  const holdingsData = computeHoldings(transactions);
+  const { currentHoldings } = holdingsData;
+  const section = $('#analysis-holdings-section');
+  const list = $('#analysis-holdings-list');
+  
+  if (currentHoldings.length === 0) {
+    section.hidden = true;
+    return;
+  }
+  
+  section.hidden = false;
+  list.innerHTML = '';
+  
+  for (const h of currentHoldings) {
+    let price = priceCache.get(h.ticker) || h.avgCost;
+    try {
+      const res = await fetch(`/api/quote?ticker=${h.ticker}`);
+      if (res.ok) {
+        const q = await res.json();
+        if (q.price != null && q.price > 0) {
+          price = q.price;
+          priceCache.set(h.ticker, q.price);
+        }
+      }
+    } catch {}
+    await new Promise(r => setTimeout(r, 200));
+    
+    const valuation = price * h.qty;
+    const pnl = valuation - h.totalCost;
+    const returnRate = h.totalCost > 0 ? (pnl / h.totalCost) * 100 : 0;
+    const pnlClass = pnl > 0 ? 'positive' : pnl < 0 ? 'negative' : '';
+    
+    const card = document.createElement('div');
+    card.className = 'holding-card';
+    card.setAttribute('data-ticker', h.ticker);
+    
+    const header = document.createElement('div'); header.className = 'holding-header';
+    const nameEl = document.createElement('h3'); nameEl.className = 'holding-name'; nameEl.textContent = h.stock_name;
+    const qtyEl = document.createElement('span'); qtyEl.className = 'holding-qty'; qtyEl.textContent = `${formatNumber(h.qty)}주`;
+    header.appendChild(nameEl); header.appendChild(qtyEl); card.appendChild(header);
+    
+    const grid = document.createElement('div'); grid.className = 'holding-grid';
+    grid.innerHTML = `
+      <div class="holding-data"><span class="dt">매수 원가</span><span class="dd">${formatCurrency(h.totalCost)}</span></div>
+      <div class="holding-data"><span class="dt">평가 금액</span><span class="dd">${formatCurrency(valuation)}</span></div>
+      <div class="holding-data"><span class="dt">평균 매수가</span><span class="dd">${formatCurrency(h.avgCost)}</span></div>
+      <div class="holding-data"><span class="dt">현재가</span><span class="dd">${formatCurrency(price)}</span></div>
+      <div class="holding-data"><span class="dt">평가 손익</span><span class="dd ${pnlClass}">${formatCurrency(pnl)}</span></div>
+      <div class="holding-data"><span class="dt">수익률</span><span class="dd ${pnlClass}">${returnRate > 0 ? '+' : ''}${returnRate.toFixed(2)}%</span></div>
+    `;
+    card.appendChild(grid);
+    
+    const actionRow = document.createElement('div'); actionRow.className = 'holding-actions';
+    const aiBtn = document.createElement('button');
+    aiBtn.type = 'button';
+    aiBtn.className = 'btn btn--primary btn--half btn-ai-analyze';
+    aiBtn.textContent = 'AI 분석하기';
+    aiBtn.addEventListener('click', () => runAnalysis(h.ticker, h.stock_name, price, 'inline', card));
+    actionRow.appendChild(aiBtn);
+    card.appendChild(actionRow);
+    
+    const inlineResult = document.createElement('div');
+    inlineResult.className = 'holding-inline-result';
+    inlineResult.hidden = true;
+    card.appendChild(inlineResult);
+    
+    if (analysisCache.has(h.ticker)) {
+      renderInlineAnalysisResult(analysisCache.get(h.ticker), card, false);
+    }
+    
+    list.appendChild(card);
+  }
 }
 
 async function refreshHoldingsView(holdingsData) {
@@ -269,17 +381,13 @@ async function refreshHoldingsView(holdingsData) {
           price = q.price;
           priceCache.set(h.ticker, q.price); 
         }
-      } else {
-        console.warn(`[시세조회 실패] ${h.stock_name}(${h.ticker}): HTTP ${res.status}`);
       }
     } catch (err) { 
       console.error(`[시세조회 에러] ${h.stock_name}(${h.ticker}):`, err);
       updateDataStatusBadge('ERROR'); 
     }
     
-    if (!price) {
-      price = priceCache.get(h.ticker) || h.avgCost;
-    }
+    if (!price) price = priceCache.get(h.ticker) || h.avgCost;
     
     currentPriceMap.set(h.ticker, price);
     totalCurrentValue += price * h.qty;
@@ -313,7 +421,6 @@ async function runAnalysis(ticker, name, price, targetType = 'main', cardElement
       return;
     }
 
-    // ★ 1. 내 보유 정보 계산 (수량, 평균단가, 수익률)
     let holdingsData = null;
     const txForTicker = transactions.filter(t => t.ticker === ticker);
     if (txForTicker.length > 0) {
@@ -328,7 +435,6 @@ async function runAnalysis(ticker, name, price, targetType = 'main', cardElement
       }
     }
 
-    // ★ 2. 뉴스 및 과거 데이터 병렬 로드
     let newsItems = [];
     let historyData = {};
     try {
@@ -342,11 +448,18 @@ async function runAnalysis(ticker, name, price, targetType = 'main', cardElement
       console.warn('뉴스/과거데이터 로드 실패:', fetchErr);
     }
 
-    // ★ 3. AI에게 전달할 Payload 구성
+    const currentVolume = currentQuote?.volume ?? null;
+    const avgVolume20 = historyData?.avg_volume_20 ?? null;
+    const volumeData = {
+      current_volume: currentVolume,
+      avg_volume_20: avgVolume20,
+      ratio_5d: (currentVolume && avgVolume20) ? (currentVolume / avgVolume20) : null,
+    };
+
     const payload = {
-      ticker: ticker, 
+      ticker, 
       stock_name: name || ticker, 
-      analysis_type: holdingsData ? 'sell' : 'buy', // 보유 중이면 sell 관점
+      analysis_type: holdingsData ? 'sell' : 'buy',
       price_data: { 
         current_price: price, 
         quote_as_of: new Date().toISOString(), 
@@ -357,9 +470,9 @@ async function runAnalysis(ticker, name, price, targetType = 'main', cardElement
         w52_lwpr: currentQuote?.w52_lwpr ?? null,
         return_1d: null, return_5d: null, return_20d: null, volatility_20d: null, quote_is_stale: false 
       },
-      volume_data: null, 
+      volume_data: volumeData,
       news_items: newsItems,
-      holdings_data: holdingsData // ★ 계산된 보유 정보 포함!
+      holdings_data: holdingsData
     };
 
     let res = await fetch('/api/analyze', { 
@@ -369,7 +482,6 @@ async function runAnalysis(ticker, name, price, targetType = 'main', cardElement
     });
 
     if (res.status === 401) {
-      console.warn('401 Unauthorized. Attempting to refresh session...');
       await new Promise(r => setTimeout(r, 1000)); 
       const { data: { session: retrySession }, error: refreshError } = await supabase.auth.refreshSession();
       
@@ -390,10 +502,12 @@ async function runAnalysis(ticker, name, price, targetType = 'main', cardElement
     const data = await res.json(); 
     if (!res.ok) throw new Error(data.error || '분석에 실패했습니다.');
     
+    analysisCache.set(ticker, data);
+    
     if (targetType === 'main') {
-      renderAnalysisResult(data); 
+      renderAnalysisResult(data, true); 
     } else {
-      renderInlineAnalysisResult(data, cardElement);
+      renderInlineAnalysisResult(data, cardElement, true);
     }
   } catch (err) { 
     alert(err.message || '분석에 실패했습니다.'); 
@@ -403,7 +517,7 @@ async function runAnalysis(ticker, name, price, targetType = 'main', cardElement
   }
 }
 
-function renderAnalysisResult(data) {
+function renderAnalysisResult(data, scrollTo = true) {
   $('#analysis-result').hidden = false;
   const badge = $('#recommendation-badge'); badge.textContent = data.recommendation || '판단 보류'; badge.className = 'recommendation-badge';
   const rec = data.recommendation || '';
@@ -421,9 +535,13 @@ function renderAnalysisResult(data) {
   if (data.fallback && data.debug) console.warn('AI Fallback 발생 원인:', data.debug);
   
   renderNewsList(data.sources || []);
+  
+  if (scrollTo) {
+    $('#analysis-result').scrollIntoView({ behavior: 'smooth', block: 'start' });
+  }
 }
 
-function renderInlineAnalysisResult(data, cardElement) {
+function renderInlineAnalysisResult(data, cardElement, scrollTo = true) {
   const container = cardElement.querySelector('.holding-inline-result');
   if (!container) return;
   container.hidden = false;
@@ -448,6 +566,10 @@ function renderInlineAnalysisResult(data, cardElement) {
     </div>
     ${data.fallback ? `<p class="note-text" style="font-size:11px; margin-top:8px;">AI 일일 한도 초과로 기본 분석을 표시합니다.</p>` : ''}
   `;
+  
+  if (scrollTo) {
+    container.scrollIntoView({ behavior: 'smooth', block: 'start' });
+  }
 }
 
 function renderNewsList(sources) {
@@ -509,6 +631,7 @@ function renderHoldingsList(holdings, priceMap) {
     const pnlClass = pnl > 0 ? 'positive' : pnl < 0 ? 'negative' : '';
 
     const card = document.createElement('div'); card.className = 'holding-card';
+    card.setAttribute('data-ticker', h.ticker);
     
     const header = document.createElement('div'); header.className = 'holding-header';
     const nameEl = document.createElement('h3'); nameEl.className = 'holding-name'; nameEl.textContent = h.stock_name;
@@ -519,10 +642,8 @@ function renderHoldingsList(holdings, priceMap) {
     grid.innerHTML = `
       <div class="holding-data"><span class="dt">매수 원가</span><span class="dd">${formatCurrency(h.totalCost)}</span></div>
       <div class="holding-data"><span class="dt">평가 금액</span><span class="dd">${formatCurrency(valuation)}</span></div>
-      
       <div class="holding-data"><span class="dt">평균 매수가</span><span class="dd">${formatCurrency(h.avgCost)}</span></div>
       <div class="holding-data"><span class="dt">현재가</span><span class="dd">${formatCurrency(currentPrice)}</span></div>
-      
       <div class="holding-data"><span class="dt">평가 손익</span><span class="dd ${pnlClass}">${formatCurrency(pnl)}</span></div>
       <div class="holding-data"><span class="dt">수익률</span><span class="dd ${pnlClass}">${returnRate > 0 ? '+' : ''}${returnRate.toFixed(2)}%</span></div>
     `;
@@ -551,6 +672,10 @@ function renderHoldingsList(holdings, priceMap) {
     inlineResult.className = 'holding-inline-result';
     inlineResult.hidden = true;
     card.appendChild(inlineResult);
+    
+    if (analysisCache.has(h.ticker)) {
+      renderInlineAnalysisResult(analysisCache.get(h.ticker), card, false);
+    }
 
     const txList = document.createElement('div'); txList.className = 'tx-list'; txList.hidden = true; h.transactions.forEach((tx) => { txList.appendChild(renderTransactionRow(tx)); }); card.appendChild(txList);
     

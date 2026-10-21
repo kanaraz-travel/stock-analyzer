@@ -1,10 +1,9 @@
 // functions/api/analyze.js
 import { createClient } from '@supabase/supabase-js';
 
-const RULESET_VERSION = 'RULESET_AI_V7_METRICS';
+const RULESET_VERSION = 'RULESET_AI_V8_VOLUME';
 
 export async function onRequestPost(context) {
-  // ... (이전 인증 및 기본 로직 동일)
   const { request, env } = context;
   const authHeader = request.headers.get('authorization') || '';
   const token = authHeader.replace('Bearer ', '');
@@ -46,7 +45,7 @@ export async function onRequestPost(context) {
     });
 
     finalData = await runJudgeAgent(env, {
-      ticker, stock_name, analysis_result: analysisResult, rule_based_score: scoreResult, price_data, news_items, analysis_type, holdings_data
+      ticker, stock_name, analysis_result: analysisResult, rule_based_score: scoreResult, price_data, volume_data, news_items, analysis_type, holdings_data
     });
 
     const validRecs = analysis_type === 'sell' 
@@ -65,7 +64,7 @@ export async function onRequestPost(context) {
       recommendation: analysis_type === 'sell' ? '보유 유지' : scoreResult.recommendation,
       overall_summary: `AI 분석이 일시적으로 제한되어 기본 지표로 판단했습니다. (원인: ${e.message})`,
       price_flow_summary: '최근 가격 흐름 데이터를 바탕으로 계산된 결과입니다.',
-      volume_summary: '거래량 데이터를 바탕으로 계산된 결과입니다.',
+      volume_summary: volume_data ? '거래량 데이터를 바탕으로 계산된 결과입니다.' : '거래량 데이터가 부족합니다.',
       news_summary: news_items?.length ? '최근 확인된 뉴스가 있습니다.' : '확인된 주요 뉴스가 없습니다.',
       tip: '이 분석은 참고용입니다.',
     };
@@ -101,17 +100,25 @@ async function runAnalysisAgent(env, payload) {
 - 보유 수량: ${payload.holdings_data.quantity}주`;
   }
 
-  // ★ 4가지 지표 계산 및 문자열화
   const pd = payload.price_data;
+  const vd = payload.volume_data;
+  
   const changeRateStr = pd.change_rate != null ? `${pd.change_rate > 0 ? '+' : ''}${pd.change_rate.toFixed(2)}%` : '데이터 없음';
   const return1MStr = pd.return_1m != null ? `${pd.return_1m > 0 ? '+' : ''}${pd.return_1m.toFixed(2)}%` : '데이터 없음';
   const ma20DispStr = pd.ma20_disparity != null ? `${pd.ma20_disparity > 0 ? '+' : ''}${pd.ma20_disparity.toFixed(2)}%` : '데이터 없음';
   
   let w52PosStr = '데이터 없음';
   if (pd.w52_hgpr != null && pd.w52_lwpr != null && pd.current_price != null) {
-    // 52주 레인지 내 위치 계산 (0%가 최저, 100%가 최고)
     const pos = ((pd.current_price - pd.w52_lwpr) / (pd.w52_hgpr - pd.w52_lwpr)) * 100;
     w52PosStr = `${pos.toFixed(1)}% (최저가 ${pd.w52_lwpr}원, 최고가 ${pd.w52_hgpr}원)`;
+  }
+
+  let volumeStr = '데이터 없음';
+  if (vd && vd.current_volume != null && vd.avg_volume_20 != null) {
+    const ratio = (vd.current_volume / vd.avg_volume_20).toFixed(2);
+    volumeStr = `오늘 거래량 ${vd.current_volume.toLocaleString()}주 / 20일 평균 거래량 ${vd.avg_volume_20.toLocaleString()}주 (평균 대비 ${ratio}배)`;
+  } else if (vd && vd.current_volume != null) {
+    volumeStr = `오늘 거래량 ${vd.current_volume.toLocaleString()}주 (평균 데이터 없음)`;
   }
 
   const newsStr = payload.news_items?.length > 0
@@ -129,8 +136,9 @@ ${newsStr}
 [종합 판단 지표]
 - 1일 등락률(전일 대비): ${changeRateStr}
 - 1개월 수익률: ${return1MStr}
-- 20일 이동평균 대비 괴리율: ${ma20DispStr} (높을수록 단기 과열, 낮을수록 침체)
-- 52주 레인지 내 위치: ${w52PosStr} (100%에 가까울수록 고점, 0%에 가까울수록 저점)
+- 20일 이동평균 대비 괴리율: ${ma20DispStr}
+- 52주 레인지 내 위치: ${w52PosStr}
+- 거래량: ${volumeStr}
 
 [응답 JSON 스키마]
 {
@@ -149,7 +157,6 @@ ${newsStr}
 }
 
 async function runJudgeAgent(env, payload) {
-  // ... (이전 로직과 동일, 프롬프트에 4가지 지표를 요약해서 전달)
   const isSell = payload.analysis_type === 'sell';
   
   let systemPrompt = '';

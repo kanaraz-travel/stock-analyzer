@@ -1,7 +1,4 @@
 // functions/api/login.js
-// POST /api/login
-// Body: { name: '박필립' | '윤혜영' }
-
 import { createClient } from '@supabase/supabase-js';
 
 const ALLOWED_USERS = {
@@ -30,8 +27,7 @@ export async function onRequestPost(context) {
   }
 
   if (!env.SUPABASE_URL || !env.SUPABASE_SERVICE_ROLE_KEY) {
-    console.error('login: missing SUPABASE_URL or SUPABASE_SERVICE_ROLE_KEY');
-    return jsonResponse({ error: '서버 설정 오류입니다. 관리자에게 문의하세요.' }, 500);
+    return jsonResponse({ error: '서버 설정 오류입니다.' }, 500);
   }
 
   try {
@@ -49,16 +45,11 @@ export async function onRequestPost(context) {
     });
 
     if (error) {
-      console.error('generateLink error:', error.message);
-      return jsonResponse(
-        { error: '로그인 세션을 생성하지 못했습니다. 관리자에게 문의하세요.' },
-        500
-      );
+      return jsonResponse({ error: '로그인 세션을 생성하지 못했습니다.' }, 500);
     }
 
     const tokenHash = data?.properties?.hashed_token;
     if (!tokenHash) {
-      console.error('generateLink: missing hashed_token', data);
       return jsonResponse({ error: '로그인 세션 생성에 실패했습니다.' }, 500);
     }
 
@@ -68,7 +59,6 @@ export async function onRequestPost(context) {
       verification_type: 'magiclink',
     });
   } catch (err) {
-    console.error('login unexpected error:', err?.message);
     return jsonResponse({ error: '로그인 처리 중 오류가 발생했습니다.' }, 500);
   }
 }

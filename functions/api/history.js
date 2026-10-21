@@ -1,6 +1,4 @@
 // functions/api/history.js
-// GET /api/history?ticker=005930
-
 export async function onRequestGet(context) {
   const { request, env } = context;
   const url = new URL(request.url);
@@ -14,11 +12,10 @@ export async function onRequestGet(context) {
   try {
     const accessToken = await getKisAccessToken(env, baseUrl);
 
-    // 최근 30일(영업일 기준 약 20~22일) 데이터를 가져오기 위한 날짜 설정
     const now = new Date();
-    const endDate = now.toISOString().slice(0, 10).replace(/-/g, ''); // YYYYMMDD
+    const endDate = now.toISOString().slice(0, 10).replace(/-/g, '');
     const startDateObj = new Date(now);
-    startDateObj.setDate(startDateObj.getDate() - 40); // 넉넉하게 40일 전부터
+    startDateObj.setDate(startDateObj.getDate() - 40);
     const startDate = startDateObj.toISOString().slice(0, 10).replace(/-/g, '');
 
     const query = new URLSearchParams({
@@ -51,28 +48,28 @@ export async function onRequestGet(context) {
       return jsonResponse({ error: `과거 시세 조회 실패: ${data.msg1}` }, 502);
     }
 
-    const output2 = data.output2 || []; // 일봉 데이터 배열 (최신순)
+    const output2 = data.output2 || [];
     if (output2.length < 20) return jsonResponse({ error: '과거 데이터가 부족합니다.' }, 404);
 
-    // KIS API는 최신 데이터가 배열 앞쪽에 옴
-    const currentPrice = Number(output2[0].stck_clpr); // 가장 최근 종가
-    const price20DaysAgo = Number(output2[19].stck_clpr); // 20거래일 전 종가
-
-    // 1개월 수익률 계산
+    const currentPrice = Number(output2[0].stck_clpr);
+    const price20DaysAgo = Number(output2[19].stck_clpr);
     const return1M = ((currentPrice - price20DaysAgo) / price20DaysAgo) * 100;
 
-    // 20일 이동평균 계산 (최근 20일 종가의 평균)
-    let sum20 = 0;
+    let sum20Price = 0;
+    let sum20Volume = 0;
     for (let i = 0; i < 20; i++) {
-      sum20 += Number(output2[i].stck_clpr);
+      sum20Price += Number(output2[i].stck_clpr);
+      sum20Volume += Number(output2[i].acml_vol || 0);
     }
-    const ma20 = sum20 / 20;
-    const ma20Disparity = ((currentPrice - ma20) / ma20) * 100; // 괴리율
+    const ma20 = sum20Price / 20;
+    const ma20Disparity = ((currentPrice - ma20) / ma20) * 100;
+    const avgVolume20 = sum20Volume / 20;
 
     return jsonResponse({
       ticker,
       return_1m: Number(return1M.toFixed(2)),
       ma20_disparity: Number(ma20Disparity.toFixed(2)),
+      avg_volume_20: Math.round(avgVolume20),
     });
   } catch (err) {
     console.error('history.js Error:', err.message);
@@ -80,7 +77,6 @@ export async function onRequestGet(context) {
   }
 }
 
-// 토큰 발급 (중복 방지 Lock)
 let tokenCache = { accessToken: null, expiresAt: 0 };
 let tokenPromise = null;
 
