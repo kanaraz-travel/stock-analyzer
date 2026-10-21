@@ -163,18 +163,38 @@ function getMarketStatusClient() {
 function updateMarketStatusBadge(statusText) {
   const badge = $('#market-status-badge'); badge.textContent = statusText;
   if (statusText.includes('정규장')) badge.className = 'badge badge--status-green';
-  else if (statusText.includes('애프터마켓')) badge.className = 'badge badge--status-orange';
+  else if (statusText.includes('애프터마켓') || statusText.includes('시간외')) badge.className = 'badge badge--status-blue';
   else badge.className = 'badge badge--status-gray';
 }
 
+// ★ 수정: AFTER_HOURS/AFTER_MARKET을 "지연"이 아닌 정상 상태로 표시
 function updateDataStatusBadge(status) {
   const badge = $('#data-status-badge');
-  if (status === 'LATEST' || status === 'OK' || status === 'MARKET_OPEN') { badge.textContent = '연결 원활'; badge.className = 'badge badge--status-green'; }
-  else if (status === 'DELAYED' || status === 'AFTER_HOURS' || status === 'AFTER_MARKET') { badge.textContent = '지연'; badge.className = 'badge badge--status-orange'; }
-  else if (status === 'STALE') { badge.textContent = '오래된 데이터'; badge.className = 'badge badge--status-orange'; }
-  else if (status === 'MARKET_CLOSED') { badge.textContent = '장마감'; badge.className = 'badge badge--status-gray'; }
-  else if (status === 'UNKNOWN') { badge.textContent = '상태 확인 불가'; badge.className = 'badge badge--status-gray'; }
-  else { badge.textContent = '연결 끊김'; badge.className = 'badge badge--status-gray'; }
+  if (status === 'LATEST' || status === 'OK' || status === 'MARKET_OPEN') {
+    badge.textContent = '연결 원활';
+    badge.className = 'badge badge--status-green';
+  } else if (status === 'AFTER_HOURS') {
+    badge.textContent = '시간외 단일가';
+    badge.className = 'badge badge--status-blue';
+  } else if (status === 'AFTER_MARKET') {
+    badge.textContent = '애프터마켓';
+    badge.className = 'badge badge--status-blue';
+  } else if (status === 'DELAYED') {
+    badge.textContent = '지연';
+    badge.className = 'badge badge--status-orange';
+  } else if (status === 'STALE') {
+    badge.textContent = '오래된 데이터';
+    badge.className = 'badge badge--status-orange';
+  } else if (status === 'MARKET_CLOSED') {
+    badge.textContent = '장마감';
+    badge.className = 'badge badge--status-gray';
+  } else if (status === 'UNKNOWN') {
+    badge.textContent = '상태 확인 불가';
+    badge.className = 'badge badge--status-gray';
+  } else {
+    badge.textContent = '연결 끊김';
+    badge.className = 'badge badge--status-gray';
+  }
 }
 
 function switchScreen(target) {
@@ -249,6 +269,7 @@ async function handleSearch() {
   } finally { btn.disabled = false; btn.textContent = '조회'; }
 }
 
+// ★ quote_note 필드가 있으면 시세 시각 옆에 표시
 function renderQuote(q) {
   $('#quote-card').hidden = false;
   $('#stock-name').textContent = q.stock_name || q.ticker;
@@ -267,6 +288,9 @@ function renderQuote(q) {
     timeLabel = `데이터 조회 시각: ${formatDateTime(q.server_time)} (시세 기준 시각 확인 불가)`;
   } else {
     timeLabel = '시각 정보 없음';
+  }
+  if (q.quote_note) {
+    timeLabel += ` · ${q.quote_note}`;
   }
   $('#quote-as-of').textContent = timeLabel;
 
@@ -304,9 +328,10 @@ async function loadHoldings() {
   await refreshHoldingsView();
 }
 
+// ★ 수정: 시세 실패 시 캐시 우선 사용, 실패해도 배지 변경 안 함(시간외 정상 실패 방지), 대기 500ms
 async function refreshHoldingsView(holdingsData) {
   if (!holdingsData) holdingsData = computeHoldings(transactions);
-  const { currentHoldings, overSells, overSellTickers } = holdingsData;
+  const { currentHoldings, overSells } = holdingsData;
 
   renderOverSellWarning(overSells || []);
 
@@ -317,6 +342,10 @@ async function refreshHoldingsView(holdingsData) {
     renderHoldingsSummary(holdingsData, 0, 0);
     return;
   }
+
+  let anySuccess = false;
+  let lastSuccessfulStatus = null;
+
   for (const h of currentHoldings) {
     totalCost += h.totalCost;
     let price = null;
@@ -324,23 +353,38 @@ async function refreshHoldingsView(holdingsData) {
       const res = await fetch(`/api/quote?ticker=${h.ticker}`);
       if (res.ok) {
         const q = await res.json();
+        anySuccess = true;
+        lastSuccessfulStatus = q.data_status;
         if (currentPriceMap.size === 0) {
           updateMarketStatusBadge(q.market_status);
-          updateDataStatusBadge(q.data_status);
         }
-        if (q.price != null && q.price > 0) { price = q.price; priceCache.set(h.ticker, q.price); }
+        if (q.price != null && q.price > 0) {
+          price = q.price;
+          priceCache.set(h.ticker, q.price);
+        }
       }
-    } catch { updateDataStatusBadge('ERROR'); }
-    if (price == null || price <= 0) price = null; // fallback
+    } catch { /* 시간외 일시적 실패는 무시 */ }
+
+    // ★ 실패 시 캐시의 마지막 정상 가격 사용
+    if (price == null) {
+      price = priceCache.get(h.ticker) || null;
+    }
+
     currentPriceMap.set(h.ticker, price);
     totalCurrentValue += (price || h.avgCost) * h.qty;
-    await new Promise(r => setTimeout(r, 300));
+    await new Promise(r => setTimeout(r, 500));
   }
+
+  // ★ 성공한 요청이 있으면 그 data_status로 배지 표시
+  //   전부 실패했더라도 시간외에는 "연결 끊김"으로 표시하지 않고 이전 상태 유지
+  if (anySuccess && lastSuccessfulStatus) {
+    updateDataStatusBadge(lastSuccessfulStatus);
+  }
+
   renderHoldingsList(currentHoldings, currentPriceMap);
   renderHoldingsSummary(holdingsData, totalCost, totalCurrentValue);
 }
 
-// ★ 초과 매도 경고 UI (수정 버튼 포함)
 function renderOverSellWarning(overSells) {
   const existing = document.getElementById('over-sell-warning');
   if (existing) existing.remove();
@@ -407,7 +451,6 @@ async function runAnalysis(ticker, name, price, targetType = 'main', cardElement
     let { data: { session } } = await supabase.auth.getSession();
     if (!session) { alert('로그인 세션이 없습니다.'); await supabase.auth.signOut(); return; }
 
-    // ★ 새 시세 조회 시도, 실패 시 STALE 플래그
     let freshQuote = null;
     try {
       const qRes = await fetch(`/api/quote?ticker=${encodeURIComponent(ticker)}`);
@@ -472,7 +515,7 @@ async function runAnalysis(ticker, name, price, targetType = 'main', cardElement
         server_time: freshQuote?.server_time ?? null,
         quote_time_source: freshQuote?.quote_time_source ?? 'UNKNOWN',
         market_status: freshQuote?.market_status ?? null,
-        price_source: priceSource,          // ★ 신규: FRESH / STALE
+        price_source: priceSource,
         change_rate: actualChangeRate,
         return_1m: historyData?.return_1m ?? null,
         ma20_disparity: historyData?.ma20_disparity ?? null,
@@ -500,7 +543,7 @@ async function runAnalysis(ticker, name, price, targetType = 'main', cardElement
       const detail = Array.isArray(data.details) ? `\n${data.details.join('\n')}` : '';
       throw new Error((data.error || '분석 실패') + detail);
     }
-    data.analyzed_at = new Date().toISOString(); // ★ 분석 시각을 캐시에 함께 저장
+    data.analyzed_at = new Date().toISOString();
     analysisCache.set(ticker, data);
     if (targetType === 'main') { renderAnalysisResult(data, currentScreen === 'analysis'); }
     else { renderInlineAnalysisResult(data, cardElement, true); }
@@ -533,7 +576,7 @@ function renderAnalysisResult(data, scrollTo = true) {
   else if (rec.includes('기다리기') || rec.includes('보유')) badge.classList.add('recommendation-badge--hold');
   else badge.classList.add('recommendation-badge--pending');
 
-  const tsStr = formatDateTime(data.analyzed_at || new Date().toISOString()); // ★ 캐시된 결과는 실제 분석 시각 표시
+  const tsStr = formatDateTime(data.analyzed_at || new Date().toISOString());
   const qualityLabel = data.data_quality?.label ? ` · 데이터 ${data.data_quality.label}` : '';
   const verifiedLabel = data.data_quality && data.data_quality.quote_time_verified === false
     ? ' · 시세 기준시각 미확인' : '';
@@ -597,7 +640,6 @@ function createAnalysisBlock(title, content) {
   return block;
 }
 
-// ★ computeHoldings: overSellTickers 반환, 초과 매도 종목은 손익 신뢰 불가 표시
 function computeHoldings(txs) {
   const map = new Map();
   let totalRealizedPnl = 0, totalRealizedCost = 0;
@@ -640,7 +682,6 @@ function computeHoldings(txs) {
         h.hasOverSell = true;
         overSellTickers.add(tx.ticker);
       }
-      // 실제로는 보유 수량만큼만 매도로 처리 (참고값, 신뢰 불가)
       const sellQty = Math.min(q, h.qty);
       const costOfSold = sellQty * h.avgCost;
       const revenue = sellQty * p;
@@ -661,7 +702,6 @@ function computeHoldings(txs) {
   };
 }
 
-// ★ 초과 매도 존재 시 손익 "산출 불가"
 function renderHoldingsSummary(holdingsData, totalCost, totalCurrentValue) {
   const { totalRealizedPnl, totalRealizedCost, hasAnyOverSell } = holdingsData;
 
@@ -683,7 +723,6 @@ function renderHoldingsSummary(holdingsData, totalCost, totalCurrentValue) {
   $('#realized-pnl').innerHTML = `<span class="${totalRealizedPnl > 0 ? 'positive' : totalRealizedPnl < 0 ? 'negative' : ''}">${formatCurrency(totalRealizedPnl)} (${realizedRate > 0 ? '+' : ''}${realizedRate.toFixed(2)}%)</span>`;
 }
 
-// ★ 대체 가격 사용 시 손익/수익률 "산출 불가" 표시
 function renderHoldingsList(holdings, priceMap) {
   const list = $('#holdings-list'); list.innerHTML = '';
   if (holdings.length === 0) {
@@ -825,14 +864,12 @@ async function saveTransaction() {
     const qData = await res.json();
     if (!res.ok) throw new Error(qData.error || '종목을 찾을 수 없습니다.');
 
-    // ★ 수정: 입력값과 확정된 종목명이 다르면 저장 전에 확인
     const normIn = nameOnly.replace(/\s+/g, '').toLowerCase();
     const normResolved = String(qData.stock_name || '').replace(/\s+/g, '').toLowerCase();
     if (normIn !== normResolved && !confirm(`'${nameOnly}' → ${qData.stock_name}(${qData.ticker})로 저장할까요?`)) {
       throw new Error('거래 저장을 취소했습니다.');
     }
 
-    // ★ 개선 #1: 거래일 기준 canSell
     if (type === 'SELL') {
       const ok = await canSell(qData.ticker, qty, tradeDate, editingTxId);
       if (!ok) throw new Error(`${tradeDate} 시점의 보유 수량을 초과하는 매도입니다.`);
@@ -860,7 +897,6 @@ async function saveTransaction() {
   finally { btn.disabled = false; btn.textContent = editingTxId ? '수정 저장' : '거래 저장'; }
 }
 
-// ★ canSell: 매도 거래일 기준 보유 수량 검증
 async function canSell(ticker, quantity, sellDate, excludeId = null) {
   const { data, error } = await supabase
     .from('stock_transactions')
@@ -869,7 +905,6 @@ async function canSell(ticker, quantity, sellDate, excludeId = null) {
     .eq('user_id', currentUser?.id || '');
   if (error) return false;
 
-  // 편집 중인 트랜잭션의 created_at 조회 (같은 날 순서 판단용)
   let excludeCreatedAt = null;
   if (excludeId) {
     const found = (data || []).find(tx => tx.id === excludeId);
@@ -883,11 +918,8 @@ async function canSell(ticker, quantity, sellDate, excludeId = null) {
     if (tx.trade_date < sellDate) {
       // 이전 날짜: 항상 집계
     } else if (tx.trade_date === sellDate) {
-      // 같은 날: 편집 중이면 자기보다 먼저 생성된 것만 집계
       if (excludeCreatedAt && tx.created_at && tx.created_at >= excludeCreatedAt) continue;
-      // 신규 입력이면 같은 날 모두 집계
     } else {
-      // 미래 날짜: 집계 제외
       continue;
     }
 

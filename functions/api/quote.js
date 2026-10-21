@@ -4,8 +4,8 @@ import { unzipSync } from 'fflate';
 let masterCache = { loaded: false, map: new Map(), codeMap: new Map(), expiresAt: 0, retryAfter: 0 };
 let masterPromise = null;
 const CACHE_TTL = 24 * 60 * 60 * 1000;
-const PARTIAL_RETRY_TTL = 5 * 60 * 1000; // 일부 시장만 로드됐을 때 재시도 간격
-const FAIL_RETRY_MS = 30 * 1000;           // 전부 실패했을 때 재시도 간격
+const PARTIAL_RETRY_TTL = 5 * 60 * 1000;
+const FAIL_RETRY_MS = 30 * 1000;
 let tokenCache = { accessToken: null, expiresAt: 0 };
 let tokenPromise = null;
 
@@ -95,10 +95,11 @@ export async function onRequestGet(context) {
 
     const serverTime = new Date().toISOString();
     const marketStatus = getMarketStatus();
+    const dataStatus = getDataStatus();
 
-    // ★ 개선 #1: 시세 기준 시각과 응답 시각 분리
-    //   KIS inquire-price API는 실제 시세 기준 시각을 제공하지 않으므로 quote_as_of=null
-    //   quote_time_source='UNKNOWN'으로 명시. 현재 시각을 시세 시각으로 위장하지 않음
+    // ★ 시간외/장마감 판별: 이 구간에서는 정규장 종가를 반환하는 것이 정상
+    const isAfterHoursQuote = dataStatus === 'AFTER_HOURS' || dataStatus === 'AFTER_MARKET' || dataStatus === 'MARKET_CLOSED';
+
     return jsonResponse({
       ticker, stock_name: finalName,
       price: price,
@@ -111,7 +112,12 @@ export async function onRequestGet(context) {
       quote_as_of: null,
       quote_time_source: 'UNKNOWN',
       provider: '한국투자증권 Open API',
-      data_status: getDataStatus(),
+      data_status: dataStatus,
+      // ★ 신규 필드
+      is_after_hours_quote: isAfterHoursQuote,
+      quote_note: isAfterHoursQuote
+        ? (price != null ? '정규장 종가 기준 (시간외 시세는 별도 API 필요)' : '시간외 시세 미제공')
+        : null,
     });
   } catch (err) {
     console.error('quote.js Error:', err.message);
@@ -122,12 +128,11 @@ export async function onRequestGet(context) {
 async function ensureMasterLoaded() {
   const now = Date.now();
   if (masterCache.loaded && now < masterCache.expiresAt) return;
-  if (now < masterCache.retryAfter) return; // 방금 실패했으면 잠깐 쉬었다가 재시도
+  if (now < masterCache.retryAfter) return;
   if (!masterPromise) masterPromise = loadMaster().finally(() => { masterPromise = null; });
   await masterPromise;
 }
 
-// ★ 수정: 임시 Map에 먼저 적재 → 성공했을 때만 교체. 실패 시 기존 캐시를 유지하고 짧게 재시도.
 async function loadMaster() {
   const markets = [
     { key: 'kospi', url: 'https://new.real.download.dws.co.kr/common/master/kospi_code.mst.zip', tailLen: 228 },
@@ -163,7 +168,7 @@ async function loadMaster() {
   }
   masterCache.loaded = masterCache.map.size > 0;
   if (!masterCache.loaded) {
-    masterCache.retryAfter = now + FAIL_RETRY_MS;   // 전부 실패: 24시간 캐시하지 않음
+    masterCache.retryAfter = now + FAIL_RETRY_MS;
     masterCache.expiresAt = 0;
   } else {
     masterCache.retryAfter = 0;
@@ -207,8 +212,6 @@ function parseFixedWidth(text, tailLen, map, codeMap) {
   return count;
 }
 
-// ★ 수정: 정확히 일치 → 그대로 / 부분일치 1건 → 그대로 / 여러 건 → 후보 목록 반환(임의 선택 금지)
-//   (기존의 "검색어가 종목명을 포함" 역방향 매칭은 엉뚱한 종목이 잡혀서 제거)
 function findCodeByName(query) {
   const norm = (s) => s.replace(/\s+/g, '').toLowerCase();
   const q = norm(query);
