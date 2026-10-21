@@ -1,10 +1,12 @@
 // functions/api/quote.js
-// GET /api/quote?ticker=삼성전자 (or 005930)
-
 import { unzipSync } from 'fflate';
 
 let masterCache = { loaded: false, map: new Map(), codeMap: new Map(), expiresAt: 0 };
 const CACHE_TTL = 24 * 60 * 60 * 1000;
+
+// ★ 동시 요청 시 토큰 중복 발급 방지 (Thundering Herd 방지)
+let tokenCache = { accessToken: null, expiresAt: 0 };
+let tokenPromise = null;
 
 export async function onRequestGet(context) {
   const { request, env } = context;
@@ -14,9 +16,7 @@ export async function onRequestGet(context) {
   if (!query) return jsonResponse({ error: '종목명 또는 코드를 입력해 주세요.' }, 400);
 
   const baseUrl = env.KIS_BASE_URL || 'https://openapi.koreainvestment.com:9443';
-  if (!env.KIS_APP_KEY || !env.KIS_APP_SECRET) {
-    return jsonResponse({ error: '한국투자증권 API 키가 서버에 설정되지 않았습니다.' }, 500);
-  }
+  if (!env.KIS_APP_KEY || !env.KIS_APP_SECRET) return jsonResponse({ error: 'KIS API 키가 설정되지 않았습니다.' }, 500);
 
   let ticker = query;
   let stock_name = query;
@@ -44,9 +44,8 @@ export async function onRequestGet(context) {
     });
 
     if (!kisRes.ok) {
-      const errText = await kisRes.text();
-      console.error('KIS API Error:', kisRes.status, errText.slice(0, 300));
-      return jsonResponse({ error: '시세를 가져오지 못했습니다. 잠시 후 다시 확인해 주세요.', detail: kisRes.status }, 502);
+      console.error('KIS API Error:', kisRes.status, await kisRes.text());
+      return jsonResponse({ error: '시세를 가져오지 못했습니다. 잠시 후 다시 확인해 주세요.' }, 502);
     }
 
     let data;
@@ -54,13 +53,10 @@ export async function onRequestGet(context) {
     const output = data.output || {};
 
     let finalName = output.hts_kor_isnm || stock_name;
-    if (/^[A-Z0-9]{10,}/.test(finalName)) {
-      finalName = finalName.replace(/^[A-Z0-9]{10,}\s*/, '').trim();
-    }
+    if (/^[A-Z0-9]{10,}/.test(finalName)) finalName = finalName.replace(/^[A-Z0-9]{10,}\s*/, '').trim();
 
     return jsonResponse({
-      ticker,
-      stock_name: finalName,
+      ticker, stock_name: finalName,
       price: output.stck_prpr ? Number(output.stck_prpr) : null,
       change_rate: output.prdy_ctrt ? Number(output.prdy_ctrt) : null,
       volume: output.acml_vol ? Number(output.acml_vol) : null,
@@ -71,31 +67,22 @@ export async function onRequestGet(context) {
     });
   } catch (err) {
     console.error('quote.js Error:', err.message);
-    return jsonResponse({ error: '시세를 가져오지 못했습니다. 잠시 후 다시 확인해 주세요.', detail: err.message }, 502);
+    return jsonResponse({ error: '시세를 가져오지 못했습니다. 잠시 후 다시 확인해 주세요.' }, 502);
   }
 }
 
 async function ensureMasterLoaded() {
   if (masterCache.loaded && Date.now() < masterCache.expiresAt) return;
-  const urls = [
-    'https://new.real.download.dws.co.kr/common/master/kospi_code.mst.zip',
-    'https://new.real.download.dws.co.kr/common/master/kosdaq_code.mst.zip',
-  ];
+  const urls = ['https://new.real.download.dws.co.kr/common/master/kospi_code.mst.zip', 'https://new.real.download.dws.co.kr/common/master/kosdaq_code.mst.zip'];
   masterCache.map.clear(); masterCache.codeMap.clear();
   for (const url of urls) {
     try {
-      const res = await fetch(url);
-      if (!res.ok) continue;
-      const buf = await res.arrayBuffer();
-      const unzipped = unzipSync(new Uint8Array(buf));
-      for (const filename in unzipped) {
-        const content = new TextDecoder('euc-kr').decode(unzipped[filename]);
-        parseMasterFile(content);
-      }
-    } catch (e) { console.error('Master file load error:', url, e.message); }
+      const res = await fetch(url); if (!res.ok) continue;
+      const buf = await res.arrayBuffer(); const unzipped = unzipSync(new Uint8Array(buf));
+      for (const filename in unzipped) { parseMasterFile(new TextDecoder('euc-kr').decode(unzipped[filename])); }
+    } catch (e) { console.error('Master file load error:', e.message); }
   }
-  masterCache.loaded = true;
-  masterCache.expiresAt = Date.now() + CACHE_TTL;
+  masterCache.loaded = true; masterCache.expiresAt = Date.now() + CACHE_TTL;
 }
 
 function parseMasterFile(text) {
@@ -125,10 +112,8 @@ function findCodeByName(query) {
 }
 
 function getMarketStatus() {
-  const now = new Date();
-  const kstTime = new Date(now.getTime() + (9 * 60 * 60 * 1000));
-  const day = kstTime.getUTCDay();
-  const timeVal = kstTime.getUTCHours() * 100 + kstTime.getUTCMinutes();
+  const now = new Date(); const kstTime = new Date(now.getTime() + (9 * 60 * 60 * 1000));
+  const day = kstTime.getUTCDay(); const timeVal = kstTime.getUTCHours() * 100 + kstTime.getUTCMinutes();
   if (day === 0 || day === 6) return '휴장 (주말)';
   if (timeVal >= 900 && timeVal <= 1530) return '장중';
   if (timeVal > 1530 && timeVal <= 1800) return '시간외 단일가';
@@ -136,19 +121,29 @@ function getMarketStatus() {
   return '장 개시 전';
 }
 
-let tokenCache = { accessToken: null, expiresAt: 0 };
 async function getKisAccessToken(env, baseUrl) {
   const now = Date.now();
   if (tokenCache.accessToken && now < tokenCache.expiresAt) return tokenCache.accessToken;
-  const res = await fetch(`${baseUrl}/oauth2/tokenP`, {
-    method: 'POST',
-    headers: { 'content-type': 'application/json' },
-    body: JSON.stringify({ grant_type: 'client_credentials', appkey: env.KIS_APP_KEY, appsecret: env.KIS_APP_SECRET }),
-  });
-  if (!res.ok) throw new Error(`KIS Token Error (${res.status}): ${await res.text()}`);
-  const data = await res.json();
-  tokenCache = { accessToken: data.access_token, expiresAt: now + ((Number(data.expires_in) || 86400) - 60) * 1000 };
-  return data.access_token;
+
+  // ★ 이미 다른 요청이 토큰을 발급 중이라면 그 결과를 기다림
+  if (tokenPromise) return tokenPromise;
+
+  tokenPromise = (async () => {
+    try {
+      const res = await fetch(`${baseUrl}/oauth2/tokenP`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ grant_type: 'client_credentials', appkey: env.KIS_APP_KEY, appsecret: env.KIS_APP_SECRET }),
+      });
+      if (!res.ok) throw new Error(`KIS Token Error (${res.status})`);
+      const data = await res.json();
+      tokenCache = { accessToken: data.access_token, expiresAt: now + ((Number(data.expires_in) || 86400) - 60) * 1000 };
+      return data.access_token;
+    } finally {
+      tokenPromise = null; // 작업 완료 후 락 해제
+    }
+  })();
+  return tokenPromise;
 }
 
 function jsonResponse(body, status = 200) {
