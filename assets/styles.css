@@ -42,9 +42,15 @@ body { max-width: 480px; margin: 0 auto; min-height: 100vh; }
 
 .card { background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius); padding: 16px; margin-bottom: 12px; }
 .section-title { font-size: 16px; font-weight: 700; margin-bottom: 12px; }
-.label { display: block; font-size: 13px; color: var(--text-muted); margin-bottom: 10px; }
+.label { display: block; font-size: 13px; color: var(--text-muted); margin-bottom: 10px; flex: 1; }
 .label input, .label select { display: block; width: 100%; margin-top: 4px; padding: 12px; font-size: 16px; border-radius: 12px; border: 1px solid var(--border); background: var(--surface-2); color: var(--text); appearance: none; }
 .label input:focus, .label select:focus { outline: 2px solid var(--primary); border-color: transparent; }
+
+/* 1줄 배치를 위한 폼 레이아웃 */
+.form-row { display: flex; gap: 8px; width: 100%; }
+.form-row--3 > * { flex: 1; min-width: 0; }
+.label--button { display: flex; flex-direction: column; justify-content: flex-end; margin-bottom: 10px; }
+.label-text { font-size: 13px; color: transparent; user-select: none; } /* 버튼 정렬용 더미 텍스트 */
 
 .search-row { display: flex; gap: 8px; }
 .search-row input { flex: 1; padding: 14px; font-size: 16px; border-radius: 12px; border: 1px solid var(--border); background: var(--surface-2); color: var(--text); }

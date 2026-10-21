@@ -41,7 +41,6 @@ export async function onRequestGet(context) {
       },
     });
 
-    // 429(Too Many Requests) 발생 시 1회 재시도
     if (kisRes.status === 429) {
       console.warn('KIS API Rate Limit (429), retrying after 1s...');
       await new Promise(r => setTimeout(r, 1000));
@@ -68,10 +67,8 @@ export async function onRequestGet(context) {
     let finalName = output.hts_kor_isnm || stock_name;
     if (/^[A-Z0-9]{10,}/.test(finalName)) finalName = finalName.replace(/^[A-Z0-9]{10,}\s*/, '').trim();
 
-    // 데이터 지연 여부 판단 (응답 시각과 현재 시각 차이가 60초 이상이면 지연)
     const now = new Date();
-    const quoteTime = new Date(); // 실제 응답 시각 (KIS 응답 필드가 있으면 해당 값 사용)
-    const diffSeconds = (now - quoteTime) / 1000;
+    const diffSeconds = (now - new Date()) / 1000;
     const dataStatus = diffSeconds > 60 ? 'DELAYED' : 'LATEST';
 
     return jsonResponse({
@@ -130,20 +127,18 @@ function findCodeByName(query) {
   return null;
 }
 
-// 한국 시간(KST) 기준 시장 상태 계산 (UTC+9)
+// 시장 상태 텍스트 반환
 function getMarketStatus() {
   const now = new Date();
-  const kstTime = new Date(now.getTime() + (9 * 60 * 60 * 1000)); // UTC + 9시간
+  const kstTime = new Date(now.getTime() + (9 * 60 * 60 * 1000));
   const day = kstTime.getUTCDay();
-  const hours = kstTime.getUTCHours();
-  const minutes = kstTime.getUTCMinutes();
-  const timeVal = hours * 100 + minutes;
+  const timeVal = kstTime.getUTCHours() * 100 + kstTime.getUTCMinutes();
 
   if (day === 0 || day === 6) return '휴장 (주말)';
-  if (timeVal >= 900 && timeVal <= 1530) return '장중';
-  if (timeVal > 1530 && timeVal <= 1800) return '시간외 단일가';
-  if (timeVal > 1800) return '장마감';
-  return '장 개시 전';
+  if (timeVal >= 900 && timeVal < 1530) return '정규장 09:00~15:30';
+  if (timeVal >= 1530 && timeVal < 1600) return '장 마감 (대기)';
+  if (timeVal >= 1600 && timeVal <= 2000) return '애프터마켓 16:00~20:00';
+  return '장마감';
 }
 
 async function getKisAccessToken(env, baseUrl) {

@@ -13,7 +13,6 @@ let currentUser = null, currentQuote = null, transactions = [], editingTxId = nu
 let selectedSellTarget = null;
 let currentScreen = 'buy';
 
-// 새로고침 타이머 상태
 let countdown = 5;
 let countdownInterval = null;
 let isRefreshing = false;
@@ -36,12 +35,11 @@ async function handleAuthState(session) {
     $('#screen-login').hidden = true; $('#app-shell').hidden = false;
     $('#current-user-name').textContent = mapEmailToName(currentUser.email) || currentUser.email || '';
     
-    // 초기 진입 시 시장 상태 배지 즉시 계산
-    const initialMarketStatus = getMarketStatusClient();
-    $('#market-status-badge').textContent = initialMarketStatus;
+    // 초기 시장 상태 배지 즉시 계산
+    updateMarketStatusBadge(getMarketStatusClient());
 
     await loadHoldings(); 
-    startCountdown(); // 카운트다운 시작
+    startCountdown();
   } else {
     $('#screen-login').hidden = false; $('#app-shell').hidden = true; resetState();
     stopCountdown();
@@ -65,6 +63,11 @@ function resetState() {
   ['#total-cost', '#total-value', '#total-pnl', '#realized-pnl'].forEach((id) => { $(id).textContent = '-'; });
   $$('.login-name-btn').forEach((b) => (b.disabled = false));
   $('#login-error').hidden = true; $('#login-loading').hidden = true;
+
+  // 데이터 상태 뱃지 초기화
+  const dataBadge = $('#data-status-badge');
+  dataBadge.textContent = '데이터 상태 확인 중';
+  dataBadge.className = 'badge badge--muted';
 }
 
 function renderLoginButtons() {
@@ -103,7 +106,7 @@ function mapAuthError(msg) {
 function setupLogoutButton() { $('#logout-btn').addEventListener('click', async () => { if (!confirm('로그아웃하시겠습니까?')) return; stopCountdown(); await supabase.auth.signOut(); }); }
 
 // ------------------------------------------------------------
-// 5초 카운트다운 및 새로고침 (자동 실행 X, 버튼 활성화 O)
+// 5초 카운트다운 및 새로고침 (유저 터치 방식)
 // ------------------------------------------------------------
 function startCountdown() {
   stopCountdown();
@@ -166,7 +169,6 @@ async function performRefresh() {
     if (currentQuote) {
       await refreshQuoteSilently(currentQuote.ticker);
     } else {
-      // 검색된 종목이 없으면 보유 종목 중 첫 번째라도 조회
       const holdings = computeHoldings(transactions).currentHoldings;
       if (holdings.length > 0) {
         $('#ticker-input').value = holdings[0].stock_name;
@@ -191,7 +193,7 @@ function setupVisibility() {
 }
 
 // ------------------------------------------------------------
-// 프론트엔드 시장 상태 계산 (KST 기준)
+// 프론트엔드 시장 상태 및 배지 업데이트
 // ------------------------------------------------------------
 function getMarketStatusClient() {
   const now = new Date();
@@ -200,14 +202,41 @@ function getMarketStatusClient() {
   const timeVal = kstTime.getUTCHours() * 100 + kstTime.getUTCMinutes();
   
   if (day === 0 || day === 6) return '휴장 (주말)';
-  if (timeVal >= 900 && timeVal <= 1530) return '장중';
-  if (timeVal > 1530 && timeVal <= 1800) return '시간외 단일가';
-  if (timeVal > 1800) return '장마감';
-  return '장 개시 전';
+  if (timeVal >= 900 && timeVal < 1530) return '정규장 09:00~15:30';
+  if (timeVal >= 1530 && timeVal < 1600) return '장 마감 (대기)';
+  if (timeVal >= 1600 && timeVal <= 2000) return '애프터마켓 16:00~20:00';
+  return '장마감';
+}
+
+function updateMarketStatusBadge(statusText) {
+  const badge = $('#market-status-badge');
+  badge.textContent = statusText;
+  
+  if (statusText.includes('정규장')) {
+    badge.className = 'badge badge--positive';
+  } else if (statusText.includes('애프터마켓')) {
+    badge.className = 'badge badge--warning';
+  } else {
+    badge.className = 'badge badge--muted';
+  }
+}
+
+function updateDataStatusBadge(status) {
+  const badge = $('#data-status-badge');
+  if (status === 'LATEST') {
+    badge.textContent = '연결 원활';
+    badge.className = 'badge badge--positive';
+  } else if (status === 'DELAYED') {
+    badge.textContent = '지연';
+    badge.className = 'badge badge--warning';
+  } else {
+    badge.textContent = '연결 끊김';
+    badge.className = 'badge badge--muted';
+  }
 }
 
 // ------------------------------------------------------------
-// 네비게이션 (탭 이동 시 DB 재조회 없이 메모리 데이터 렌더링)
+// 네비게이션
 // ------------------------------------------------------------
 function setupNavigation() {
   $$('.nav-btn').forEach((btn) => {
@@ -219,11 +248,9 @@ function setupNavigation() {
       $('#screen-holdings').classList.toggle('screen--active', target === 'holdings');
       $('#screen-sell').classList.toggle('screen--active', target === 'sell');
       
-      // 탭 이동 시 API/DB 재조회 없이 기존 메모리 데이터 기반으로 화면만 다시 그림
       if (target === 'holdings') {
         const holdingsData = computeHoldings(transactions);
         renderHoldingsList(holdingsData.currentHoldings);
-        // 정확한 평가금액은 새로고침 버튼을 눌러 갱신 유도
       } else if (target === 'sell') {
         const holdingsData = computeHoldings(transactions);
         const priceMap = new Map();
@@ -235,7 +262,7 @@ function setupNavigation() {
 }
 
 // ------------------------------------------------------------
-// 매수 분석 (Search)
+// 매수 분석
 // ------------------------------------------------------------
 function setupSearch() { $('#search-btn').addEventListener('click', handleSearch); $('#ticker-input').addEventListener('keydown', (e) => { if (e.key === 'Enter') handleSearch(); }); }
 
@@ -243,15 +270,20 @@ async function handleSearch() {
   const query = $('#ticker-input').value.trim(), errorEl = $('#search-error');
   errorEl.hidden = true;
   if (!query) { errorEl.textContent = '종목명 또는 종목코드를 입력해 주세요.'; errorEl.hidden = false; return; }
+  
   const btn = $('#search-btn'); btn.disabled = true; btn.textContent = '조회 중…';
   try {
     const res = await fetch(`/api/quote?ticker=${encodeURIComponent(query)}`);
     const data = await res.json();
     if (!res.ok) throw new Error(data.error || '시세를 가져오지 못했습니다.');
-    currentQuote = data; renderQuote(data); updateMarketBadges(data);
+    currentQuote = data; 
+    renderQuote(data); 
+    updateMarketStatusBadge(data.market_status); 
+    updateDataStatusBadge(data.data_status);
   } catch (err) {
     errorEl.textContent = err.message || '시세를 가져오지 못했습니다. 잠시 후 다시 확인해 주세요.';
     errorEl.hidden = false; $('#quote-card').hidden = true; $('#analysis-result').hidden = true;
+    updateDataStatusBadge('ERROR');
   } finally { btn.disabled = false; btn.textContent = '조회'; }
 }
 
@@ -269,21 +301,21 @@ function renderQuote(q) {
   $('#quote-provider').textContent = `출처: ${q.provider || '-'}`; $('#analysis-result').hidden = true;
 }
 
-function updateMarketBadges(q) {
-  $('#market-status-badge').textContent = q.market_status || '상태 확인 중';
-  const dataBadge = $('#data-status-badge');
-  if (q.data_status === 'LATEST') { dataBadge.textContent = '방금 조회된 시세'; dataBadge.className = 'badge badge--positive'; }
-  else if (q.data_status === 'DELAYED') { dataBadge.textContent = '지연된 시세'; dataBadge.className = 'badge badge--warning'; }
-  else { dataBadge.textContent = '일부 정보 부족'; dataBadge.className = 'badge badge--muted'; }
-}
-
 async function refreshQuoteSilently(ticker) {
   try {
     const res = await fetch(`/api/quote?ticker=${encodeURIComponent(ticker)}`);
-    if (!res.ok) return;
+    if (!res.ok) {
+      updateDataStatusBadge('ERROR');
+      return;
+    }
     const data = await res.json();
-    if (currentQuote?.ticker === ticker) { currentQuote = data; renderQuote(data); updateMarketBadges(data); }
-  } catch {}
+    if (currentQuote?.ticker === ticker) { 
+      currentQuote = data; 
+      renderQuote(data); 
+      updateMarketStatusBadge(data.market_status);
+      updateDataStatusBadge(data.data_status);
+    }
+  } catch { updateDataStatusBadge('ERROR'); }
 }
 
 function setupAccordions() { $$('.accordion-trigger').forEach((trigger) => { trigger.addEventListener('click', () => { const expanded = trigger.getAttribute('aria-expanded') === 'true'; trigger.setAttribute('aria-expanded', String(!expanded)); }); }); }
@@ -303,7 +335,6 @@ async function loadHoldings() {
   await refreshHoldingsView(holdingsData);
 }
 
-// 시세만 갱신 (DB 재조회 없음)
 async function refreshHoldingsView(holdingsData) {
   if (!holdingsData) holdingsData = computeHoldings(transactions);
   const { currentHoldings } = holdingsData;
@@ -311,24 +342,28 @@ async function refreshHoldingsView(holdingsData) {
   let totalCost = 0, totalCurrentValue = 0;
   const priceMap = new Map();
   
+  if (currentHoldings.length === 0) {
+    renderHoldingsSummary(holdingsData, 0, 0);
+    return;
+  }
+
   for (const h of currentHoldings) {
     totalCost += h.totalCost;
     try {
       const res = await fetch(`/api/quote?ticker=${h.ticker}`);
       if (res.ok) { 
         const q = await res.json(); 
+        if (priceMap.size === 0) {
+          updateMarketStatusBadge(q.market_status);
+          updateDataStatusBadge(q.data_status);
+        }
         if (q.price != null) { 
           totalCurrentValue += q.price * h.qty; 
           priceMap.set(h.ticker, q.price);
-          
-          // 초기 로드 시 배지 업데이트를 위해 첫 번째 종목의 시세 정보 활용
-          if (priceMap.size === 1) {
-            updateMarketBadges(q);
-          }
           continue; 
         } 
       }
-    } catch {}
+    } catch { updateDataStatusBadge('ERROR'); }
     totalCurrentValue += h.totalCost;
     await new Promise(r => setTimeout(r, 250));
   }
@@ -348,9 +383,13 @@ async function refreshSellView() {
       const res = await fetch(`/api/quote?ticker=${h.ticker}`);
       if (res.ok) { 
         const q = await res.json(); 
+        if (priceMap.size === 0) {
+          updateMarketStatusBadge(q.market_status);
+          updateDataStatusBadge(q.data_status);
+        }
         if (q.price != null) priceMap.set(h.ticker, q.price); 
       }
-    } catch {}
+    } catch { updateDataStatusBadge('ERROR'); }
     await new Promise(r => setTimeout(r, 250));
   }
   
@@ -366,9 +405,12 @@ async function refreshSellView() {
 }
 
 // ------------------------------------------------------------
-// 매수/매도 AI 분석
+// 매수/매도 AI 분석 (인증 오류 수정)
 // ------------------------------------------------------------
-function setupAnalyze() { $('#analyze-btn').addEventListener('click', () => runAnalysis('buy')); $('#sell-analyze-btn').addEventListener('click', () => runAnalysis('sell')); }
+function setupAnalyze() { 
+  $('#analyze-btn').addEventListener('click', () => runAnalysis('buy')); 
+  $('#sell-analyze-btn').addEventListener('click', () => runAnalysis('sell')); 
+}
 
 async function runAnalysis(type) {
   const targetTicker = type === 'sell' ? selectedSellTarget?.ticker : currentQuote?.ticker;
@@ -377,8 +419,12 @@ async function runAnalysis(type) {
 
   if (!targetTicker) return;
 
-  const { data: { session } } = await supabase.auth.getSession();
-  if (!session) { alert('로그인이 필요합니다.'); return; }
+  // 세션 유효성 재확인
+  const { data: { session }, error: sessionError } = await supabase.auth.getSession();
+  if (sessionError || !session || !session.access_token) {
+    alert('로그인 세션이 만료되었습니다. 다시 로그인해 주세요.');
+    return;
+  }
 
   const btn = type === 'sell' ? $('#sell-analyze-btn') : $('#analyze-btn');
   const resultContainer = type === 'sell' ? $('#sell-analysis-result') : $('#analysis-result');
@@ -400,13 +446,30 @@ async function runAnalysis(type) {
       };
     }
 
-    const res = await fetch('/api/analyze', { method: 'POST', headers: { 'content-type': 'application/json', authorization: `Bearer ${session.access_token}` }, body: JSON.stringify(payload) });
-    const data = await res.json(); if (!res.ok) throw new Error(data.error || '분석에 실패했습니다.');
+    const res = await fetch('/api/analyze', { 
+      method: 'POST', 
+      headers: { 
+        'content-type': 'application/json', 
+        authorization: `Bearer ${session.access_token}` 
+      }, 
+      body: JSON.stringify(payload) 
+    });
+    
+    const data = await res.json(); 
+    
+    // 401 Unauthorized 처리
+    if (res.status === 401) {
+      throw new Error('인증이 만료되었습니다. 새로고침 후 다시 시도해 주세요.');
+    }
+    if (!res.ok) throw new Error(data.error || '분석에 실패했습니다.');
     
     renderAnalysisResult(data, type);
     fetchNewsSilently(targetTicker, type);
-  } catch (err) { alert(err.message || '분석에 실패했습니다.'); }
-  finally { btn.disabled = false; btn.textContent = type === 'sell' ? 'AI 매도 분석하기' : '매수 분석하기'; }
+  } catch (err) { 
+    alert(err.message || '분석에 실패했습니다.'); 
+  } finally { 
+    btn.disabled = false; btn.textContent = type === 'sell' ? 'AI 매도 분석하기' : 'AI 매수 분석하기'; 
+  }
 }
 
 function renderAnalysisResult(data, type) {

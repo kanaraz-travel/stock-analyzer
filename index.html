@@ -41,7 +41,6 @@
           <span id="market-status-badge" class="badge">시장 상태 확인 중</span>
           <span id="data-status-badge" class="badge badge--muted">데이터 상태 확인 중</span>
         </div>
-        <!-- 새로고침 버튼: 초기 상태 disabled 및 텍스트 설정 -->
         <button id="refresh-btn" class="refresh-btn" type="button" disabled>새로고침 (5)</button>
       </div>
     </header>
@@ -72,7 +71,8 @@
           <span id="quote-as-of">시세 시각: -</span>
           <span id="quote-provider">출처: -</span>
         </div>
-        <button id="analyze-btn" class="btn btn--primary btn--block" type="button">매수 분석하기</button>
+        <!-- 텍스트 변경 -->
+        <button id="analyze-btn" class="btn btn--primary btn--block" type="button">AI 매수 분석하기</button>
       </section>
 
       <section id="analysis-result" class="card" hidden>
@@ -134,17 +134,29 @@
         <h2 class="section-title" id="tx-form-title">거래 등록</h2>
         <form id="transaction-form" class="tx-form" novalidate>
           <input type="hidden" id="tx-id" />
-          <label class="label">종목명 <input id="tx-stock-name" type="text" placeholder="예: 삼성전자" required /></label>
-          <label class="label">거래 종류
-            <select id="tx-type" required>
-              <option value="BUY">매수</option>
-              <option value="SELL">매도</option>
-            </select>
-          </label>
-          <label class="label">거래일 <input id="tx-date" type="date" required /></label>
-          <label class="label">단가 <input id="tx-price" type="number" step="0.0001" min="0.0001" required /></label>
-          <label class="label">수량 <input id="tx-qty" type="number" step="0.000001" min="0.000001" required /></label>
-          <button class="btn btn--primary btn--block" type="submit" id="tx-submit-btn">거래 저장</button>
+          
+          <!-- 레이아웃 변경: 1줄에 3개 -->
+          <div class="form-row form-row--3">
+            <label class="label">종목명 <input id="tx-stock-name" type="text" placeholder="종목명" required /></label>
+            <label class="label">거래 종류
+              <select id="tx-type" required>
+                <option value="BUY">매수</option>
+                <option value="SELL">매도</option>
+              </select>
+            </label>
+            <label class="label">거래일 <input id="tx-date" type="date" required /></label>
+          </div>
+
+          <!-- 레이아웃 변경: 1줄에 3개 (단가, 수량, 버튼) -->
+          <div class="form-row form-row--3">
+            <label class="label">단가 <input id="tx-price" type="number" step="0.0001" min="0.0001" required /></label>
+            <label class="label">수량 <input id="tx-qty" type="number" step="0.000001" min="0.000001" required /></label>
+            <div class="label label--button">
+              <span class="label-text"> </span>
+              <button class="btn btn--primary btn--block" type="submit" id="tx-submit-btn">거래 저장</button>
+            </div>
+          </div>
+
           <button class="btn btn--block" type="button" id="tx-cancel-btn" hidden>취소</button>
           <p id="tx-error" class="error-text" hidden></p>
         </form>
