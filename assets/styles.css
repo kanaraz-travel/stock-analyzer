@@ -6,10 +6,16 @@
   --text-muted: #6b7280;
   --primary: #2563eb;
   --primary-dim: #93c5fd;
-  /* 플러스는 빨간색, 마이너스는 파란색 */
-  --positive: #ef4444; /* Red */
-  --negative: #3b82f6; /* Blue */
-  --warning: #f59e0b;
+  
+  /* 수익률 전용 색상 (플러스: 빨강, 마이너스: 파랑) */
+  --color-up: #ef4444; 
+  --color-down: #3b82f6; 
+  
+  /* 상태 배지 전용 색상 (정규장: 초록, 애프터: 주황, 끊김: 회색) */
+  --status-green: #10b981;
+  --status-orange: #f59e0b;
+  --status-gray: #9ca3af;
+  
   --border: #e5e7eb;
   --radius: 16px;
   --nav-h: 64px;
@@ -30,11 +36,12 @@ body { max-width: 480px; margin: 0 auto; min-height: 100vh; }
 .header-meta { display: flex; justify-content: space-between; align-items: center; gap: 6px; margin-top: 8px; flex-wrap: wrap; }
 .header-badges { display: flex; gap: 6px; flex-wrap: wrap; }
 
+/* 상태 배지 색상 분리 */
 .badge { font-size: 11px; padding: 3px 8px; border-radius: 999px; background: var(--surface-2); color: var(--text-muted); border: 1px solid var(--border); }
 .badge--muted { opacity: 0.8; }
-.badge--positive { background: #fef2f2; color: var(--positive); border-color: #fecaca; }
-.badge--negative { background: #eff6ff; color: var(--negative); border-color: #bfdbfe; }
-.badge--warning { background: #fffbeb; color: var(--warning); border-color: #fde68a; }
+.badge--status-green { background: #ecfdf5; color: var(--status-green); border-color: #a7f3d0; }
+.badge--status-orange { background: #fffbeb; color: var(--status-orange); border-color: #fde68a; }
+.badge--status-gray { background: #f3f4f6; color: var(--status-gray); border-color: #e5e7eb; }
 
 .refresh-btn { background: var(--surface); border: 1px solid var(--border); border-radius: 8px; padding: 4px 10px; color: var(--text-muted); font-size: 11px; font-weight: 600; cursor: pointer; white-space: nowrap; transition: all 0.2s; }
 .refresh-btn:hover { color: var(--text); border-color: var(--text-muted); }
@@ -66,28 +73,29 @@ body { max-width: 480px; margin: 0 auto; min-height: 100vh; }
 .btn--primary { background: var(--primary); color: #fff; }
 .btn--primary:disabled { background: var(--primary-dim); opacity: 0.6; cursor: not-allowed; }
 .btn--block { width: 100%; margin-top: 8px; }
+.btn--half { flex: 1; margin-top: 0; padding: 10px; font-size: 14px; }
 
 .quote-head { display: flex; justify-content: space-between; align-items: flex-start; gap: 12px; }
 .stock-name { font-size: 20px; font-weight: 700; }
 .quote-price-wrap { text-align: right; }
 .current-price { font-size: 26px; font-weight: 800; letter-spacing: -0.5px; }
 .change-rate { font-size: 14px; font-weight: 600; }
-.change-rate.positive { color: var(--positive); }
-.change-rate.negative { color: var(--negative); }
+.change-rate.positive { color: var(--color-up); }
+.change-rate.negative { color: var(--color-down); }
 .quote-meta { display: flex; justify-content: space-between; font-size: 11px; color: var(--text-muted); margin-top: 10px; }
 
 .analysis-head { display: flex; justify-content: space-between; align-items: center; margin-bottom: 12px; gap: 8px; flex-wrap: wrap; }
 .recommendation-badge { font-size: 18px; font-weight: 800; padding: 8px 16px; border-radius: 999px; background: var(--surface-2); }
-.recommendation-badge--buy { background: #fef2f2; color: var(--positive); }
-.recommendation-badge--sell { background: #eff6ff; color: var(--negative); }
-.recommendation-badge--hold { background: #fffbeb; color: var(--warning); }
+.recommendation-badge--buy { background: #fef2f2; color: var(--color-up); }
+.recommendation-badge--sell { background: #eff6ff; color: var(--color-down); }
+.recommendation-badge--hold { background: #fffbeb; color: var(--status-orange); }
 .recommendation-badge--pending { background: var(--surface-2); color: var(--text-muted); }
 .analysis-timestamp { font-size: 11px; color: var(--text-muted); }
 .overall-summary { font-size: 15px; line-height: 1.65; margin-bottom: 14px; }
 .body-text { font-size: 14px; color: var(--text); line-height: 1.65; }
 .note-text { font-size: 12px; color: var(--text-muted); margin-top: 8px; }
 .risk-note { font-size: 11px; color: var(--text-muted); margin-top: 16px; line-height: 1.5; }
-.error-text { color: var(--negative); font-size: 13px; margin-top: 8px; }
+.error-text { color: var(--color-down); font-size: 13px; margin-top: 8px; }
 
 .accordion { border-top: 1px solid var(--border); }
 .accordion-trigger { width: 100%; display: flex; justify-content: space-between; align-items: center; padding: 16px 4px; background: none; border: none; color: var(--text); font-size: 15px; font-weight: 600; cursor: pointer; text-align: left; }
@@ -109,8 +117,8 @@ body { max-width: 480px; margin: 0 auto; min-height: 100vh; }
 .summary-item { background: var(--surface-2); border-radius: 12px; padding: 12px; border: 1px solid var(--border); }
 .summary-label { display: block; font-size: 11px; color: var(--text-muted); margin-bottom: 4px; }
 .summary-value { font-size: 15px; font-weight: 700; }
-.summary-value .positive, .summary-rate.positive { color: var(--positive); }
-.summary-value .negative, .summary-rate.negative { color: var(--negative); }
+.summary-value .positive, .summary-rate.positive { color: var(--color-up); }
+.summary-value .negative, .summary-rate.negative { color: var(--color-down); }
 .summary-rate { font-size: 12px; font-weight: 500; margin-left: 4px; }
 
 .holdings-list { display: flex; flex-direction: column; gap: 10px; }
@@ -122,9 +130,15 @@ body { max-width: 480px; margin: 0 auto; min-height: 100vh; }
 .holding-data { display: flex; justify-content: space-between; align-items: center; font-size: 13px; }
 .holding-data .dt { color: var(--text-muted); }
 .holding-data .dd { font-weight: 600; }
-.holding-data .dd.positive { color: var(--positive); }
-.holding-data .dd.negative { color: var(--negative); }
+.holding-data .dd.positive { color: var(--color-up); }
+.holding-data .dd.negative { color: var(--color-down); }
 .empty-text { color: var(--text-muted); font-size: 14px; text-align: center; padding: 20px 0; }
+
+/* 보유 종목 카드 내 버튼 정렬 */
+.holding-actions { display: flex; gap: 8px; margin-bottom: 8px; }
+
+/* 인라인 분석 결과 영역 */
+.holding-inline-result { margin-top: 16px; padding-top: 16px; border-top: 1px dashed var(--border); }
 
 .tx-toggle { width: 100%; padding: 10px; background: var(--surface-2); border: 1px solid var(--border); border-radius: 8px; color: var(--text-muted); font-size: 13px; cursor: pointer; }
 .tx-toggle:hover { color: var(--text); border-color: var(--text-muted); }
@@ -132,13 +146,13 @@ body { max-width: 480px; margin: 0 auto; min-height: 100vh; }
 .tx-row { display: grid; grid-template-columns: 1fr auto; gap: 8px; align-items: center; padding: 10px 0; border-bottom: 1px solid var(--border); }
 .tx-row:last-child { border-bottom: none; }
 .tx-main { font-size: 13px; line-height: 1.5; }
-.tx-type-buy { color: var(--positive); font-weight: 700; }
-.tx-type-sell { color: var(--negative); font-weight: 700; }
+.tx-type-buy { color: var(--color-up); font-weight: 700; }
+.tx-type-sell { color: var(--color-down); font-weight: 700; }
 .tx-date { color: var(--text-muted); font-size: 11px; margin-top: 2px; }
 .tx-actions { display: flex; gap: 4px; }
 .tx-action-btn { background: var(--surface-2); border: 1px solid var(--border); border-radius: 6px; padding: 4px 8px; font-size: 11px; color: var(--text-muted); cursor: pointer; }
 .tx-action-btn:hover { color: var(--text); }
-.tx-action-btn--danger:hover { color: var(--negative); border-color: var(--negative); }
+.tx-action-btn--danger:hover { color: var(--color-down); border-color: var(--color-down); }
 
 .tx-form .label { margin-bottom: 8px; }
 

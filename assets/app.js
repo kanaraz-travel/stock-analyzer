@@ -10,7 +10,7 @@ const supabase = createClient(SUPABASE_URL, SUPABASE_ANON_KEY, {
 
 const ALLOWED_NAMES = ['박필립', '윤혜영'];
 let currentUser = null, currentQuote = null, transactions = [], editingTxId = null;
-let currentScreen = 'analysis'; // 'analysis' or 'holdings'
+let currentScreen = 'holdings'; // 초기 진입 탭을 내 보유 주식으로 설정
 
 let countdown = 5;
 let countdownInterval = null;
@@ -34,7 +34,7 @@ async function handleAuthState(session) {
     $('#screen-login').hidden = true; $('#app-shell').hidden = false;
     $('#current-user-name').textContent = mapEmailToName(currentUser.email) || currentUser.email || '';
     
-    switchScreen('analysis'); // 기본 진입 화면
+    switchScreen('holdings'); // 내 보유 주식 탭으로 진입
     updateMarketStatusBadge(getMarketStatusClient());
 
     await loadHoldings(); 
@@ -147,16 +147,16 @@ function getMarketStatusClient() {
 
 function updateMarketStatusBadge(statusText) {
   const badge = $('#market-status-badge'); badge.textContent = statusText;
-  if (statusText.includes('정규장')) badge.className = 'badge badge--positive';
-  else if (statusText.includes('애프터마켓')) badge.className = 'badge badge--warning';
-  else badge.className = 'badge badge--muted';
+  if (statusText.includes('정규장')) badge.className = 'badge badge--status-green';
+  else if (statusText.includes('애프터마켓')) badge.className = 'badge badge--status-orange';
+  else badge.className = 'badge badge--status-gray';
 }
 
 function updateDataStatusBadge(status) {
   const badge = $('#data-status-badge');
-  if (status === 'LATEST') { badge.textContent = '연결 원활'; badge.className = 'badge badge--positive'; }
-  else if (status === 'DELAYED') { badge.textContent = '지연'; badge.className = 'badge badge--warning'; }
-  else { badge.textContent = '연결 끊김'; badge.className = 'badge badge--muted'; }
+  if (status === 'LATEST') { badge.textContent = '연결 원활'; badge.className = 'badge badge--status-green'; }
+  else if (status === 'DELAYED') { badge.textContent = '지연'; badge.className = 'badge badge--status-orange'; }
+  else { badge.textContent = '연결 끊김'; badge.className = 'badge badge--status-gray'; }
 }
 
 function switchScreen(target) {
@@ -211,10 +211,17 @@ function renderQuote(q) {
 async function refreshQuoteSilently(ticker) {
   try {
     const res = await fetch(`/api/quote?ticker=${encodeURIComponent(ticker)}`);
-    if (!res.ok) { updateDataStatusBadge('ERROR'); return; }
+    if (!res.ok) { 
+      console.warn(`[시세조회 실패] ${ticker}: ${res.status}`);
+      updateDataStatusBadge('ERROR'); 
+      return; 
+    }
     const data = await res.json();
     if (currentQuote?.ticker === ticker) { currentQuote = data; renderQuote(data); updateMarketStatusBadge(data.market_status); updateDataStatusBadge(data.data_status); }
-  } catch { updateDataStatusBadge('ERROR'); }
+  } catch (err) { 
+    console.error(`[시세조회 에러] ${ticker}:`, err);
+    updateDataStatusBadge('ERROR'); 
+  }
 }
 
 function setupAccordions() { $$('.accordion-trigger').forEach((trigger) => { trigger.addEventListener('click', () => { const expanded = trigger.getAttribute('aria-expanded') === 'true'; trigger.setAttribute('aria-expanded', String(!expanded)); }); }); }
@@ -245,9 +252,20 @@ async function refreshHoldingsView(holdingsData) {
       if (res.ok) { 
         const q = await res.json(); 
         if (priceMap.size === 0) { updateMarketStatusBadge(q.market_status); updateDataStatusBadge(q.data_status); }
-        if (q.price != null) { totalCurrentValue += q.price * h.qty; priceMap.set(h.ticker, q.price); continue; } 
+        if (q.price != null) { 
+          totalCurrentValue += q.price * h.qty; 
+          priceMap.set(h.ticker, q.price); 
+          continue; 
+        } else {
+          console.warn(`[시세 데이터 없음] ${h.stock_name}(${h.ticker}) - 응답에 가격 정보가 없습니다.`);
+        }
+      } else {
+        console.warn(`[시세조회 실패] ${h.stock_name}(${h.ticker}): HTTP ${res.status}`);
       }
-    } catch { updateDataStatusBadge('ERROR'); }
+    } catch (err) { 
+      console.error(`[시세조회 에러] ${h.stock_name}(${h.ticker}):`, err);
+      updateDataStatusBadge('ERROR'); 
+    }
     totalCurrentValue += h.totalCost;
     await new Promise(r => setTimeout(r, 250));
   }
@@ -256,9 +274,9 @@ async function refreshHoldingsView(holdingsData) {
   renderHoldingsSummary(holdingsData, totalCost, totalCurrentValue);
 }
 
-function setupAnalyze() { $('#analyze-btn').addEventListener('click', () => runAnalysis(currentQuote?.ticker, currentQuote?.stock_name, currentQuote?.price)); }
+function setupAnalyze() { $('#analyze-btn').addEventListener('click', () => runAnalysis(currentQuote?.ticker, currentQuote?.stock_name, currentQuote?.price, 'main')); }
 
-async function runAnalysis(ticker, name, price) {
+async function runAnalysis(ticker, name, price, targetType = 'main', cardElement = null) {
   if (!ticker) return;
 
   let { data: { session }, error: sessionError } = await supabase.auth.getSession();
@@ -268,8 +286,15 @@ async function runAnalysis(ticker, name, price) {
     session = refreshedSession;
   }
 
-  const btn = $('#analyze-btn');
-  btn.disabled = true; btn.textContent = '분석 중…'; $('#analysis-result').hidden = true;
+  const btn = targetType === 'main' ? $('#analyze-btn') : cardElement.querySelector('.btn-ai-analyze');
+  const originalText = btn.textContent;
+  btn.disabled = true; btn.textContent = '분석 중…';
+  
+  if (targetType === 'main') $('#analysis-result').hidden = true;
+  else {
+    const inlineResult = cardElement.querySelector('.holding-inline-result');
+    if (inlineResult) { inlineResult.hidden = true; inlineResult.innerHTML = ''; }
+  }
 
   try {
     const payload = {
@@ -285,14 +310,29 @@ async function runAnalysis(ticker, name, price) {
       const { data: { session: retrySession } } = await supabase.auth.refreshSession();
       if (retrySession) {
         const retryRes = await fetch('/api/analyze', { method: 'POST', headers: { 'content-type': 'application/json', authorization: `Bearer ${retrySession.access_token}` }, body: JSON.stringify(payload) });
-        if (retryRes.ok) { const retryData = await retryRes.json(); renderAnalysisResult(retryData); return; }
+        if (retryRes.ok) { 
+          const retryData = await retryRes.json(); 
+          if (targetType === 'main') renderAnalysisResult(retryData);
+          else renderInlineAnalysisResult(retryData, cardElement);
+          return; 
+        }
       }
       throw new Error('인증이 만료되었습니다. 다시 로그인해 주세요.');
     }
     if (!res.ok) throw new Error(data.error || '분석에 실패했습니다.');
-    renderAnalysisResult(data); fetchNewsSilently(ticker);
-  } catch (err) { alert(err.message || '분석에 실패했습니다.'); }
-  finally { btn.disabled = false; btn.textContent = 'AI 분석하기'; }
+    
+    if (targetType === 'main') {
+      renderAnalysisResult(data); 
+      fetchNewsSilently(ticker);
+    } else {
+      renderInlineAnalysisResult(data, cardElement);
+    }
+  } catch (err) { 
+    alert(err.message || '분석에 실패했습니다.'); 
+  }
+  finally { 
+    btn.disabled = false; btn.textContent = originalText; 
+  }
 }
 
 function renderAnalysisResult(data) {
@@ -313,6 +353,35 @@ function renderAnalysisResult(data) {
   $('#ai-fallback-note').hidden = !data.fallback;
   if (data.fallback && data.debug) console.warn('AI Fallback 발생 원인:', data.debug);
   renderNewsList(data.news_items || []);
+}
+
+// 내 보유 주식 카드 내 인라인 분석 결과 렌더링
+function renderInlineAnalysisResult(data, cardElement) {
+  const container = cardElement.querySelector('.holding-inline-result');
+  if (!container) return;
+  container.hidden = false;
+
+  const rec = data.recommendation || '판단 보류';
+  let badgeClass = 'recommendation-badge--pending';
+  if (rec.includes('매수')) badgeClass = 'recommendation-badge--buy';
+  else if (rec.includes('매도')) badgeClass = 'recommendation-badge--sell';
+  else if (rec.includes('기다리기') || rec.includes('보유')) badgeClass = 'recommendation-badge--hold';
+
+  container.innerHTML = `
+    <div class="analysis-head">
+      <div class="recommendation-badge ${badgeClass}">${rec}</div>
+      <div class="analysis-timestamp">${formatDateTime(new Date().toISOString())}</div>
+    </div>
+    <p class="overall-summary" style="font-size:14px; margin-bottom:8px;">${data.overall_summary || '-'}</p>
+    
+    <div style="font-size:13px; line-height:1.6; color:var(--text);">
+      <p><strong>가격 분석:</strong> ${data.price_flow_summary || '-'}</p>
+      <p><strong>거래량 분석:</strong> ${data.volume_summary || '-'}</p>
+      <p><strong>최근 뉴스:</strong> ${data.news_summary || '-'}</p>
+      <div class="tip-box" style="margin-top:8px; font-size:12px;"><strong>주식 TIP</strong>${data.price_tip || '참고용입니다.'}</div>
+    </div>
+    ${data.fallback ? `<p class="note-text" style="font-size:11px; margin-top:8px;">AI 일일 한도 초과로 기본 분석을 표시합니다.</p>` : ''}
+  `;
 }
 
 async function fetchNewsSilently(ticker) {
@@ -361,7 +430,6 @@ function renderHoldingsSummary(holdingsData, totalCost, totalCurrentValue) {
   $('#realized-pnl').innerHTML = `<span class="${totalRealizedPnl > 0 ? 'positive' : totalRealizedPnl < 0 ? 'negative' : ''}">${formatCurrency(totalRealizedPnl)} (${realizedRate > 0 ? '+' : ''}${realizedRate.toFixed(2)}%)</span>`;
 }
 
-// 보유 종목 리스트 렌더링 (요청한 순서 및 색상 적용, AI 분석 버튼 추가)
 function renderHoldingsList(holdings, priceMap) {
   const list = $('#holdings-list'); list.innerHTML = '';
   if (holdings.length === 0) { const p = document.createElement('p'); p.className = 'empty-text'; p.textContent = '아직 등록된 거래가 없습니다.'; list.appendChild(p); return; }
@@ -380,7 +448,6 @@ function renderHoldingsList(holdings, priceMap) {
     const qtyEl = document.createElement('span'); qtyEl.className = 'holding-qty'; qtyEl.textContent = `${formatNumber(h.qty)}주`;
     header.appendChild(nameEl); header.appendChild(qtyEl); card.appendChild(header);
 
-    // 순서 변경: 매수 원가, 평가 금액 / 평균 매수가, 현재가 / 평가 손익, 수익률
     const grid = document.createElement('div'); grid.className = 'holding-grid';
     grid.innerHTML = `
       <div class="holding-data"><span class="dt">매수 원가</span><span class="dd">${formatCurrency(h.totalCost)}</span></div>
@@ -394,19 +461,35 @@ function renderHoldingsList(holdings, priceMap) {
     `;
     card.appendChild(grid);
 
-    // AI 분석하기 버튼 추가
+    // 버튼 2개를 한 줄에 배치
+    const actionRow = document.createElement('div');
+    actionRow.className = 'holding-actions';
+    
     const aiBtn = document.createElement('button');
     aiBtn.type = 'button';
-    aiBtn.className = 'btn btn--primary btn--block';
+    aiBtn.className = 'btn btn--primary btn--half btn-ai-analyze';
     aiBtn.textContent = 'AI 분석하기';
-    aiBtn.style.marginTop = '8px';
-    aiBtn.style.marginBottom = '8px';
-    aiBtn.addEventListener('click', () => runAnalysis(h.ticker, h.stock_name, currentPrice));
-    card.appendChild(aiBtn);
+    aiBtn.addEventListener('click', () => runAnalysis(h.ticker, h.stock_name, currentPrice, 'inline', card));
+    actionRow.appendChild(aiBtn);
 
-    const toggle = document.createElement('button'); toggle.type = 'button'; toggle.className = 'tx-toggle'; toggle.setAttribute('aria-expanded', 'false'); toggle.textContent = `거래 내역 보기 (${h.transactions.length}건)`; card.appendChild(toggle);
+    const toggle = document.createElement('button'); 
+    toggle.type = 'button'; 
+    toggle.className = 'tx-toggle btn--half'; 
+    toggle.setAttribute('aria-expanded', 'false'); 
+    toggle.textContent = `거래 내역 (${h.transactions.length}건)`; 
+    actionRow.appendChild(toggle);
+    
+    card.appendChild(actionRow);
+
+    // 인라인 분석 결과 영역
+    const inlineResult = document.createElement('div');
+    inlineResult.className = 'holding-inline-result';
+    inlineResult.hidden = true;
+    card.appendChild(inlineResult);
+
     const txList = document.createElement('div'); txList.className = 'tx-list'; txList.hidden = true; h.transactions.forEach((tx) => { txList.appendChild(renderTransactionRow(tx)); }); card.appendChild(txList);
-    toggle.addEventListener('click', () => { const expanded = toggle.getAttribute('aria-expanded') === 'true'; toggle.setAttribute('aria-expanded', String(!expanded)); txList.hidden = expanded; toggle.textContent = expanded ? `거래 내역 보기 (${h.transactions.length}건)` : '거래 내역 숨기기'; });
+    
+    toggle.addEventListener('click', () => { const expanded = toggle.getAttribute('aria-expanded') === 'true'; toggle.setAttribute('aria-expanded', String(!expanded)); txList.hidden = expanded; toggle.textContent = expanded ? `거래 내역 (${h.transactions.length}건)` : '거래 내역 숨기기'; });
     list.appendChild(card);
   });
 }

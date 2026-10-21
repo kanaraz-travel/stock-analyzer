@@ -9,7 +9,6 @@
   <link rel="stylesheet" href="/assets/styles.css" />
 </head>
 <body>
-  <!-- 로그인 화면 -->
   <main id="screen-login" class="login-screen">
     <div class="login-wrap">
       <div class="login-header">
@@ -26,7 +25,6 @@
     </div>
   </main>
 
-  <!-- 앱 본체 -->
   <div id="app-shell" hidden>
     <header class="app-header">
       <div class="header-row">
@@ -46,7 +44,7 @@
     </header>
 
     <!-- 화면 A: 주식 분석 -->
-    <main id="screen-analysis" class="screen screen--active">
+    <main id="screen-analysis" class="screen">
       <section class="card search-card">
         <label for="ticker-input" class="label">종목 검색</label>
         <div class="search-row">
@@ -73,7 +71,6 @@
         <button id="analyze-btn" class="btn btn--primary btn--block" type="button">AI 분석하기</button>
       </section>
 
-      <!-- 분석 결과 (공통) -->
       <section id="analysis-result" class="card" hidden>
         <div class="analysis-head">
           <div id="recommendation-badge" class="recommendation-badge">-</div>
@@ -116,8 +113,8 @@
       </section>
     </main>
 
-    <!-- 화면 B: 내 보유 주식 -->
-    <main id="screen-holdings" class="screen">
+    <!-- 화면 B: 내 보유 주식 (기본 진입) -->
+    <main id="screen-holdings" class="screen screen--active">
       <section class="card">
         <h2 class="section-title">보유 요약</h2>
         <div id="holdings-summary" class="summary-grid">
@@ -167,12 +164,11 @@
       </section>
     </main>
 
-    <!-- 하단 2개 탭 메뉴 -->
     <nav class="bottom-nav">
-      <button class="nav-btn nav-btn--active" data-screen="analysis" type="button">
+      <button class="nav-btn" data-screen="analysis" type="button">
         <span class="nav-icon">📊</span><span>주식 분석</span>
       </button>
-      <button class="nav-btn" data-screen="holdings" type="button">
+      <button class="nav-btn nav-btn--active" data-screen="holdings" type="button">
         <span class="nav-icon">💼</span><span>내 보유 주식</span>
       </button>
     </nav>
