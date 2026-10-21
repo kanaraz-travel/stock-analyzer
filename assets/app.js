@@ -17,7 +17,6 @@ let countdownInterval = null;
 let isRefreshing = false;
 
 let isAnalyzingMain = false;
-let pendingAnalysisTicker = null; 
 const priceCache = new Map();
 const analysisCache = new Map();
 
@@ -66,7 +65,7 @@ function mapEmailToName(email) {
 function resetState() {
   stopCountdown(); currentQuote = null; transactions = []; editingTxId = null;
   priceCache.clear(); analysisCache.clear();
-  isAnalyzingMain = false; pendingAnalysisTicker = null;
+  isAnalyzingMain = false;
   $('#quote-card').hidden = true; $('#analysis-result').hidden = true;
   $('#ticker-input').value = ''; $('#search-error').hidden = true;
   $('#transaction-form').reset(); $('#tx-id').value = ''; $('#tx-error').hidden = true;
@@ -288,12 +287,7 @@ async function refreshQuoteSilently(ticker) {
 }
 
 function setupAccordions() { 
-  $$('.accordion-trigger').forEach((trigger) => { 
-    trigger.addEventListener('click', () => { 
-      const expanded = trigger.getAttribute('aria-expanded') === 'true'; 
-      trigger.setAttribute('aria-expanded', String(!expanded)); 
-    }); 
-  }); 
+  // 아코디언 제거되었으므로 아무것도 하지 않음
 }
 
 async function loadHoldings() {
@@ -356,7 +350,6 @@ async function runAnalysis(ticker, name, price, targetType = 'main', cardElement
   
   if (targetType === 'main') {
     isAnalyzingMain = true;
-    pendingAnalysisTicker = ticker;
     $('#analysis-result').hidden = true;
   } else {
     const inlineResult = cardElement.querySelector('.holding-inline-result');
@@ -376,11 +369,21 @@ async function runAnalysis(ticker, name, price, targetType = 'main', cardElement
     if (txForTicker.length > 0) {
       const result = computeHoldings(txForTicker).currentHoldings[0];
       if (result && result.qty > 0) {
+        // ★ 매수/매도 기간 정보 추출
+        const buys = txForTicker.filter(t => t.transaction_type === 'BUY');
+        const sells = txForTicker.filter(t => t.transaction_type === 'SELL');
+        const firstBuyDate = buys.length > 0 ? buys[0].trade_date : null;
+        const lastBuyDate = buys.length > 0 ? buys[buys.length - 1].trade_date : null;
+        const lastSellDate = sells.length > 0 ? sells[sells.length - 1].trade_date : null;
+        
         holdingsData = {
           quantity: result.qty,
           avg_cost: result.avgCost,
           return_rate: ((price - result.avgCost) / result.avgCost) * 100,
-          total_cost: result.totalCost
+          total_cost: result.totalCost,
+          first_buy_date: firstBuyDate,
+          last_buy_date: lastBuyDate,
+          last_sell_date: lastSellDate,
         };
       }
     }
@@ -455,7 +458,7 @@ async function runAnalysis(ticker, name, price, targetType = 'main', cardElement
     analysisCache.set(ticker, data);
     
     if (targetType === 'main') {
-      renderAnalysisResult(data, true); 
+      renderAnalysisResult(data, currentScreen === 'analysis'); 
     } else {
       renderInlineAnalysisResult(data, cardElement, true);
     }
@@ -466,11 +469,11 @@ async function runAnalysis(ticker, name, price, targetType = 'main', cardElement
     btn.disabled = false; btn.textContent = originalText; 
     if (targetType === 'main') {
       isAnalyzingMain = false;
-      pendingAnalysisTicker = null;
     }
   }
 }
 
+// ★ 메인 분석 결과 렌더링 (아코디언 제거, 명확한 블록 형태)
 function renderAnalysisResult(data, scrollTo = true) {
   $('#analysis-result').hidden = false;
   const badge = $('#recommendation-badge'); badge.textContent = data.recommendation || '판단 보류'; badge.className = 'recommendation-badge';
@@ -481,16 +484,14 @@ function renderAnalysisResult(data, scrollTo = true) {
   else badge.classList.add('recommendation-badge--pending');
   $('#analysis-timestamp').textContent = `분석 시각: ${formatDateTime(new Date().toISOString())}`;
   $('#overall-summary').textContent = data.overall_summary || '-';
-  $('#price-flow-summary').textContent = data.price_flow_summary || '-';
-  $('#volume-summary').textContent = data.volume_summary || '-';
-  $('#news-analysis-summary').textContent = data.news_analysis || '-';
+  $('#price-flow-summary').textContent = data.price_flow_summary || '데이터가 부족합니다.';
+  $('#volume-summary').textContent = data.volume_summary || '데이터가 부족합니다.';
+  $('#news-analysis-summary').textContent = data.news_analysis || '데이터가 부족합니다.';
   
   $('#ai-fallback-note').hidden = !data.fallback;
   if (data.fallback && data.debug) console.warn('AI Fallback 발생 원인:', data.debug);
   
-  renderNewsList(data.sources || []);
-  
-  if (scrollTo) {
+  if (scrollTo && currentScreen === 'analysis') {
     $('#analysis-result').scrollIntoView({ behavior: 'smooth', block: 'start' });
   }
 }
@@ -506,89 +507,31 @@ function renderInlineAnalysisResult(data, cardElement, scrollTo = true) {
   else if (rec.includes('매도')) badgeClass = 'recommendation-badge--sell';
   else if (rec.includes('기다리기') || rec.includes('보유')) badgeClass = 'recommendation-badge--hold';
 
-  // ★ 최근 뉴스 보기 아코디언 및 뉴스 분석 추가 (HTML 동적 생성)
   container.innerHTML = `
     <div class="analysis-head">
       <div class="recommendation-badge ${badgeClass}">${rec}</div>
       <div class="analysis-timestamp">${formatDateTime(new Date().toISOString())}</div>
     </div>
-    <p class="overall-summary" style="font-size:14px; margin-bottom:8px;">${data.overall_summary || '-'}</p>
+    <p class="overall-summary" style="font-size:14px; margin-bottom:14px;">${data.overall_summary || '-'}</p>
     
-    <div style="font-size:13px; line-height:1.6; color:var(--text); margin-bottom: 12px;">
-      <p><strong>가격 분석:</strong> ${data.price_flow_summary || '-'}</p>
-      <p><strong>거래량 분석:</strong> ${data.volume_summary || '-'}</p>
+    <div class="analysis-block">
+      <h4 class="analysis-block-title">가격 분석</h4>
+      <p style="font-size:13px; line-height:1.6;">${data.price_flow_summary || '-'}</p>
     </div>
-
-    <div class="accordion">
-      <button class="accordion-trigger" type="button" aria-expanded="false">
-        <span>뉴스 분석</span><span class="accordion-icon">▾</span>
-      </button>
-      <div class="accordion-panel">
-        <p class="body-text" style="font-size:13px; color:var(--text);">${data.news_analysis || '-'}</p>
-      </div>
+    <div class="analysis-block">
+      <h4 class="analysis-block-title">거래량 분석</h4>
+      <p style="font-size:13px; line-height:1.6;">${data.volume_summary || '-'}</p>
     </div>
-
-    <div class="accordion">
-      <button class="accordion-trigger" type="button" aria-expanded="false">
-        <span>최근 뉴스 보기</span><span class="accordion-icon">▾</span>
-      </button>
-      <div class="accordion-panel">
-        <ul class="news-list" id="inline-news-list-${data.id}"></ul>
-      </div>
+    <div class="analysis-block">
+      <h4 class="analysis-block-title">뉴스 분석</h4>
+      <p style="font-size:13px; line-height:1.6;">${data.news_analysis || '-'}</p>
     </div>
-    
     ${data.fallback ? `<p class="note-text" style="font-size:11px; margin-top:8px;">AI 일일 한도 초과로 기본 분석을 표시합니다.</p>` : ''}
   `;
-
-  // 뉴스 리스트 채우기
-  const inlineNewsList = container.querySelector(`#inline-news-list-${data.id}`);
-  if (inlineNewsList) {
-    const sources = data.sources || [];
-    if (!Array.isArray(sources) || sources.length === 0) { 
-      const li = document.createElement('li'); 
-      li.className = 'note-text'; 
-      li.textContent = '표시할 뉴스가 없습니다.'; 
-      inlineNewsList.appendChild(li); 
-    } else {
-      sources.slice(0, 3).forEach((item) => { // 최근 뉴스 3개만 노출
-        const li = document.createElement('li');
-        if (item.url) { 
-          const a = document.createElement('a'); a.className = 'news-title'; a.href = item.url; a.target = '_blank'; a.rel = 'noopener noreferrer'; a.textContent = item.title || '제목 없음'; li.appendChild(a); 
-        }
-        inlineNewsList.appendChild(li);
-      });
-    }
-  }
-  
-  // 동적 생성된 아코디언에 이벤트 바인딩
-  container.querySelectorAll('.accordion-trigger').forEach((trigger) => {
-    trigger.addEventListener('click', () => {
-      const expanded = trigger.getAttribute('aria-expanded') === 'true';
-      trigger.setAttribute('aria-expanded', String(!expanded));
-    });
-  });
   
   if (scrollTo) {
     container.scrollIntoView({ behavior: 'smooth', block: 'start' });
   }
-}
-
-function renderNewsList(sources) {
-  const list = $('#news-list'); list.innerHTML = '';
-  if (!Array.isArray(sources) || sources.length === 0) { 
-    const li = document.createElement('li'); 
-    li.className = 'note-text'; 
-    li.textContent = '표시할 뉴스가 없습니다.'; 
-    list.appendChild(li); 
-    return; 
-  }
-  sources.slice(0, 3).forEach((item) => { // 메인도 3개만 노출
-    const li = document.createElement('li');
-    if (item.url) { 
-      const a = document.createElement('a'); a.className = 'news-title'; a.href = item.url; a.target = '_blank'; a.rel = 'noopener noreferrer'; a.textContent = item.title || '제목 없음'; li.appendChild(a); 
-    }
-    list.appendChild(li);
-  });
 }
 
 function computeHoldings(txs) {

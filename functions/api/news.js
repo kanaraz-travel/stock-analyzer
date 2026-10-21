@@ -7,7 +7,9 @@ export async function onRequestGet(context) {
   if (!query) return jsonResponse({ error: '종목명을 입력해 주세요.' }, 400);
 
   try {
-    const rssUrl = `https://news.google.com/rss/search?q=${encodeURIComponent(query)}&hl=ko&gl=KR&ceid=KR:ko`;
+    // ★ 검색어에 '주가'를 추가하여 스포츠/연예 뉴스 필터링
+    const searchQuery = `${query} 주가`;
+    const rssUrl = `https://news.google.com/rss/search?q=${encodeURIComponent(searchQuery)}&hl=ko&gl=KR&ceid=KR:ko`;
     
     const res = await fetch(rssUrl, {
       headers: {
@@ -20,13 +22,19 @@ export async function onRequestGet(context) {
     }
 
     const xmlText = await res.text();
-    const items = parseRssItems(xmlText).slice(0, 5);
+    let items = parseRssItems(xmlText).slice(0, 10);
 
-    // 최근 5일 이내의 기사만 필터링
+    // ★ 스포츠/연예 관련 키워드가 포함된 뉴스 제외
+    const excludeKeywords = ['야구', '축구', '농구', '배구', '선수', '감독', '구단', '경기', '연예인', '아이돌', '배우', '가수', '결혼', '열애', '이혼'];
+    items = items.filter(item => {
+      const text = `${item.title}`;
+      return !excludeKeywords.some(kw => text.includes(kw));
+    });
+
+    // 최근 5일 이내 기사만 필터링
     const fiveDaysAgo = new Date();
     fiveDaysAgo.setDate(fiveDaysAgo.getDate() - 5);
-    
-    const recentItems = items.filter(item => new Date(item.published_at) >= fiveDaysAgo);
+    const recentItems = items.filter(item => new Date(item.published_at) >= fiveDaysAgo).slice(0, 3);
 
     return jsonResponse({
       items: recentItems,

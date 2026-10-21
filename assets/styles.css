@@ -65,12 +65,12 @@ body { max-width: 480px; margin: 0 auto; min-height: 100vh; }
 .note-text { font-size: 12px; color: var(--text-muted); margin-top: 8px; }
 .risk-note { font-size: 11px; color: var(--text-muted); margin-top: 16px; line-height: 1.5; }
 .error-text { color: var(--color-down); font-size: 13px; margin-top: 8px; }
-.accordion { border-top: 1px solid var(--border); }
-.accordion-trigger { width: 100%; display: flex; justify-content: space-between; align-items: center; padding: 16px 4px; background: none; border: none; color: var(--text); font-size: 15px; font-weight: 600; cursor: pointer; text-align: left; }
-.accordion-icon { transition: transform 0.2s; color: var(--text-muted); }
-.accordion-trigger[aria-expanded="true"] .accordion-icon { transform: rotate(180deg); }
-.accordion-panel { display: none; padding: 0 4px 16px; }
-.accordion-trigger[aria-expanded="true"] + .accordion-panel { display: block; }
+
+/* ★ 분석 블록 간격 스타일 추가 */
+.analysis-block { margin-bottom: 16px; padding-bottom: 12px; border-bottom: 1px solid #f0f0f0; }
+.analysis-block:last-of-type { border-bottom: none; }
+.analysis-block-title { font-size: 13px; font-weight: 700; color: var(--primary); margin-bottom: 6px; }
+
 .news-list { list-style: none; margin-top: 10px; }
 .news-list li { padding: 10px 0; border-top: 1px solid var(--border); }
 .news-list li:first-child { border-top: none; }
