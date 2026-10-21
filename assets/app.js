@@ -9,9 +9,14 @@ const supabase = createClient(SUPABASE_URL, SUPABASE_ANON_KEY, {
 });
 
 const ALLOWED_NAMES = ['박필립', '윤혜영'];
-let currentUser = null, currentQuote = null, transactions = [], refreshTimer = null, editingTxId = null;
+let currentUser = null, currentQuote = null, transactions = [], editingTxId = null;
 let selectedSellTarget = null;
-let currentScreen = 'buy'; // 'buy', 'holdings', 'sell'
+let currentScreen = 'buy';
+
+// 새로고침 및 카운트다운 상태
+let countdown = 5;
+let countdownInterval = null;
+let isRefreshing = false;
 
 const $ = (sel) => document.querySelector(sel);
 const $$ = (sel) => document.querySelectorAll(sel);
@@ -30,10 +35,13 @@ async function handleAuthState(session) {
   if (currentUser) {
     $('#screen-login').hidden = true; $('#app-shell').hidden = false;
     $('#current-user-name').textContent = mapEmailToName(currentUser.email) || currentUser.email || '';
-    await loadHoldings();
-    refreshCurrentScreen();
+    
+    // 초기 진입 시 1회 DB 로드 및 시세 조회
+    await loadHoldings(); 
+    startAutoRefresh(); // 5초 자동 갱신 시작
   } else {
     $('#screen-login').hidden = false; $('#app-shell').hidden = true; resetState();
+    stopAutoRefresh();
   }
 }
 
@@ -91,42 +99,85 @@ function mapAuthError(msg) {
 
 function setupLogoutButton() { $('#logout-btn').addEventListener('click', async () => { if (!confirm('로그아웃하시겠습니까?')) return; stopAutoRefresh(); await supabase.auth.signOut(); }); }
 
-// 새로고침 버튼 이벤트
+// ------------------------------------------------------------
+// 5초 자동 갱신 및 카운트다운
+// ------------------------------------------------------------
+function startAutoRefresh() {
+  stopAutoRefresh();
+  countdown = 5;
+  updateRefreshButton();
+  
+  countdownInterval = setInterval(async () => {
+    if (document.hidden) return;
+    
+    countdown--;
+    if (countdown <= 0) {
+      countdown = 5;
+      await performRefresh();
+    }
+    updateRefreshButton();
+  }, 1000);
+}
+
+function stopAutoRefresh() {
+  if (countdownInterval) clearInterval(countdownInterval);
+  countdownInterval = null;
+  updateRefreshButton();
+}
+
+async function performRefresh() {
+  if (isRefreshing) return;
+  isRefreshing = true;
+  try {
+    if (currentScreen === 'buy') {
+      if (currentQuote) await refreshQuoteSilently(currentQuote.ticker);
+    } else if (currentScreen === 'holdings') {
+      await refreshHoldingsView();
+    } else if (currentScreen === 'sell') {
+      await refreshSellView();
+    }
+  } finally {
+    isRefreshing = false;
+  }
+}
+
+function updateRefreshButton() {
+  const btn = $('#refresh-btn');
+  if (!btn) return;
+  if (document.hidden) {
+    btn.textContent = '새로고침 (일시중지)';
+    btn.disabled = true;
+  } else {
+    btn.textContent = `새로고침 (${countdown})`;
+    btn.disabled = false;
+  }
+}
+
 function setupRefreshButton() {
-  $('#refresh-btn').addEventListener('click', () => {
-    refreshCurrentScreen();
+  $('#refresh-btn').addEventListener('click', async () => {
+    if (isRefreshing) return;
+    countdown = 5;
+    updateRefreshButton();
+    await performRefresh();
   });
 }
 
-// 현재 화면에 따라 새로고침
-async function refreshCurrentScreen() {
-  if (currentScreen === 'holdings' || currentScreen === 'sell') {
-    await loadHoldings();
-  }
-  if (currentScreen === 'buy' && currentQuote) {
-    await refreshQuoteSilently(currentQuote.ticker);
-  }
-  if (currentScreen === 'sell' && selectedSellTarget) {
-    // 매도 분석 탭에서 선택된 종목이 있으면 수익률 갱신
-    try {
-      const res = await fetch(`/api/quote?ticker=${encodeURIComponent(selectedSellTarget.ticker)}`);
-      if (res.ok) {
-        const q = await res.json();
-        if (q.price != null) {
-          const holding = transactions.find(t => t.ticker === selectedSellTarget.ticker);
-          if (holding) {
-            selectedSellTarget.current_price = q.price;
-            selectSellTarget(selectedSellTarget);
-          }
-        }
-      }
-    } catch {}
-  }
+function setupVisibility() {
+  document.addEventListener('visibilitychange', () => {
+    if (document.hidden) {
+      updateRefreshButton();
+    } else {
+      updateRefreshButton();
+    }
+  });
 }
 
+// ------------------------------------------------------------
+// 네비게이션 (탭 이동 시 DB 재조회 없이 화면만 전환)
+// ------------------------------------------------------------
 function setupNavigation() {
   $$('.nav-btn').forEach((btn) => {
-    btn.addEventListener('click', () => {
+    btn.addEventListener('click', async () => {
       const target = btn.dataset.screen;
       currentScreen = target;
       $$('.nav-btn').forEach((b) => b.classList.toggle('nav-btn--active', b === btn));
@@ -134,12 +185,23 @@ function setupNavigation() {
       $('#screen-holdings').classList.toggle('screen--active', target === 'holdings');
       $('#screen-sell').classList.toggle('screen--active', target === 'sell');
       
-      if (target === 'holdings' || target === 'sell') loadHoldings();
+      // 탭 이동 시 현재 메모리 데이터를 기반으로 화면만 갱신 (API 호출 최소화)
+      if (target === 'holdings') {
+        await refreshHoldingsView();
+      } else if (target === 'sell') {
+        await refreshSellView();
+      }
+      
+      // 탭 이동 시 카운트다운 리셋
+      countdown = 5;
+      updateRefreshButton();
     });
   });
 }
 
-function setupAccordions() { $$('.accordion-trigger').forEach((trigger) => { trigger.addEventListener('click', () => { const expanded = trigger.getAttribute('aria-expanded') === 'true'; trigger.setAttribute('aria-expanded', String(!expanded)); }); }); }
+// ------------------------------------------------------------
+// 매수 분석 (Search)
+// ------------------------------------------------------------
 function setupSearch() { $('#search-btn').addEventListener('click', handleSearch); $('#ticker-input').addEventListener('keydown', (e) => { if (e.key === 'Enter') handleSearch(); }); }
 
 async function handleSearch() {
@@ -151,10 +213,10 @@ async function handleSearch() {
     const res = await fetch(`/api/quote?ticker=${encodeURIComponent(query)}`);
     const data = await res.json();
     if (!res.ok) throw new Error(data.error || '시세를 가져오지 못했습니다.');
-    currentQuote = data; renderQuote(data); updateMarketBadges(data); startAutoRefresh();
+    currentQuote = data; renderQuote(data); updateMarketBadges(data);
   } catch (err) {
     errorEl.textContent = err.message || '시세를 가져오지 못했습니다. 잠시 후 다시 확인해 주세요.';
-    errorEl.hidden = false; $('#quote-card').hidden = true; $('#analysis-result').hidden = true; stopAutoRefresh();
+    errorEl.hidden = false; $('#quote-card').hidden = true; $('#analysis-result').hidden = true;
   } finally { btn.disabled = false; btn.textContent = '조회'; }
 }
 
@@ -180,15 +242,6 @@ function updateMarketBadges(q) {
   else { dataBadge.textContent = '일부 정보 부족'; dataBadge.className = 'badge badge--muted'; }
 }
 
-function startAutoRefresh() {
-  stopAutoRefresh();
-  refreshTimer = setInterval(() => {
-    if (document.hidden || !currentQuote?.ticker) return;
-    if ($('#ticker-input').value.trim() !== currentQuote.ticker && $('#ticker-input').value.trim() !== currentQuote.stock_name) return;
-    refreshQuoteSilently(currentQuote.ticker);
-  }, 45000);
-}
-function stopAutoRefresh() { if (refreshTimer) { clearInterval(refreshTimer); refreshTimer = null; } }
 async function refreshQuoteSilently(ticker) {
   try {
     const res = await fetch(`/api/quote?ticker=${encodeURIComponent(ticker)}`);
@@ -197,10 +250,83 @@ async function refreshQuoteSilently(ticker) {
     if (currentQuote?.ticker === ticker) { currentQuote = data; renderQuote(data); updateMarketBadges(data); }
   } catch {}
 }
-function setupVisibility() { document.addEventListener('visibilitychange', () => { if (document.hidden) stopAutoRefresh(); else if (currentQuote) startAutoRefresh(); }); }
+
+function setupAccordions() { $$('.accordion-trigger').forEach((trigger) => { trigger.addEventListener('click', () => { const expanded = trigger.getAttribute('aria-expanded') === 'true'; trigger.setAttribute('aria-expanded', String(!expanded)); }); }); }
 
 // ------------------------------------------------------------
-// 매수/매도 분석
+// DB 데이터 로드 및 화면 렌더링
+// ------------------------------------------------------------
+async function loadHoldings() {
+  if (!currentUser) return;
+  const { data, error } = await supabase.from('stock_transactions').select('*').order('trade_date', { ascending: true }).order('created_at', { ascending: true });
+  if (error) { console.error('loadHoldings error:', error.message); return; }
+  
+  transactions = data || []; 
+  const holdingsData = computeHoldings(transactions);
+  
+  renderHoldingsList(holdingsData.currentHoldings);
+  await refreshHoldingsView(holdingsData);
+}
+
+// 시세만 갱신 (DB 재조회 없음)
+async function refreshHoldingsView(holdingsData) {
+  if (!holdingsData) holdingsData = computeHoldings(transactions);
+  const { currentHoldings } = holdingsData;
+  
+  let totalCost = 0, totalCurrentValue = 0;
+  const priceMap = new Map();
+  
+  for (const h of currentHoldings) {
+    totalCost += h.totalCost;
+    try {
+      const res = await fetch(`/api/quote?ticker=${h.ticker}`);
+      if (res.ok) { 
+        const q = await res.json(); 
+        if (q.price != null) { 
+          totalCurrentValue += q.price * h.qty; 
+          priceMap.set(h.ticker, q.price);
+          continue; 
+        } 
+      }
+    } catch {}
+    totalCurrentValue += h.totalCost;
+    await new Promise(r => setTimeout(r, 250));
+  }
+  
+  renderHoldingsSummary(holdingsData, totalCost, totalCurrentValue);
+  renderSellTargets(currentHoldings, priceMap);
+}
+
+async function refreshSellView() {
+  if (transactions.length === 0) return;
+  const holdingsData = computeHoldings(transactions);
+  const { currentHoldings } = holdingsData;
+  
+  const priceMap = new Map();
+  for (const h of currentHoldings) {
+    try {
+      const res = await fetch(`/api/quote?ticker=${h.ticker}`);
+      if (res.ok) { 
+        const q = await res.json(); 
+        if (q.price != null) priceMap.set(h.ticker, q.price); 
+      }
+    } catch {}
+    await new Promise(r => setTimeout(r, 250));
+  }
+  
+  renderSellTargets(currentHoldings, priceMap);
+  
+  if (selectedSellTarget) {
+    const holding = currentHoldings.find(h => h.ticker === selectedSellTarget.ticker);
+    if (holding) {
+      const newPrice = priceMap.get(holding.ticker) || selectedSellTarget.current_price;
+      selectSellTarget(holding, newPrice);
+    }
+  }
+}
+
+// ------------------------------------------------------------
+// 매수/매도 AI 분석
 // ------------------------------------------------------------
 function setupAnalyze() { $('#analyze-btn').addEventListener('click', () => runAnalysis('buy')); $('#sell-analyze-btn').addEventListener('click', () => runAnalysis('sell')); }
 
@@ -296,21 +422,8 @@ function renderNewsList(items, type) {
 }
 
 // ------------------------------------------------------------
-// 보유 주식 (DB, 요약, 매도 타겟)
+// 렌더링 함수들
 // ------------------------------------------------------------
-async function loadHoldings() {
-  if (!currentUser) return;
-  const { data, error } = await supabase.from('stock_transactions').select('*').order('trade_date', { ascending: true }).order('created_at', { ascending: true });
-  if (error) { console.error('loadHoldings error:', error.message); return; }
-  
-  transactions = data || []; 
-  const holdingsData = computeHoldings(transactions);
-  
-  renderHoldingsList(holdingsData.currentHoldings);
-  await renderHoldingsSummary(holdingsData);
-  renderSellTargets(holdingsData.currentHoldings);
-}
-
 function computeHoldings(txs) {
   const map = new Map(); let totalRealizedPnl = 0, totalRealizedCost = 0;
   for (const tx of txs) {
@@ -327,20 +440,8 @@ function computeHoldings(txs) {
   return { currentHoldings: Array.from(map.values()).filter((h) => h.qty > 0), totalRealizedPnl, totalRealizedCost };
 }
 
-async function renderHoldingsSummary(holdingsData) {
-  const { currentHoldings, totalRealizedPnl, totalRealizedCost } = holdingsData; let totalCost = 0, totalCurrentValue = 0;
-  
-  // 순차적 시세 조회로 502 에러 방지
-  for (const h of currentHoldings) {
-    totalCost += h.totalCost;
-    try {
-      const res = await fetch(`/api/quote?ticker=${h.ticker}`);
-      if (res.ok) { const q = await res.json(); if (q.price != null) { totalCurrentValue += q.price * h.qty; continue; } }
-    } catch {}
-    totalCurrentValue += h.totalCost;
-    await new Promise(r => setTimeout(r, 300)); // 300ms 딜레이
-  }
-
+function renderHoldingsSummary(holdingsData, totalCost, totalCurrentValue) {
+  const { totalRealizedPnl, totalRealizedCost } = holdingsData;
   const unrealizedPnl = totalCurrentValue - totalCost;
   const unrealizedRate = totalCost > 0 ? (unrealizedPnl / totalCost) * 100 : 0;
   const realizedRate = totalRealizedCost > 0 ? (totalRealizedPnl / totalRealizedCost) * 100 : 0;
@@ -368,19 +469,12 @@ function renderHoldingsList(holdings) {
   });
 }
 
-// 매도 분석 탭용 타겟 리스트 (종목 코드 제거, 평균 단가/수익률 중심)
-async function renderSellTargets(holdings) {
+function renderSellTargets(holdings, priceMap) {
   const list = $('#sell-target-list'); list.innerHTML = '';
   if (holdings.length === 0) { list.innerHTML = '<p class="empty-text">보유 중인 종목이 없습니다.</p>'; return; }
 
-  for (const h of holdings) {
-    let currentPrice = h.avgCost;
-    try {
-      const res = await fetch(`/api/quote?ticker=${h.ticker}`);
-      if (res.ok) { const q = await res.json(); if (q.price != null) currentPrice = q.price; }
-    } catch {}
-    await new Promise(r => setTimeout(r, 300)); // 300ms 딜레이
-    
+  holdings.forEach((h) => {
+    const currentPrice = priceMap.get(h.ticker) || h.avgCost;
     const returnRate = ((currentPrice - h.avgCost) / h.avgCost) * 100;
     const pnlClass = returnRate > 0 ? 'pos' : returnRate < 0 ? 'neg' : '';
     
@@ -404,7 +498,7 @@ async function renderSellTargets(holdings) {
       item.classList.add('active');
       selectSellTarget(h, currentPrice);
     }
-  }
+  });
 }
 
 function selectSellTarget(holding, currentPrice) {
@@ -433,7 +527,7 @@ function renderTransactionRow(tx) {
 }
 
 // ------------------------------------------------------------
-// 거래 등록 폼 (CRUD)
+// 거래 등록/수정/삭제 (CRUD)
 // ------------------------------------------------------------
 function setupTransactionForm() { $('#transaction-form').addEventListener('submit', (e) => { e.preventDefault(); saveTransaction(); }); $('#tx-cancel-btn').addEventListener('click', resetTxForm); }
 function setTxFormMode(tx) { editingTxId = tx?.id || null; $('#tx-id').value = tx?.id || ''; $('#tx-form-title').textContent = tx ? '거래 수정' : '거래 등록'; $('#tx-submit-btn').textContent = tx ? '수정 저장' : '거래 저장'; $('#tx-cancel-btn').hidden = !tx; }
@@ -484,6 +578,9 @@ async function deleteTransaction(id) {
   if (error) { alert('삭제에 실패했습니다: ' + error.message); return; } await loadHoldings();
 }
 
+// ------------------------------------------------------------
+// 유틸
+// ------------------------------------------------------------
 function formatNumber(n) { return Number(n).toLocaleString('ko-KR', { maximumFractionDigits: 6 }); }
 function formatCurrency(n) { return Number(n).toLocaleString('ko-KR', { maximumFractionDigits: 0 }) + '원'; }
 function formatDateTime(iso) { if (!iso) return '-'; const d = new Date(iso); return d.toLocaleString('ko-KR', { year: 'numeric', month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit' }); }

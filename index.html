@@ -33,13 +33,15 @@
         <div class="app-brand">주식 초보 분석</div>
         <div class="header-user">
           <span id="current-user-name" class="current-user-name"></span>
-          <button id="refresh-btn" class="icon-btn" type="button" title="새로고침">🔄</button>
           <button id="logout-btn" class="logout-btn" type="button">로그아웃</button>
         </div>
       </div>
       <div class="header-meta">
-        <span id="market-status-badge" class="badge">시장 상태 확인 중</span>
-        <span id="data-status-badge" class="badge badge--muted">데이터 상태 확인 중</span>
+        <div class="header-badges">
+          <span id="market-status-badge" class="badge">시장 상태 확인 중</span>
+          <span id="data-status-badge" class="badge badge--muted">데이터 상태 확인 중</span>
+        </div>
+        <button id="refresh-btn" class="refresh-btn" type="button">새로고침 (5)</button>
       </div>
     </header>
 
@@ -72,7 +74,6 @@
         <button id="analyze-btn" class="btn btn--primary btn--block" type="button">매수 분석하기</button>
       </section>
 
-      <!-- 매수 분석 결과 -->
       <section id="analysis-result" class="card" hidden>
         <div class="analysis-head">
           <div id="recommendation-badge" class="recommendation-badge">-</div>
@@ -181,7 +182,6 @@
         <button id="sell-analyze-btn" class="btn btn--primary btn--block" type="button">AI 매도 분석하기</button>
       </section>
 
-      <!-- 매도 분석 결과 -->
       <section id="sell-analysis-result" class="card" hidden>
         <div class="analysis-head">
           <div id="sell-recommendation-badge" class="recommendation-badge">-</div>

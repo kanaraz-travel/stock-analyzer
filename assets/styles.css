@@ -17,7 +17,8 @@ body { max-width: 480px; margin: 0 auto; min-height: 100vh; }
 .app-brand { font-weight: 700; font-size: 18px; }
 .header-user { display: flex; align-items: center; gap: 8px; }
 .current-user-name { font-size: 12px; color: var(--text-muted); }
-.header-meta { display: flex; gap: 6px; margin-top: 6px; flex-wrap: wrap; }
+.header-meta { display: flex; justify-content: space-between; align-items: center; gap: 6px; margin-top: 8px; flex-wrap: wrap; }
+.header-badges { display: flex; gap: 6px; flex-wrap: wrap; }
 
 .badge { font-size: 11px; padding: 3px 8px; border-radius: 999px; background: var(--surface-2); color: var(--text-muted); border: 1px solid var(--border); }
 .badge--muted { opacity: 0.8; }
@@ -25,8 +26,14 @@ body { max-width: 480px; margin: 0 auto; min-height: 100vh; }
 .badge--negative { background: rgba(255, 107, 107, 0.15); color: var(--negative); border-color: transparent; }
 .badge--warning { background: rgba(255, 184, 77, 0.15); color: var(--warning); border-color: transparent; }
 
-.icon-btn { background: transparent; border: 1px solid var(--border); border-radius: 8px; padding: 6px 8px; color: var(--text-muted); font-size: 14px; cursor: pointer; display: flex; align-items: center; justify-content: center; }
-.icon-btn:hover { color: var(--text); border-color: var(--text-muted); }
+.refresh-btn {
+  background: transparent; border: 1px solid var(--border); border-radius: 8px;
+  padding: 4px 10px; color: var(--text-muted); font-size: 11px; font-weight: 600;
+  cursor: pointer; white-space: nowrap; transition: all 0.2s;
+}
+.refresh-btn:hover { color: var(--text); border-color: var(--text-muted); }
+.refresh-btn:disabled { opacity: 0.5; cursor: not-allowed; }
+
 .logout-btn { background: transparent; border: 1px solid var(--border); border-radius: 8px; padding: 6px 12px; color: var(--text-muted); font-size: 12px; cursor: pointer; }
 .logout-btn:hover { color: var(--text); border-color: var(--text-muted); }
 
@@ -35,7 +42,6 @@ body { max-width: 480px; margin: 0 auto; min-height: 100vh; }
 
 .card { background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius); padding: 16px; margin-bottom: 12px; }
 .section-title { font-size: 16px; font-weight: 700; margin-bottom: 12px; }
-.subsection-title { font-size: 14px; font-weight: 600; margin-bottom: 6px; color: var(--text-muted); }
 .label { display: block; font-size: 13px; color: var(--text-muted); margin-bottom: 10px; }
 .label input, .label select { display: block; width: 100%; margin-top: 4px; padding: 12px; font-size: 16px; border-radius: 12px; border: 1px solid var(--border); background: var(--surface-2); color: var(--text); appearance: none; }
 .label input:focus, .label select:focus { outline: 2px solid var(--primary); border-color: transparent; }
@@ -106,7 +112,6 @@ body { max-width: 480px; margin: 0 auto; min-height: 100vh; }
 .holding-meta dd { font-weight: 600; margin: 0; }
 .empty-text { color: var(--text-muted); font-size: 14px; text-align: center; padding: 20px 0; }
 
-/* 매도 분석 대상 선택 카드 */
 .sell-target-item {
   display: flex; justify-content: space-between; align-items: center;
   background: var(--surface-2); border-radius: 12px; padding: 14px;
