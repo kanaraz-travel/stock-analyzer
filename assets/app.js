@@ -10,7 +10,7 @@ const supabase = createClient(SUPABASE_URL, SUPABASE_ANON_KEY, {
 
 const ALLOWED_NAMES = ['박필립', '윤혜영'];
 let currentUser = null, currentQuote = null, transactions = [], editingTxId = null;
-let currentScreen = 'holdings';
+let currentScreen = 'holdings'; // 초기 진입 탭을 내 보유 주식으로 설정
 
 let countdown = 5;
 let countdownInterval = null;
@@ -37,7 +37,7 @@ async function handleAuthState(session) {
     $('#screen-login').hidden = true; $('#app-shell').hidden = false;
     $('#current-user-name').textContent = mapEmailToName(currentUser.email) || currentUser.email || '';
     
-    switchScreen('holdings'); 
+    switchScreen('holdings'); // 내 보유 주식 탭으로 진입
     updateMarketStatusBadge(getMarketStatusClient());
 
     await loadHoldings(); 
@@ -176,7 +176,6 @@ function setupNavigation() {
       const target = btn.dataset.screen; switchScreen(target);
       if (target === 'holdings') { 
         const holdingsData = computeHoldings(transactions);
-        // 탭 이동 시에는 캐시된 가격 정보를 사용하여 즉시 렌더링
         renderHoldingsList(holdingsData.currentHoldings, priceCache);
         renderHoldingsSummary(holdingsData, 0, 0); 
       }
@@ -196,7 +195,7 @@ async function handleSearch() {
     if (data.price == null) throw new Error('종목의 시세 정보가 없습니다.');
     
     currentQuote = data; 
-    if (data.price > 0) priceCache.set(data.ticker, data.price); // 캐시 업데이트
+    if (data.price > 0) priceCache.set(data.ticker, data.price); 
     
     renderQuote(data); updateMarketStatusBadge(data.market_status); updateDataStatusBadge(data.data_status);
   } catch (err) {
@@ -228,7 +227,7 @@ async function refreshQuoteSilently(ticker) {
     }
     const data = await res.json();
     if (currentQuote?.ticker === ticker) { 
-      if (data.price > 0) priceCache.set(ticker, data.price); // 캐시 업데이트
+      if (data.price > 0) priceCache.set(ticker, data.price); 
       currentQuote = data; renderQuote(data); updateMarketStatusBadge(data.market_status); updateDataStatusBadge(data.data_status); 
     }
   } catch (err) { 
@@ -269,7 +268,7 @@ async function refreshHoldingsView(holdingsData) {
         if (currentPriceMap.size === 0) { updateMarketStatusBadge(q.market_status); updateDataStatusBadge(q.data_status); }
         if (q.price != null && q.price > 0) { 
           price = q.price;
-          priceCache.set(h.ticker, q.price); // 정상 가격 캐시 저장
+          priceCache.set(h.ticker, q.price); 
         }
       } else {
         console.warn(`[시세조회 실패] ${h.stock_name}(${h.ticker}): HTTP ${res.status}`);
@@ -279,14 +278,13 @@ async function refreshHoldingsView(holdingsData) {
       updateDataStatusBadge('ERROR'); 
     }
     
-    // API 실패 시 캐시된 가격 사용, 그것도 없으면 원가 사용
     if (!price) {
       price = priceCache.get(h.ticker) || h.avgCost;
     }
     
     currentPriceMap.set(h.ticker, price);
     totalCurrentValue += price * h.qty;
-    await new Promise(r => setTimeout(r, 300)); // 300ms 대기
+    await new Promise(r => setTimeout(r, 300));
   }
   
   renderHoldingsList(currentHoldings, currentPriceMap);
@@ -298,11 +296,13 @@ function setupAnalyze() { $('#analyze-btn').addEventListener('click', () => runA
 async function runAnalysis(ticker, name, price, targetType = 'main', cardElement = null) {
   if (!ticker) return;
 
-  let { data: { session }, error: sessionError } = await supabase.auth.getSession();
+  // 수동 refreshSession() 호출 제거. getSession()이 필요 시 자동으로 갱신합니다.
+  const { data: { session }, error: sessionError } = await supabase.auth.getSession();
+  
   if (sessionError || !session || !session.access_token) {
-    const { data: { session: refreshedSession }, error: refreshError } = await supabase.auth.refreshSession();
-    if (refreshError || !refreshedSession) { alert('로그인 세션이 만료되었습니다. 다시 로그인해 주세요.'); await supabase.auth.signOut(); return; }
-    session = refreshedSession;
+    alert('로그인 세션이 만료되었습니다. 다시 로그인해 주세요.');
+    await supabase.auth.signOut();
+    return;
   }
 
   const btn = targetType === 'main' ? $('#analyze-btn') : cardElement.querySelector('.btn-ai-analyze');
@@ -322,13 +322,22 @@ async function runAnalysis(ticker, name, price, targetType = 'main', cardElement
       volume_data: null, news_items: [],
     };
 
-    const res = await fetch('/api/analyze', { method: 'POST', headers: { 'content-type': 'application/json', authorization: `Bearer ${session.access_token}` }, body: JSON.stringify(payload) });
+    const res = await fetch('/api/analyze', { 
+      method: 'POST', 
+      headers: { 'content-type': 'application/json', authorization: `Bearer ${session.access_token}` }, 
+      body: JSON.stringify(payload) 
+    });
     const data = await res.json(); 
     
     if (res.status === 401) {
-      const { data: { session: retrySession } } = await supabase.auth.refreshSession();
-      if (retrySession) {
-        const retryRes = await fetch('/api/analyze', { method: 'POST', headers: { 'content-type': 'application/json', authorization: `Bearer ${retrySession.access_token}` }, body: JSON.stringify(payload) });
+      // 401 발생 시, 수동 refresh 대신 세션을 다시 읽어 자동 갱신 유도
+      const { data: { session: retrySession } } = await supabase.auth.getSession();
+      if (retrySession && retrySession.access_token) {
+        const retryRes = await fetch('/api/analyze', { 
+          method: 'POST', 
+          headers: { 'content-type': 'application/json', authorization: `Bearer ${retrySession.access_token}` }, 
+          body: JSON.stringify(payload) 
+        });
         if (retryRes.ok) { 
           const retryData = await retryRes.json(); 
           if (targetType === 'main') renderAnalysisResult(retryData);
@@ -338,6 +347,7 @@ async function runAnalysis(ticker, name, price, targetType = 'main', cardElement
       }
       throw new Error('인증이 만료되었습니다. 다시 로그인해 주세요.');
     }
+    
     if (!res.ok) throw new Error(data.error || '분석에 실패했습니다.');
     
     if (targetType === 'main') {
@@ -453,7 +463,7 @@ function renderHoldingsList(holdings, priceMap) {
   if (holdings.length === 0) { const p = document.createElement('p'); p.className = 'empty-text'; p.textContent = '아직 등록된 거래가 없습니다.'; list.appendChild(p); return; }
   
   holdings.forEach((h) => {
-    const currentPrice = priceMap.get(h.ticker) || h.avgCost; // 캐시된 가격 혹은 원가
+    const currentPrice = priceMap.get(h.ticker) || h.avgCost;
     const valuation = currentPrice * h.qty;
     const pnl = valuation - h.totalCost;
     const returnRate = h.totalCost > 0 ? (pnl / h.totalCost) * 100 : 0;
