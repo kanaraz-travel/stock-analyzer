@@ -1,9 +1,8 @@
-/* 라이트 모드 및 새로운 UI 스타일 적용 */
 :root {
-  --bg: #f3f4f6; /* 옅은 회색 배경 */
-  --surface: #ffffff; /* 카드 흰색 */
-  --surface-2: #f9fafb; /* 인풋, 서브카드 배경 */
-  --text: #111827; /* 검은색에 가까운 글자 */
+  --bg: #f3f4f6;
+  --surface: #ffffff;
+  --surface-2: #f9fafb;
+  --text: #111827;
   --text-muted: #6b7280;
   --primary: #2563eb;
   --primary-dim: #93c5fd;
@@ -22,7 +21,6 @@ html, body {
 body { max-width: 480px; margin: 0 auto; min-height: 100vh; }
 #app-shell { padding-bottom: calc(var(--nav-h) + 16px); }
 
-/* 라이트 모드 헤더 스타일 */
 .app-header { position: sticky; top: 0; z-index: 20; background: rgba(255, 255, 255, 0.92); backdrop-filter: blur(12px); padding: 12px 16px 10px; border-bottom: 1px solid var(--border); }
 .header-row { display: flex; justify-content: space-between; align-items: center; gap: 12px; }
 .app-brand { font-weight: 700; font-size: 18px; color: var(--primary); }
@@ -37,11 +35,7 @@ body { max-width: 480px; margin: 0 auto; min-height: 100vh; }
 .badge--negative { background: #fef2f2; color: var(--negative); border-color: #fecaca; }
 .badge--warning { background: #fffbeb; color: var(--warning); border-color: #fde68a; }
 
-.refresh-btn {
-  background: var(--surface); border: 1px solid var(--border); border-radius: 8px;
-  padding: 4px 10px; color: var(--text-muted); font-size: 11px; font-weight: 600;
-  cursor: pointer; white-space: nowrap; transition: all 0.2s;
-}
+.refresh-btn { background: var(--surface); border: 1px solid var(--border); border-radius: 8px; padding: 4px 10px; color: var(--text-muted); font-size: 11px; font-weight: 600; cursor: pointer; white-space: nowrap; transition: all 0.2s; }
 .refresh-btn:hover { color: var(--text); border-color: var(--text-muted); }
 .refresh-btn:disabled { opacity: 0.5; cursor: not-allowed; }
 
@@ -62,7 +56,6 @@ body { max-width: 480px; margin: 0 auto; min-height: 100vh; }
 .label--button { display: flex; flex-direction: column; justify-content: flex-end; margin-bottom: 10px; }
 .label-text { font-size: 13px; color: transparent; user-select: none; }
 
-/* 검색 인풋 및 버튼 UI 개선 */
 .search-row { display: flex; gap: 8px; align-items: stretch; }
 .search-row input { flex: 1; min-width: 0; padding: 12px; font-size: 14px; border-radius: 12px; border: 1px solid var(--border); background: var(--surface-2); color: var(--text); }
 .search-row button { flex-shrink: 0; width: 80px; padding: 0; font-size: 15px; font-weight: 600; display: flex; align-items: center; justify-content: center; white-space: nowrap; }
@@ -119,30 +112,29 @@ body { max-width: 480px; margin: 0 auto; min-height: 100vh; }
 .summary-value .negative, .summary-rate.negative { color: var(--negative); }
 .summary-rate { font-size: 12px; font-weight: 500; margin-left: 4px; }
 
+/* 보유 종목 카드 UI 개선 */
 .holdings-list { display: flex; flex-direction: column; gap: 10px; }
-.holding-card { background: var(--surface); border: 1px solid var(--border); border-radius: 12px; padding: 14px; }
-.holding-header { display: flex; justify-content: space-between; align-items: flex-start; gap: 12px; margin-bottom: 8px; }
-.holding-name { font-size: 16px; font-weight: 700; }
-.holding-qty { font-size: 16px; font-weight: 700; white-space: nowrap; }
-.holding-meta { display: grid; grid-template-columns: 1fr 1fr; gap: 6px 12px; font-size: 13px; margin: 0; }
-.holding-meta dt { color: var(--text-muted); font-size: 11px; }
-.holding-meta dd { font-weight: 600; margin: 0; }
+.holding-card { background: var(--surface); border: 1px solid var(--border); border-radius: 12px; padding: 16px; }
+.holding-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 12px; }
+.holding-name { font-size: 17px; font-weight: 700; }
+.holding-qty { font-size: 15px; font-weight: 600; color: var(--primary); background: #eff6ff; padding: 2px 8px; border-radius: 6px; }
+.holding-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 8px 12px; margin-bottom: 12px; }
+.holding-data { display: flex; justify-content: space-between; align-items: center; font-size: 13px; }
+.holding-data .dt { color: var(--text-muted); }
+.holding-data .dd { font-weight: 600; }
 .empty-text { color: var(--text-muted); font-size: 14px; text-align: center; padding: 20px 0; }
 
-.sell-target-item {
-  display: flex; justify-content: space-between; align-items: center;
-  background: var(--surface); border: 1px solid var(--border); border-radius: 12px; padding: 14px;
-  cursor: pointer; transition: border-color 0.2s;
-}
+.sell-target-item { display: flex; justify-content: space-between; align-items: center; background: var(--surface); border: 1px solid var(--border); border-radius: 12px; padding: 14px; cursor: pointer; transition: border-color 0.2s; }
 .sell-target-item:hover { border-color: var(--primary); }
 .sell-target-item.active { border-color: var(--primary); background: #eff6ff; }
 .sell-target-info { display: flex; flex-direction: column; gap: 4px; }
 .sell-target-name { font-weight: 700; font-size: 15px; }
-.sell-target-pnl { font-size: 13px; font-weight: 600; }
+.sell-target-sub { font-size: 12px; color: var(--text-muted); }
+.sell-target-pnl { font-size: 14px; font-weight: 600; }
 .sell-target-pnl.pos { color: var(--positive); }
 .sell-target-pnl.neg { color: var(--negative); }
 
-.tx-toggle { width: 100%; margin-top: 12px; padding: 10px; background: var(--surface-2); border: 1px solid var(--border); border-radius: 8px; color: var(--text-muted); font-size: 13px; cursor: pointer; }
+.tx-toggle { width: 100%; padding: 10px; background: var(--surface-2); border: 1px solid var(--border); border-radius: 8px; color: var(--text-muted); font-size: 13px; cursor: pointer; }
 .tx-toggle:hover { color: var(--text); border-color: var(--text-muted); }
 .tx-list { margin-top: 12px; padding-top: 4px; border-top: 1px solid var(--border); }
 .tx-row { display: grid; grid-template-columns: 1fr auto; gap: 8px; align-items: center; padding: 10px 0; border-bottom: 1px solid var(--border); }

@@ -48,9 +48,10 @@
     <!-- 화면 A: 매수 분석 -->
     <main id="screen-buy" class="screen">
       <section class="card search-card">
-        <label for="ticker-input" class="label">종목 검색 (종목명 또는 코드)</label>
+        <!-- 종목 코드 관련 텍스트 제거 -->
+        <label for="ticker-input" class="label">종목 검색</label>
         <div class="search-row">
-          <input id="ticker-input" type="text" placeholder="예: 삼성전자 또는 005930" />
+          <input id="ticker-input" type="text" placeholder="예: 삼성전자" />
           <button id="search-btn" class="btn btn--primary" type="button">조회</button>
         </div>
         <p id="search-error" class="error-text" hidden></p>
@@ -60,7 +61,6 @@
         <div class="quote-head">
           <div>
             <h2 id="stock-name" class="stock-name">-</h2>
-            <!-- 종목 코드 노출 영역 제거됨 -->
           </div>
           <div class="quote-price-wrap">
             <div id="current-price" class="current-price">-</div>
@@ -161,7 +161,9 @@
 
       <section class="card">
         <h2 class="section-title">보유 종목</h2>
-        <div id="holdings-list" class="holdings-list"><p class="empty-text">아직 등록된 거래가 없습니다.</p></div>
+        <div id="holdings-list" class="holdings-list">
+          <p class="empty-text">아직 등록된 거래가 없습니다.</p>
+        </div>
       </section>
     </main>
 
@@ -179,6 +181,7 @@
         <div class="quote-head">
           <div>
             <h2 id="sell-stock-name" class="stock-name">-</h2>
+            <p id="sell-stock-qty" class="stock-ticker" style="font-size:14px; margin-top:4px;">보유 수량: -</p>
           </div>
           <div class="quote-price-wrap">
             <div id="sell-current-price" class="current-price">-</div>
