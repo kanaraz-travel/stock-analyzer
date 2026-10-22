@@ -1,6 +1,5 @@
 // functions/api/_agents.js
 // 4개 AI 에이전트의 실행 + 응답 파싱/정규화.
-// 프롬프트 텍스트는 _prompts.js, 파이프라인 규칙은 _pipeline.js 담당.
 
 import {
   buildPriceVolumePrompts,
@@ -25,7 +24,7 @@ export async function runPriceVolumeAgent(env, payload) {
 }
 
 // ─────────────────────────────────────────────────────────────
-// [2] 뉴스 분석가 (재시도 시 전체 필드 반영)
+// [2] 뉴스 분석가 (★ 재시도 완전 교체)
 // ─────────────────────────────────────────────────────────────
 export async function runNewsAgent(env, payload) {
   const prompts = buildNewsPrompts(payload);
@@ -46,7 +45,7 @@ export async function runNewsAgent(env, payload) {
       max_tokens: 600, temperature: 0.3,
     });
 
-    const parsed = extractJSON(response?.response || '');
+    let parsed = extractJSON(response?.response || '');
     let newsText = typeof parsed.news_analysis === 'string' ? parsed.news_analysis : '';
 
     if (isNegativeNewsResponse(newsText)) {
@@ -61,15 +60,11 @@ export async function runNewsAgent(env, payload) {
           max_tokens: 500, temperature: 0.4,
         });
         const retryParsed = extractJSON(retryResponse?.response || '');
-        if (typeof retryParsed.news_analysis === 'string'
-            && retryParsed.news_analysis.trim()
-            && !isNegativeNewsResponse(retryParsed.news_analysis)) {
-          // ★ 재시도 응답의 모든 필드를 반영
+
+        // ★ 전체 스키마 검증 후 완전 교체
+        if (isValidNewsPayload(retryParsed)) {
+          parsed = retryParsed;
           newsText = retryParsed.news_analysis;
-          if (retryParsed.news_sentiment) parsed.news_sentiment = retryParsed.news_sentiment;
-          if (retryParsed.news_direction) parsed.news_direction = retryParsed.news_direction;
-          if (retryParsed.news_impact) parsed.news_impact = retryParsed.news_impact;
-          if (retryParsed.key_theme) parsed.key_theme = retryParsed.key_theme;
         }
       } catch (e) { console.warn('[news] retry failed:', e.message); }
     }
@@ -96,6 +91,16 @@ export async function runNewsAgent(env, payload) {
   }
 }
 
+// 재시도 응답 전체 스키마 검증
+function isValidNewsPayload(p) {
+  return p
+    && typeof p.news_analysis === 'string' && p.news_analysis.trim()
+    && !isNegativeNewsResponse(p.news_analysis)
+    && typeof p.news_sentiment === 'string'
+    && typeof p.news_direction === 'string'
+    && typeof p.news_impact === 'string';
+}
+
 // ─────────────────────────────────────────────────────────────
 // [3] 추세 분석가
 // ─────────────────────────────────────────────────────────────
@@ -109,7 +114,7 @@ export async function runTrendAgent(env, payload) {
 }
 
 // ─────────────────────────────────────────────────────────────
-// [4] 심판 에이전트 (재시도 조건 강화 + 마지막 대기 제거)
+// [4] 심판 에이전트 (필수 필드 미충족 시 마지막 응답 반환 — 검증은 analyze.js 담당)
 // ─────────────────────────────────────────────────────────────
 export async function runJudgeAgent(env, payload) {
   const { system, user } = buildJudgePrompts(payload);
@@ -123,18 +128,17 @@ export async function runJudgeAgent(env, payload) {
       });
       parsed = extractJSON(response?.response || '');
 
-      // ★ 필수 필드 전체 검사 (recommendation AND overall_summary)
       const hasRec = typeof parsed.recommendation === 'string' && parsed.recommendation.trim();
       const hasSummary = typeof parsed.overall_summary === 'string' && parsed.overall_summary.trim();
-      if (hasRec && hasSummary) break;
+      if (hasRec && hasSummary) return parsed;
       console.warn(`[judge] attempt ${attempt + 1} missing required fields (rec=${!!hasRec}, summary=${!!hasSummary})`);
     } catch (e) {
       console.warn(`[judge] attempt ${attempt + 1} error:`, e.message);
       if (attempt === 1) throw e;
     }
-    // ★ 마지막 시도 후에는 대기하지 않음
     if (attempt === 0) await new Promise(r => setTimeout(r, 1000));
   }
+  // ★ 필드 누락 상태로도 마지막 parsed 반환 — analyze.js가 명시적 검증 후 실패 처리
   return parsed;
 }
 
@@ -175,7 +179,7 @@ function normalizeTrendResult(t) {
   if (['상승', '횡보', '하락'].includes(t.medium_term_trend)) result.medium_term_trend = t.medium_term_trend;
   if (['강', '중', '약'].includes(t.trend_strength)) result.trend_strength = t.trend_strength;
 
-  // ★ 클램핑 제거: 범위 밖이면 필드 자체를 제외 → validateTrendOutput 실패 → 무효 처리
+  // 범위 밖이면 필드 제외 → validateTrendOutput 실패 → 무효 처리
   if (typeof t.trend_confidence === 'number' && Number.isFinite(t.trend_confidence)
       && t.trend_confidence >= 0 && t.trend_confidence <= 1) {
     result.trend_confidence = t.trend_confidence;

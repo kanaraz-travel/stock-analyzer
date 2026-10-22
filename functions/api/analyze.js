@@ -30,7 +30,7 @@ import {
   runJudgeAgent,
 } from './_agents.js';
 
-const RULESET_VERSION = 'RULESET_AI_V25_7_CONFIRMED_CLOSE_AWARE';
+const RULESET_VERSION = 'RULESET_AI_V25_8_JUDGE_STRICT';
 const MAX_BODY_BYTES = 100 * 1024;
 
 const DUPLICATE_WINDOW_MS = 5 * 60 * 1000;
@@ -96,7 +96,8 @@ export async function onRequestPost(context) {
 
   const referenceScore = computeReferenceScore(price_data);
   let finalData = null;
-  let finalConfidence = null;
+  let judgeConfidence = null;   // ★ 심판 원본 확신도 (검증 통과 시에만)
+  let originalJudgeRec = null;  // ★ 심판 원본 추천 (보정 전)
   let isFallback = false;
   let fallbackReason = null;
   let dataQualityNote = null;
@@ -120,7 +121,7 @@ export async function onRequestPost(context) {
   try {
     if (!env.AI) throw new Error('AI_NOT_CONFIGURED');
 
-    // (A) 일관성 기준점 (판단 보류 제외)
+    // (A) 일관성 기준점
     let recentFlipCount = 0;
     try {
       const { data: prevRuns, error: prevErr } = await supabase
@@ -145,7 +146,7 @@ export async function onRequestPost(context) {
       }
     } catch (dbErr) { console.warn('[analyze] prev runs query failed:', dbErr.message); }
 
-    // (B) 중복 판정 기준점 (최신 1건, 판단 보류 포함)
+    // (B) 중복 판정 기준점
     try {
       const { data: latestRuns, error: latestErr } = await supabase
         .from('stock_analysis_runs')
@@ -155,34 +156,32 @@ export async function onRequestPost(context) {
       if (!latestErr && latestRuns && latestRuns.length > 0) latestRun = latestRuns[0];
     } catch (dbErr) { console.warn('[analyze] latest run query failed:', dbErr.message); }
 
-    // (C) 추세 이력 조회
+    // (C) 추세 이력
     const trendHistoryResult = await loadRecentTrendHistory(env, ticker);
     trendSummary = summarizeTrendHistory(trendHistoryResult.entries, trendHistoryResult.status);
 
-    // (D) [1] + [2] 병렬
-    const [pvRaw, newsRaw] = await Promise.all([
-      runPriceVolumeAgent(env, { ticker, stock_name, price_data, volume_data, analysis_type })
-        .catch(e => { console.error('[analyze] pv agent exception:', e.message); return null; }),
-      runNewsAgent(env, { ticker, stock_name, news_items })
-        .catch(e => { console.error('[analyze] news agent exception:', e.message); return null; }),
-    ]);
+    // (D) [1] + [2] 병렬 (예외를 sentinel로 구분)
+    const pvRaw = await runPriceVolumeAgent(env, { ticker, stock_name, price_data, volume_data, analysis_type })
+      .catch(e => { console.error('[analyze] pv agent exception:', e.message); return { __exception: true }; });
+    const newsRaw = await runNewsAgent(env, { ticker, stock_name, news_items })
+      .catch(e => { console.error('[analyze] news agent exception:', e.message); return { __exception: true }; });
 
-    const pvValidation = validatePvOutput(pvRaw);
-    if (pvValidation.valid) {
-      pvResult = pvRaw;
-      agentStatus.price_volume = { ok: true, status: 'success', reason: null };
-    } else {
-      agentStatus.price_volume = { ok: false, status: 'invalid', reason: pvValidation.reason };
+    if (pvRaw && pvRaw.__exception) {
+      agentStatus.price_volume = { ok: false, status: 'error', reason: 'AGENT_EXCEPTION' };
       pvResult = null;
+    } else {
+      const v = validatePvOutput(pvRaw);
+      if (v.valid) { pvResult = pvRaw; agentStatus.price_volume = { ok: true, status: 'success', reason: null }; }
+      else { agentStatus.price_volume = { ok: false, status: 'invalid', reason: v.reason }; pvResult = null; }
     }
 
-    const newsValidation = validateNewsOutput(newsRaw);
-    if (newsValidation.valid) {
-      newsResult = newsRaw;
-      agentStatus.news = { ok: true, status: 'success', reason: null };
-    } else {
-      agentStatus.news = { ok: false, status: 'invalid', reason: newsValidation.reason };
+    if (newsRaw && newsRaw.__exception) {
+      agentStatus.news = { ok: false, status: 'error', reason: 'AGENT_EXCEPTION' };
       newsResult = null;
+    } else {
+      const v = validateNewsOutput(newsRaw);
+      if (v.valid) { newsResult = newsRaw; agentStatus.news = { ok: true, status: 'success', reason: null }; }
+      else { agentStatus.news = { ok: false, status: 'invalid', reason: v.reason }; newsResult = null; }
     }
 
     // (E) [3] 추세
@@ -191,18 +190,18 @@ export async function onRequestPost(context) {
       price_volume_result: pvResult,
       news_result: newsResult,
       trend_history_summary: trendSummary,
-    }).catch(e => { console.error('[analyze] trend agent exception:', e.message); return null; });
+    }).catch(e => { console.error('[analyze] trend agent exception:', e.message); return { __exception: true }; });
 
-    const trendValidation = validateTrendOutput(trendRaw);
-    if (trendValidation.valid) {
-      trendResult = trendRaw;
-      agentStatus.trend = { ok: true, status: 'success', reason: null };
-    } else {
-      agentStatus.trend = { ok: false, status: 'invalid', reason: trendValidation.reason };
+    if (trendRaw && trendRaw.__exception) {
+      agentStatus.trend = { ok: false, status: 'error', reason: 'AGENT_EXCEPTION' };
       trendResult = null;
+    } else {
+      const v = validateTrendOutput(trendRaw);
+      if (v.valid) { trendResult = trendRaw; agentStatus.trend = { ok: true, status: 'success', reason: null }; }
+      else { agentStatus.trend = { ok: false, status: 'invalid', reason: v.reason }; trendResult = null; }
     }
 
-    // (F) [4] 심판
+    // (F) [4] 심판 (예외는 즉시 실패 처리)
     const judgeRaw = await runJudgeAgent(env, {
       ticker, stock_name, analysis_type, holdings_data, price_data,
       price_volume_result: pvResult,
@@ -216,40 +215,50 @@ export async function onRequestPost(context) {
       return null;
     });
 
+    // ★ 필수 필드 검증 (미완성 시 throw → catch 블록이 실패 처리)
     if (!judgeRaw || typeof judgeRaw !== 'object') {
       if (agentStatus.judge.status === 'skipped') agentStatus.judge = { ok: false, status: 'empty', reason: 'EMPTY_RESPONSE' };
-      throw new Error('JUDGE_FAILED');
+      const err = new Error('JUDGE_EMPTY');
+      err.fallbackReason = 'JUDGE_EMPTY';
+      throw err;
     }
 
-    let normalizedRec = normalizeRecommendation(judgeRaw.recommendation, analysis_type);
-    let isJudgeInvalid = false;
+    const hasRec = typeof judgeRaw.recommendation === 'string' && judgeRaw.recommendation.trim().length > 0;
+    const hasSummary = typeof judgeRaw.overall_summary === 'string' && judgeRaw.overall_summary.trim().length > 0;
 
+    if (!hasRec || !hasSummary) {
+      const missing = !hasRec ? 'MISSING_RECOMMENDATION' : 'MISSING_SUMMARY';
+      agentStatus.judge = { ok: false, status: 'incomplete', reason: missing };
+      const err = new Error(`JUDGE_INCOMPLETE_${missing}`);
+      err.fallbackReason = `JUDGE_${missing}`;
+      throw err;
+    }
+
+    // ★ 추천 정규화
+    const normalizedRec = normalizeRecommendation(judgeRaw.recommendation, analysis_type);
     if (!normalizedRec) {
-      console.warn('[analyze] judge normalization failed, forcing 판단 보류. raw:', judgeRaw.recommendation);
       agentStatus.judge = { ok: false, status: 'invalid', reason: 'BAD_RECOMMENDATION' };
-      normalizedRec = '판단 보류';
-      isJudgeInvalid = true;
-    } else {
-      agentStatus.judge = { ok: true, status: 'success', reason: null };
+      const err = new Error('JUDGE_INVALID_RECOMMENDATION');
+      err.fallbackReason = 'JUDGE_INVALID_RECOMMENDATION';
+      throw err;
     }
 
+    agentStatus.judge = { ok: true, status: 'success', reason: null };
+    originalJudgeRec = normalizedRec;
+
+    // ★ confidence: 범위 밖이면 무효 (클램핑 금지)
     let confidence = judgeRaw.confidence;
-    if (typeof confidence !== 'number' || !Number.isFinite(confidence)) confidence = null;
-    else confidence = Math.max(0, Math.min(1, confidence));
-    finalConfidence = confidence;
-
-    let finalSummary = (typeof judgeRaw.overall_summary === 'string' && judgeRaw.overall_summary.trim().length > 0)
-      ? judgeRaw.overall_summary
-      : '(종합 분석 누락 - 재분석 권장)';
-
-    let finalRecommendation = normalizedRec;
-
-    if (isJudgeInvalid) {
-      finalSummary = `[AI 판단 형식 오류로 판단 보류 처리] ${finalSummary}`;
+    if (typeof confidence !== 'number' || !Number.isFinite(confidence)
+        || confidence < 0 || confidence > 1) {
+      confidence = null;
     }
+    judgeConfidence = confidence;
+
+    let finalSummary = judgeRaw.overall_summary;
+    let finalRecommendation = originalJudgeRec;
 
     // 첫 분석 runtime guard
-    if (!previousRec && !isJudgeInvalid) {
+    if (!previousRec) {
       const isStrong = finalRecommendation === '매수 추천' || finalRecommendation === '매도 추천';
       if (isStrong && (confidence == null || confidence < 0.7)) {
         if (finalRecommendation === '매수 추천') finalRecommendation = '매수 고려';
@@ -288,14 +297,13 @@ export async function onRequestPost(context) {
       finalSummary = `[${missed}으로 강도 하향] ${finalSummary}`;
     }
 
-    // ★ 데이터 신선도 다운그레이드 (A 옵션)
+    // 데이터 신선도 다운그레이드
     const downgradeStrong = () => {
       if (finalRecommendation === '매수 추천') return '매수 고려';
       if (finalRecommendation === '매도 추천') return '매도 고려';
       return finalRecommendation;
     };
 
-    // ★ 확정 종가 판별: 애프터마켓/시간외/장마감/휴장
     const ms = String(price_data?.market_status || '');
     const isConfirmedClose = price_data?.is_after_hours_quote === true
       || /마감|애프터마켓|시간외|휴장/.test(ms);
@@ -309,12 +317,9 @@ export async function onRequestPost(context) {
       finalSummary = `[데이터 지연으로 강도 하향] ${finalSummary}`;
       dataQualityNote = 'DELAYED';
     } else if (dataQuality.quote_time_verified === false) {
-      // ★ 장마감/애프터마켓은 확정 종가이므로 하향하지 않음
       if (isConfirmedClose) {
         dataQualityNote = 'OK_CONFIRMED_CLOSE';
-        // 하향 없음
       } else {
-        // 장중인데 시각 미확인 → 하향 유지
         finalRecommendation = downgradeStrong();
         finalSummary = `[시세 시각 미확인으로 강도 하향] ${finalSummary}`;
         dataQualityNote = 'OK_UNVERIFIED';
@@ -325,7 +330,8 @@ export async function onRequestPost(context) {
   } catch (e) {
     console.error('[analyze] internal error:', e && e.message, e && e.stack);
     isFallback = true;
-    fallbackReason = 'AI_ERROR';
+    // ★ 심판 실패 사유를 fallbackReason에 반영
+    fallbackReason = e.fallbackReason || 'AI_ERROR';
     finalData = {
       recommendation: '판단 보류',
       overall_summary: 'AI 분석이 일시적으로 실패하여 판단을 보류합니다. 잠시 후 다시 시도해 주세요.',
@@ -339,7 +345,6 @@ export async function onRequestPost(context) {
   let saved = false;
   let saveSkipReason = null;
 
-  // 중복 판정 (analysis_type 비교)
   let isDuplicate = false;
   if (latestRun && finalData?.recommendation && trendResult) {
     const latestType = latestRun.market_facts?.analysis_type;
@@ -387,7 +392,8 @@ export async function onRequestPost(context) {
           agent_status: agentStatus,
           trend_history_summary: trendSummary,
           data_quality_note: dataQualityNote,
-          judge_confidence: finalConfidence,
+          judge_confidence: judgeConfidence,       // ★ 심판 원본 확신도
+          judge_recommendation: originalJudgeRec,  // ★ 심판 원본 추천 (보정 전)
         },
         overall_summary: finalData.overall_summary,
         price_flow_summary: pvResult?.price_flow_analysis ?? null,
@@ -405,7 +411,7 @@ export async function onRequestPost(context) {
     }
   }
 
-  // TTL 정리 (20% 확률, 백그라운드)
+  // TTL 정리
   let cleanupTriggered = false;
   try {
     if (context.waitUntil && Math.random() < CLEANUP_PROBABILITY) {
@@ -414,16 +420,20 @@ export async function onRequestPost(context) {
     }
   } catch (cleanupErr) { console.warn('[analyze] cleanup trigger failed:', cleanupErr.message); }
 
-  // ★ 응답에 부가 정보 추가 (표현 다양화)
+  // ★ 응답: 확신도는 심판 원본, recommendation_adjusted로 보정 여부 노출
   const recMeta = getRecommendationMeta(finalData.recommendation);
-  const confInterp = interpretConfidence(finalConfidence);
+  const confInterp = interpretConfidence(judgeConfidence);
+  const recommendationAdjusted = originalJudgeRec != null && finalData.recommendation !== originalJudgeRec;
 
   return jsonResponse({
     score: referenceScore,
     recommendation: finalData.recommendation,
     recommendation_label: recMeta.label,
     recommendation_hint: recMeta.hint,
-    confidence: finalConfidence,
+    recommendation_adjusted: recommendationAdjusted,
+    original_recommendation: recommendationAdjusted ? originalJudgeRec : undefined,
+    // ★ confidence는 항상 "심판 원본"이며, 최종 등급이 보정됐을 수 있음을 의미
+    confidence: judgeConfidence,
     confidence_interpretation: confInterp,
     overall_summary: finalData.overall_summary,
     data_quality: dataQuality,
