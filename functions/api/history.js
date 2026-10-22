@@ -1,4 +1,6 @@
 // functions/api/history.js
+import { getKisAccessToken } from './_kis_token.js';
+
 export async function onRequestGet(context) {
   const { request, env } = context;
   const url = new URL(request.url);
@@ -12,7 +14,7 @@ export async function onRequestGet(context) {
   try {
     const accessToken = await getKisAccessToken(env, baseUrl);
 
-    // ★ 수정: KST 기준 날짜, 긴 연휴를 감안해 조회 범위 60일
+    // KST 기준 날짜, 긴 연휴를 감안해 조회 범위 60일
     const now = new Date();
     const endDate = toKstDateStr(now);
     const startDate = toKstDateStr(new Date(now.getTime() - 60 * 24 * 60 * 60 * 1000));
@@ -47,7 +49,7 @@ export async function onRequestGet(context) {
       return jsonResponse({ error: `과거 시세 조회 실패: ${data.msg1}` }, 502);
     }
 
-    // ★ 수정: 빈 행/0원 행 제거 + 날짜 내림차순 정렬 보장
+    // 빈 행/0원 행 제거 + 날짜 내림차순 정렬 보장
     const output2 = (data.output2 || [])
       .filter((r) => r && r.stck_bsop_date && Number(r.stck_clpr) > 0)
       .sort((a, b) => String(b.stck_bsop_date).localeCompare(String(a.stck_bsop_date)));
@@ -72,7 +74,7 @@ export async function onRequestGet(context) {
     const ma20 = sum20Price / 20;
     const ma20Disparity = ((currentPrice - ma20) / ma20) * 100;
 
-    // ★ 수정: 장중에는 오늘 행의 거래량이 '일부'이므로 20일 평균에서 제외 (직전 완결 거래일 20개 기준)
+    // 장중에는 오늘 행의 거래량이 '일부'이므로 20일 평균에서 제외 (직전 완결 거래일 20개 기준)
     const todayPartial = output2[0].stck_bsop_date === toKstDateStr(now) && isRegularSessionKst(now);
     const volRows = (todayPartial ? output2.slice(1) : output2).slice(0, 20);
     let sum20Volume = 0;
@@ -108,32 +110,6 @@ function isRegularSessionKst(d) {
   const day = k.getUTCDay();
   const t = k.getUTCHours() * 100 + k.getUTCMinutes();
   return day !== 0 && day !== 6 && t >= 900 && t < 1530;
-}
-
-let tokenCache = { accessToken: null, expiresAt: 0 };
-let tokenPromise = null;
-
-async function getKisAccessToken(env, baseUrl) {
-  const now = Date.now();
-  if (tokenCache.accessToken && now < tokenCache.expiresAt) return tokenCache.accessToken;
-  if (tokenPromise) return tokenPromise;
-
-  tokenPromise = (async () => {
-    try {
-      const res = await fetch(`${baseUrl}/oauth2/tokenP`, {
-        method: 'POST',
-        headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({ grant_type: 'client_credentials', appkey: env.KIS_APP_KEY, appsecret: env.KIS_APP_SECRET }),
-      });
-      if (!res.ok) throw new Error(`KIS Token Error (${res.status})`);
-      const data = await res.json();
-      tokenCache = { accessToken: data.access_token, expiresAt: now + ((Number(data.expires_in) || 86400) - 60) * 1000 };
-      return data.access_token;
-    } finally {
-      tokenPromise = null;
-    }
-  })();
-  return tokenPromise;
 }
 
 function jsonResponse(body, status = 200) {

@@ -1,13 +1,12 @@
 // functions/api/quote.js
 import { unzipSync } from 'fflate';
+import { getKisAccessToken } from './_kis_token.js';
 
 let masterCache = { loaded: false, map: new Map(), codeMap: new Map(), expiresAt: 0, retryAfter: 0 };
 let masterPromise = null;
 const CACHE_TTL = 24 * 60 * 60 * 1000;
 const PARTIAL_RETRY_TTL = 5 * 60 * 1000;
 const FAIL_RETRY_MS = 30 * 1000;
-let tokenCache = { accessToken: null, expiresAt: 0 };
-let tokenPromise = null;
 
 export async function onRequestGet(context) {
   const { request, env } = context;
@@ -97,7 +96,6 @@ export async function onRequestGet(context) {
     const marketStatus = getMarketStatus();
     const dataStatus = getDataStatus();
 
-    // ★ 시간외/장마감 판별: 이 구간에서는 정규장 종가를 반환하는 것이 정상
     const isAfterHoursQuote = dataStatus === 'AFTER_HOURS' || dataStatus === 'AFTER_MARKET' || dataStatus === 'MARKET_CLOSED';
 
     return jsonResponse({
@@ -113,7 +111,6 @@ export async function onRequestGet(context) {
       quote_time_source: 'UNKNOWN',
       provider: '한국투자증권 Open API',
       data_status: dataStatus,
-      // ★ 신규 필드
       is_after_hours_quote: isAfterHoursQuote,
       quote_note: isAfterHoursQuote
         ? (price != null ? '정규장 종가 기준 (시간외 시세는 별도 API 필요)' : '시간외 시세 미제공')
@@ -252,26 +249,6 @@ function getDataStatus() {
   if (timeVal >= 1530 && timeVal < 1600) return 'AFTER_HOURS';
   if (timeVal >= 1600 && timeVal <= 2000) return 'AFTER_MARKET';
   return 'MARKET_CLOSED';
-}
-
-async function getKisAccessToken(env, baseUrl) {
-  const now = Date.now();
-  if (tokenCache.accessToken && now < tokenCache.expiresAt) return tokenCache.accessToken;
-  if (tokenPromise) return tokenPromise;
-  tokenPromise = (async () => {
-    try {
-      const res = await fetch(`${baseUrl}/oauth2/tokenP`, {
-        method: 'POST',
-        headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({ grant_type: 'client_credentials', appkey: env.KIS_APP_KEY, appsecret: env.KIS_APP_SECRET }),
-      });
-      if (!res.ok) throw new Error(`KIS Token Error (${res.status})`);
-      const data = await res.json();
-      tokenCache = { accessToken: data.access_token, expiresAt: now + ((Number(data.expires_in) || 86400) - 60) * 1000 };
-      return data.access_token;
-    } finally { tokenPromise = null; }
-  })();
-  return tokenPromise;
 }
 
 function jsonResponse(body, status = 200) {
