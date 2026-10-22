@@ -268,6 +268,10 @@ async function handleSearch() {
   } finally { btn.disabled = false; btn.textContent = '조회'; }
 }
 
+// ★ 개선: 시장 상태에 따라 시각 라벨 분기
+//   - 장중(정규장)인데 시세 시각 미확인 → 경고 유지
+//   - 장마감/휴장 → "장 마감 종가" 안내, 경고 문구 제거
+//   - 시간외(애프터마켓/단일가) → "시간외 (정규장 종가 기준)" 안내, 경고 문구 제거
 function renderQuote(q) {
   $('#quote-card').hidden = false;
   $('#stock-name').textContent = q.stock_name || q.ticker;
@@ -279,15 +283,27 @@ function renderQuote(q) {
     changeEl.className = 'change-rate ' + (q.change_rate > 0 ? 'positive' : q.change_rate < 0 ? 'negative' : '');
   } else { changeEl.textContent = '-'; changeEl.className = 'change-rate'; }
 
+  const ms = String(q.market_status || '');
+  const ds = String(q.data_status || '');
+  const isMarketClosed = ds === 'MARKET_CLOSED' || ms.includes('휴장') || ms.includes('장마감') || ms.includes('장 마감');
+  const isAfterHours = ds === 'AFTER_HOURS' || ds === 'AFTER_MARKET';
+
   let timeLabel = '';
   if (q.quote_as_of) {
     timeLabel = `시세 기준 시각: ${formatDateTime(q.quote_as_of)}`;
   } else if (q.server_time) {
-    timeLabel = `데이터 조회 시각: ${formatDateTime(q.server_time)} (시세 기준 시각 확인 불가)`;
+    const ts = formatDateTime(q.server_time);
+    if (isMarketClosed) {
+      timeLabel = `데이터 조회 시각: ${ts} · 장 마감 종가`;
+    } else if (isAfterHours) {
+      timeLabel = `데이터 조회 시각: ${ts} · 시간외 (정규장 종가 기준)`;
+    } else {
+      // 정규장(또는 판단 불가) + 시세 기준 시각 미확인 → 경고 유지
+      timeLabel = `데이터 조회 시각: ${ts} (시세 기준 시각 미확인)`;
+    }
   } else {
     timeLabel = '시각 정보 없음';
   }
-  if (q.quote_note) timeLabel += ` · ${q.quote_note}`;
   $('#quote-as-of').textContent = timeLabel;
 
   if (analysisCache.has(q.ticker)) {
@@ -537,18 +553,7 @@ async function runAnalysis(ticker, name, price, targetType = 'main', cardElement
   }
 }
 
-function getFallbackMessage(reason) {
-  switch (reason) {
-    case 'AI_LIMIT': return 'AI 일일 한도에 도달하여 기본 안내를 표시합니다.';
-    case 'AI_ERROR': return 'AI 분석이 일시적으로 실패하여 판단을 보류했습니다. 잠시 후 다시 시도해 주세요.';
-    case 'INVALID_RESPONSE': return 'AI 응답 형식이 올바르지 않아 판단을 보류했습니다.';
-    case 'DATA_INSUFFICIENT': return '시세 기준 시각 또는 데이터가 부족하여 판단을 보류합니다.';
-    case 'STALE_PRICE': return '최신 시세를 확인할 수 없어 이전 가격으로 분석했습니다. 참고용으로만 활용하세요.';
-    default: return '기본 안내를 표시합니다.';
-  }
-}
-
-// ★ 수정: 종합 분석(5문장) + 뉴스 분석만 표시
+// ★ 수정: 분석 시각만 표시, fallback note 참조 제거
 function renderAnalysisResult(data, scrollTo = true) {
   $('#analysis-result').hidden = false;
   const badge = $('#recommendation-badge');
@@ -560,27 +565,17 @@ function renderAnalysisResult(data, scrollTo = true) {
   else if (rec.includes('기다리기') || rec.includes('보유')) badge.classList.add('recommendation-badge--hold');
   else badge.classList.add('recommendation-badge--pending');
 
+  // ★ 분석 시각만 표시 (품질/검증 라벨 제거)
   const tsStr = formatDateTime(data.analyzed_at || new Date().toISOString());
-  const qualityLabel = data.data_quality?.label ? ` · 데이터 ${data.data_quality.label}` : '';
-  const verifiedLabel = data.data_quality && data.data_quality.quote_time_verified === false
-    ? ' · 시세 기준시각 미확인' : '';
-  $('#analysis-timestamp').textContent = `분석 시각: ${tsStr}${qualityLabel}${verifiedLabel}`;
+  $('#analysis-timestamp').textContent = `분석 시각: ${tsStr}`;
 
-  // ★ 종합 분석 (여러 문장을 단락으로 나눠 표시)
-  const overallEl = $('#overall-summary');
-  overallEl.textContent = data.overall_summary || '-';
-
-  // ★ 뉴스 분석
+  $('#overall-summary').textContent = data.overall_summary || '-';
   $('#news-analysis-summary').textContent = data.news_analysis || '-';
-
-  const note = $('#ai-fallback-note');
-  note.hidden = !data.fallback;
-  if (data.fallback) note.textContent = getFallbackMessage(data.fallback_reason);
 
   if (scrollTo && currentScreen === 'analysis') $('#analysis-result').scrollIntoView({ behavior: 'smooth', block: 'start' });
 }
 
-// ★ 인라인 분석도 동일하게 종합 분석 + 뉴스 분석만
+// ★ 수정: 인라인 결과에서도 fallback note 제거
 function renderInlineAnalysisResult(data, cardElement, scrollTo = true) {
   const container = cardElement.querySelector('.holding-inline-result');
   if (!container) return;
@@ -625,12 +620,7 @@ function renderInlineAnalysisResult(data, cardElement, scrollTo = true) {
   newsBlock.appendChild(newsText);
   container.appendChild(newsBlock);
 
-  if (data.fallback) {
-    const note = document.createElement('p');
-    note.className = 'note-text'; note.style.fontSize = '11px'; note.style.marginTop = '8px';
-    note.textContent = getFallbackMessage(data.fallback_reason);
-    container.appendChild(note);
-  }
+  // ★ fallback note 블록 제거 (이전 버전에는 있었음)
 
   if (scrollTo) container.scrollIntoView({ behavior: 'smooth', block: 'start' });
 }
