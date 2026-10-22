@@ -515,6 +515,9 @@ async function runAnalysis(ticker, name, price, targetType = 'main', cardElement
         return_1m: historyData?.return_1m ?? null,
         ma20_disparity: historyData?.ma20_disparity ?? null,
         w52_hgpr: w52Hgpr, w52_lwpr: w52Lwpr,
+        // ★ 신규: 애프터마켓/확정 종가 판별 필드 전달
+        is_after_hours_quote: freshQuote?.is_after_hours_quote ?? false,
+        quote_note: freshQuote?.quote_note ?? null,
       },
       volume_data: volumeData,
       news_items: newsItems,

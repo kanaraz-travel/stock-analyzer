@@ -1,7 +1,7 @@
 // functions/api/analyze.js
 import { createClient } from '@supabase/supabase-js';
 
-const RULESET_VERSION = 'RULESET_AI_V24_TREND_HISTORY';
+const RULESET_VERSION = 'RULESET_AI_V25_MARKET_AWARE';
 const MAX_BODY_BYTES = 100 * 1024;
 const MAX_NEWS_ITEMS = 30;
 const MAX_NEWS_FOR_AI = 20;
@@ -72,6 +72,7 @@ export async function onRequestPost(context) {
     try {
       await saveAnalysisRun(supabase, {
         user_id: userId, ticker, stock_name,
+        analyzed_at: new Date().toISOString(),
         quote_price: price_data.current_price ?? null,
         quote_as_of: price_data.quote_as_of ?? null,
         data_status: dataQuality.status,
@@ -135,7 +136,7 @@ export async function onRequestPost(context) {
       }
     } catch (dbErr) { console.warn('[analyze] prev runs query failed:', dbErr.message); }
 
-    // ─── (B) 추세 이력 조회 (신규) — analysis_type 무관 ───
+    // ─── (B) 추세 이력 조회 ───
     const trendHistory = await loadRecentTrendHistory(supabase, userId, ticker);
     trendSummary = summarizeTrendHistory(trendHistory);
 
@@ -151,7 +152,7 @@ export async function onRequestPost(context) {
     pvResult = pv;
     newsResult = news;
 
-    // ─── (D) [3] 추세 분석가 (1·2 결과 + 이력 활용) ───
+    // ─── (D) [3] 추세 분석가 (이력 + 시장 상태 활용) ───
     trendResult = await runTrendAgent(env, {
       ticker, stock_name, analysis_type, price_data, volume_data,
       price_volume_result: pvResult,
@@ -161,9 +162,9 @@ export async function onRequestPost(context) {
       .then(r => { agentStatus.trend = 'success'; return r; })
       .catch(e => { console.error('[analyze] trend agent failed:', e.message); agentStatus.trend = 'error'; return null; });
 
-    // ─── (E) [4] 심판 에이전트 (1·2·3 + 이력 종합) ───
+    // ─── (E) [4] 심판 에이전트 ───
     const judgeResult = await runJudgeAgent(env, {
-      ticker, stock_name, analysis_type, holdings_data,
+      ticker, stock_name, analysis_type, holdings_data, price_data,
       price_volume_result: pvResult,
       news_result: newsResult,
       trend_result: trendResult,
@@ -245,6 +246,7 @@ export async function onRequestPost(context) {
   try {
     await saveAnalysisRun(supabase, {
       user_id: userId, ticker, stock_name,
+      analyzed_at: new Date().toISOString(),
       quote_price: price_data.current_price ?? null,
       quote_as_of: price_data.quote_as_of ?? null,
       data_status: dataQuality.status,
@@ -258,7 +260,7 @@ export async function onRequestPost(context) {
           news: newsResult,
           trend: trendResult,
         },
-        trend_history_summary: trendSummary,   // ★ 신규: 이력 요약 저장 (디버깅용)
+        trend_history_summary: trendSummary,
       },
       overall_summary: finalData.overall_summary,
       price_flow_summary: pvResult?.price_flow_analysis ?? null,
@@ -267,7 +269,14 @@ export async function onRequestPost(context) {
       tip: '',
       sources: news_items?.map((n) => ({ title: n.title, url: n.url })) ?? null,
     });
-  } catch (saveErr) { console.error('[analyze] saveAnalysisRun failed:', saveErr.message); }
+  } catch (saveErr) {
+    console.error('[analyze] saveAnalysisRun failed:', {
+      message: saveErr.message,
+      code: saveErr.code,
+      details: saveErr.details,
+      hint: saveErr.hint,
+    });
+  }
 
   return jsonResponse({
     score: scoreResult.totalScore,
@@ -278,11 +287,15 @@ export async function onRequestPost(context) {
     fallback: isFallback,
     fallback_reason: fallbackReason,
     agent_status: agentStatus,
+    // ★ 신규: 이력 정보 노출
+    trend_history_count: trendSummary?.count ?? 0,
+    trend_history_stability: trendSummary?.stability ?? 'unknown',
+    trend_history_label: trendSummary?.stability_label ?? '-',
   });
 }
 
 // ─────────────────────────────────────────────────────────────
-// ★ 신규: 추세 이력 조회 / 요약
+// ★ 추세 이력 조회 / 요약 (시장 상태·확정 여부 포함)
 // ─────────────────────────────────────────────────────────────
 async function loadRecentTrendHistory(supabase, userId, ticker) {
   try {
@@ -300,12 +313,16 @@ async function loadRecentTrendHistory(supabase, userId, ticker) {
       .map(row => {
         const t = row.market_facts?.agent_outputs?.trend;
         if (!t) return null;
+        const mf = row.market_facts || {};
+        const pd = mf.price_data || {};
         return {
           analyzed_at: row.analyzed_at,
           short_term: t.short_term_trend || null,
           medium_term: t.medium_term_trend || null,
           strength: t.trend_strength || null,
           confidence: typeof t.trend_confidence === 'number' ? t.trend_confidence : null,
+          market_status: pd.market_status || null,
+          is_after_hours_quote: pd.is_after_hours_quote === true,
         };
       })
       .filter(Boolean);
@@ -326,6 +343,9 @@ function summarizeTrendHistory(history) {
       medium_term_distribution: null,
       flips_short: 0,
       flips_medium: 0,
+      after_hours_count: 0,
+      intraday_count: 0,
+      data_basis_note: '데이터 기준 정보 없음',
     };
   }
 
@@ -333,10 +353,14 @@ function summarizeTrendHistory(history) {
   const mediumDist = { '상승': 0, '횡보': 0, '하락': 0 };
   let flipsShort = 0;
   let flipsMedium = 0;
+  let afterHoursCount = 0;
+  let intradayCount = 0;
 
   history.forEach((h, idx) => {
     if (h.short_term) shortDist[h.short_term] = (shortDist[h.short_term] || 0) + 1;
     if (h.medium_term) mediumDist[h.medium_term] = (mediumDist[h.medium_term] || 0) + 1;
+    if (h.is_after_hours_quote) afterHoursCount++;
+    else if (h.market_status && String(h.market_status).includes('정규장')) intradayCount++;
     if (idx > 0) {
       if (h.short_term && history[idx - 1].short_term && h.short_term !== history[idx - 1].short_term) flipsShort++;
       if (h.medium_term && history[idx - 1].medium_term && h.medium_term !== history[idx - 1].medium_term) flipsMedium++;
@@ -349,15 +373,30 @@ function summarizeTrendHistory(history) {
   if (count < 3) { stability = 'low'; stabilityLabel = '판단 보류 (이력 부족)'; }
   else if (flipsShort >= 2 || flipsMedium >= 2) { stability = 'low'; stabilityLabel = '낮음 (전환 잦음)'; }
   else if (flipsShort === 0 && flipsMedium === 0) { stability = 'high'; stabilityLabel = '높음 (완전 일관)'; }
-  else if (flipsShort >= 1 || flipsMedium >= 1) { stability = 'medium'; stabilityLabel = '보통'; }
+  else { stability = 'medium'; stabilityLabel = '보통'; }
 
   const lines = history.map(h => {
     const dt = h.analyzed_at
       ? new Date(h.analyzed_at).toLocaleString('ko-KR', { month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit' })
       : '-';
     const conf = h.confidence != null ? `${(h.confidence * 100).toFixed(0)}%` : '-';
-    return `- ${dt}: 단기 ${h.short_term || '-'} / 중기 ${h.medium_term || '-'} (강도 ${h.strength || '-'}, 확신 ${conf})`;
+    let basis = '';
+    if (h.is_after_hours_quote) basis = ' [확정 종가]';
+    else if (h.market_status && String(h.market_status).includes('정규장')) basis = ' [장중 잠정]';
+    return `- ${dt}: 단기 ${h.short_term || '-'} / 중기 ${h.medium_term || '-'} (강도 ${h.strength || '-'}, 확신 ${conf})${basis}`;
   }).join('\n');
+
+  const confirmedCount = afterHoursCount + (count - afterHoursCount - intradayCount); // 장외/휴장/마감도 확정치로 간주
+  let dataBasisNote = '';
+  if (afterHoursCount > 0 && intradayCount === 0) {
+    dataBasisNote = `최근 ${count}회 모두 확정 종가 기준`;
+  } else if (afterHoursCount === 0 && intradayCount > 0) {
+    dataBasisNote = `최근 ${count}회 모두 장중 잠정치 기준`;
+  } else if (afterHoursCount > 0 && intradayCount > 0) {
+    dataBasisNote = `최근 ${count}회 중 ${afterHoursCount}회 확정 종가, ${intradayCount}회 장중 잠정`;
+  } else {
+    dataBasisNote = `최근 ${count}회 데이터 기준 불명확`;
+  }
 
   return {
     count,
@@ -368,11 +407,14 @@ function summarizeTrendHistory(history) {
     medium_term_distribution: mediumDist,
     flips_short: flipsShort,
     flips_medium: flipsMedium,
+    after_hours_count: afterHoursCount,
+    intraday_count: intradayCount,
+    data_basis_note: dataBasisNote,
   };
 }
 
 // ─────────────────────────────────────────────────────────────
-// 데이터 품질 / 검증 (기존 유지)
+// 데이터 품질 / 검증
 // ─────────────────────────────────────────────────────────────
 function computeDataQuality(price_data) {
   const marketStatus = price_data?.market_status || '';
@@ -429,6 +471,7 @@ function validateAnalyzeInput(body) {
     if (quote_as_of != null && isNaN(new Date(quote_as_of).getTime())) errors.push('quote_as_of는 유효한 시간이어야 합니다.');
     if (server_time != null && isNaN(new Date(server_time).getTime())) errors.push('server_time은 유효한 시간이어야 합니다.');
     if (price_source != null && !['FRESH', 'STALE'].includes(price_source)) errors.push("price_source는 'FRESH' 또는 'STALE'이어야 합니다.");
+    // is_after_hours_quote/quote_note는 선택 필드이므로 검증하지 않음
   }
 
   if (volume_data != null) {
@@ -499,6 +542,7 @@ async function runPriceVolumeAgent(env, payload) {
 - 장중 누적 거래량은 하루 평균과 직접 비교해 많다/적다고 단정하지 마세요.`;
 
   const userPrompt = `[종목] ${payload.stock_name}(${payload.ticker}) 현재가:${pd.current_price}원
+[시장 상태] ${pd.market_status || '정보 없음'}
 [가격 지표] 1일등락:${changeRateStr} 1개월수익률:${return1MStr} 20일선괴리:${ma20DispStr} 52주위치:${w52PosStr}
 [거래량 지표] ${volumeStr}
 
@@ -628,7 +672,7 @@ ${newsStr}
 }
 
 // ─────────────────────────────────────────────────────────────
-// [3] 추세 분석가 (이력 활용)
+// [3] 추세 분석가 (시장 상태 + 이력 활용)
 // ─────────────────────────────────────────────────────────────
 async function runTrendAgent(env, payload) {
   const pd = payload.price_data;
@@ -642,6 +686,20 @@ async function runTrendAgent(env, payload) {
   let w52PosStr = '없음';
   if (pd.w52_hgpr != null && pd.w52_lwpr != null && pd.current_price != null && pd.w52_hgpr > pd.w52_lwpr) {
     w52PosStr = `${(((pd.current_price - pd.w52_lwpr) / (pd.w52_hgpr - pd.w52_lwpr)) * 100).toFixed(1)}%`;
+  }
+
+  // ★ 시장 상태 / 확정 여부 컨텍스트
+  const marketStatus = pd.market_status || '정보 없음';
+  const isAfterHours = pd.is_after_hours_quote === true;
+  let dataBasisContext = '';
+  if (isAfterHours) {
+    dataBasisContext = `[데이터 기준] 확정 종가 (애프터마켓/시간외 시점, 정규장 종가 반영)`;
+  } else if (String(marketStatus).includes('정규장')) {
+    dataBasisContext = `[데이터 기준] 장중 잠정치 (정규장 진행 중, 잠정가·잠정 거래량)`;
+  } else if (String(marketStatus).includes('휴장') || String(marketStatus).includes('마감')) {
+    dataBasisContext = `[데이터 기준] 확정 종가 (장 마감/휴장)`;
+  } else {
+    dataBasisContext = `[데이터 기준] ${marketStatus}`;
   }
 
   let pvContext = '[가격·거래량 분석 결과 없음]';
@@ -659,7 +717,6 @@ async function runTrendAgent(env, payload) {
 [핵심 테마] ${news.key_theme || '-'}`;
   }
 
-  // 이력 컨텍스트 조립
   let historyContext = '[이전 추세 판단 이력 없음]';
   let stabilityContext = '안정성: 판단 보류 (이력 없음)';
   if (hist && hist.count > 0) {
@@ -667,6 +724,7 @@ async function runTrendAgent(env, payload) {
     const sd = hist.short_term_distribution || {};
     const md = hist.medium_term_distribution || {};
     stabilityContext = `안정성: ${hist.stability_label} (단기 전환 ${hist.flips_short}회 / 중기 전환 ${hist.flips_medium}회)
+데이터 기준 분포: ${hist.data_basis_note}
 단기 분포: 상승 ${sd['상승'] || 0}회 / 횡보 ${sd['횡보'] || 0}회 / 하락 ${sd['하락'] || 0}회
 중기 분포: 상승 ${md['상승'] || 0}회 / 횡보 ${md['횡보'] || 0}회 / 하락 ${md['하락'] || 0}회`;
   }
@@ -686,6 +744,11 @@ async function runTrendAgent(env, payload) {
 5. '약'은 지표 신호가 상충되거나 데이터가 부족할 때 사용하세요.
 6. 상승/하락 판단의 근거를 key_drivers에, 반대 시나리오 리스크를 risk_factors에 명시하세요.
 
+[데이터 기준 활용 원칙 - 매우 중요]
+- [데이터 기준]이 '확정 종가'이면 가격·거래량이 확정치이므로 확신도를 상대적으로 높일 수 있습니다.
+- [데이터 기준]이 '장중 잠정치'이면 잠정 데이터이므로 확신도를 낮추고, '장 마감 후 재확인 필요' 관점을 반영하세요.
+- 이력의 데이터 기준 분포(확정/잠정)를 참고해 이력 신뢰도를 조정하세요. 확정 종가 이력이 많을수록 더 신뢰할 수 있습니다.
+
 [이력 활용 원칙 - 매우 중요]
 - 이전 추세 판단과의 연속성을 고려하세요. 이력이 있으면 먼저 확인하세요.
 - 실제 지표가 이전 판단과 명확히 다르면 과감히 전환하되, trend_reasoning에 '전환 사유'를 반드시 명시하세요.
@@ -695,6 +758,8 @@ async function runTrendAgent(env, payload) {
 - 이력이 없는 첫 분석이면 신중하게 확신도를 책정하세요.`;
 
   const userPrompt = `[종목] ${payload.stock_name}(${payload.ticker})
+[시장 상태] ${marketStatus}
+${dataBasisContext}
 [원본 가격 지표] 1일등락:${changeRateStr} 1개월수익률:${return1MStr} 20일선괴리:${ma20DispStr} 52주위치:${w52PosStr}
 
 [1번 가격·거래량 분석가 의견]
@@ -714,7 +779,7 @@ ${stabilityContext}
   "medium_term_trend": "상승|횡보|하락",
   "trend_strength": "강|중|약",
   "trend_confidence": 0.0~1.0,
-  "trend_reasoning": "추세 판단 근거 2~3문장 (이력 대비 유지/전환 사유 포함)",
+  "trend_reasoning": "추세 판단 근거 2~3문장 (이력 대비 유지/전환 사유 포함, 데이터 기준 명시)",
   "key_drivers": ["추세를 이끄는 주요 동인 2~3개"],
   "risk_factors": ["추세를 뒤집을 수 있는 리스크 1~2개"]
 }`;
@@ -727,12 +792,27 @@ ${stabilityContext}
 }
 
 // ─────────────────────────────────────────────────────────────
-// [4] 심판 에이전트 (이력 활용)
+// [4] 심판 에이전트 (시장 상태 + 이력 활용)
 // ─────────────────────────────────────────────────────────────
 async function runJudgeAgent(env, payload) {
   const isSell = payload.analysis_type === 'sell';
   const prevRec = payload.previous_recommendation;
   const hist = payload.trend_history_summary;
+  const pd = payload.price_data || {};
+
+  // ★ 데이터 기준 컨텍스트
+  const marketStatus = pd.market_status || '정보 없음';
+  const isAfterHours = pd.is_after_hours_quote === true;
+  let dataBasisContext = '';
+  if (isAfterHours) {
+    dataBasisContext = `현재 데이터 기준: 확정 종가 (애프터마켓/시간외 시점)`;
+  } else if (String(marketStatus).includes('정규장')) {
+    dataBasisContext = `현재 데이터 기준: 장중 잠정치 (정규장 진행 중)`;
+  } else if (String(marketStatus).includes('휴장') || String(marketStatus).includes('마감')) {
+    dataBasisContext = `현재 데이터 기준: 확정 종가 (장 마감/휴장)`;
+  } else {
+    dataBasisContext = `현재 데이터 기준: ${marketStatus}`;
+  }
 
   let pvContext = '[가격·거래량 분석 결과 없음]';
   if (payload.price_volume_result) {
@@ -764,7 +844,6 @@ async function runJudgeAgent(env, payload) {
 [리스크] ${risks}`;
   }
 
-  // 이력 요약 컨텍스트
   let trendHistoryContext = '[추세 이력 없음]';
   if (hist && hist.count > 0) {
     const sd = hist.short_term_distribution || {};
@@ -772,7 +851,8 @@ async function runJudgeAgent(env, payload) {
     trendHistoryContext = `최근 ${hist.count}회 추세 판단 이력:
 - 단기 분포: 상승 ${sd['상승'] || 0}회 / 횡보 ${sd['횡보'] || 0}회 / 하락 ${sd['하락'] || 0}회
 - 중기 분포: 상승 ${md['상승'] || 0}회 / 횡보 ${md['횡보'] || 0}회 / 하락 ${md['하락'] || 0}회
-- 안정성: ${hist.stability_label} (단기 전환 ${hist.flips_short}회 / 중기 전환 ${hist.flips_medium}회)`;
+- 안정성: ${hist.stability_label} (단기 전환 ${hist.flips_short}회 / 중기 전환 ${hist.flips_medium}회)
+- 데이터 기준 분포: ${hist.data_basis_note}`;
   }
 
   let holdingsContext = '';
@@ -824,7 +904,12 @@ overall_summary는 다음 5가지를 각각 1문장씩 포함한 총 5문장으�
 
 각 문장은 40자 이상 80자 이내로, 초보자가 이해할 수 있는 쉬운 한국어로 작성하세요.
 
-[종합 판단 원칙 - 매우 중요]
+[데이터 기준 활용 원칙 - 매우 중요]
+- 현재 데이터 기준이 '확정 종가'이면 판단에 더 높은 확신을 가질 수 있습니다.
+- 현재 데이터 기준이 '장중 잠정치'이면 잠정 데이터 특성상 변동 가능성이 있으므로 confidence를 낮추고, '장 마감 후 재확인' 관점을 리스크 문장에 반영하세요.
+- 추세 이력의 데이터 기준 분포(확정/잠정)를 참고해 이력 신뢰도를 조정하세요.
+
+[종합 판단 원칙]
 - recommendation은 3명 분석가의 의견을 반드시 함께 종합해 결정하세요.
 - 세 의견이 같은 방향을 가리키면 판단 강도를 높이고 confidence를 높이세요.
 - 의견이 상충하면(예: 가격 상승 + 뉴스 악재 + 추세 횡보) 리스크 문장에서 반드시 명시하고 confidence를 낮추세요.
@@ -858,6 +943,9 @@ overall_summary는 다음 5가지를 각각 1문장씩 포함한 총 5문장으�
   const prevContext = prevRec ? `[직전 판단] ${prevRec}` : '[직전 판단] 없음 (첫 분석)';
 
   const userPrompt = `${prevContext}
+
+[시장 상태] ${marketStatus}
+${dataBasisContext}
 
 [1번 가격·거래량 분석가 의견]
 ${pvContext}
