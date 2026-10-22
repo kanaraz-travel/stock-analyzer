@@ -1,7 +1,7 @@
 // functions/api/analyze.js
 import { createClient } from '@supabase/supabase-js';
 
-const RULESET_VERSION = 'RULESET_AI_V25_MARKET_AWARE';
+const RULESET_VERSION = 'RULESET_AI_V25_1_MARKET_AWARE_FALLBACK';
 const MAX_BODY_BYTES = 100 * 1024;
 const MAX_NEWS_ITEMS = 30;
 const MAX_NEWS_FOR_AI = 20;
@@ -287,7 +287,6 @@ export async function onRequestPost(context) {
     fallback: isFallback,
     fallback_reason: fallbackReason,
     agent_status: agentStatus,
-    // ★ 신규: 이력 정보 노출
     trend_history_count: trendSummary?.count ?? 0,
     trend_history_stability: trendSummary?.stability ?? 'unknown',
     trend_history_label: trendSummary?.stability_label ?? '-',
@@ -295,7 +294,7 @@ export async function onRequestPost(context) {
 }
 
 // ─────────────────────────────────────────────────────────────
-// ★ 추세 이력 조회 / 요약 (시장 상태·확정 여부 포함)
+// ★ 추세 이력 조회 / 요약 (시장 상태·확정 여부 포함 + v24 폴백)
 // ─────────────────────────────────────────────────────────────
 async function loadRecentTrendHistory(supabase, userId, ticker) {
   try {
@@ -315,6 +314,12 @@ async function loadRecentTrendHistory(supabase, userId, ticker) {
         if (!t) return null;
         const mf = row.market_facts || {};
         const pd = mf.price_data || {};
+        const marketStatusStr = String(pd.market_status || '');
+
+        // ★ 폴백: v24 이력에는 is_after_hours_quote가 없으므로 market_status 문자열로 추론
+        const isAfterHoursQuote = pd.is_after_hours_quote === true
+          || /애프터마켓|시간외/.test(marketStatusStr);
+
         return {
           analyzed_at: row.analyzed_at,
           short_term: t.short_term_trend || null,
@@ -322,7 +327,7 @@ async function loadRecentTrendHistory(supabase, userId, ticker) {
           strength: t.trend_strength || null,
           confidence: typeof t.trend_confidence === 'number' ? t.trend_confidence : null,
           market_status: pd.market_status || null,
-          is_after_hours_quote: pd.is_after_hours_quote === true,
+          is_after_hours_quote: isAfterHoursQuote,
         };
       })
       .filter(Boolean);
@@ -345,6 +350,7 @@ function summarizeTrendHistory(history) {
       flips_medium: 0,
       after_hours_count: 0,
       intraday_count: 0,
+      confirmed_closed_count: 0,
       data_basis_note: '데이터 기준 정보 없음',
     };
   }
@@ -355,12 +361,18 @@ function summarizeTrendHistory(history) {
   let flipsMedium = 0;
   let afterHoursCount = 0;
   let intradayCount = 0;
+  let confirmedClosedCount = 0;   // ★ 신규: 휴장/마감 (정규장 외 확정 종가)
 
   history.forEach((h, idx) => {
     if (h.short_term) shortDist[h.short_term] = (shortDist[h.short_term] || 0) + 1;
     if (h.medium_term) mediumDist[h.medium_term] = (mediumDist[h.medium_term] || 0) + 1;
+
+    const ms = String(h.market_status || '');
     if (h.is_after_hours_quote) afterHoursCount++;
-    else if (h.market_status && String(h.market_status).includes('정규장')) intradayCount++;
+    else if (ms.includes('정규장')) intradayCount++;
+    else if (/휴장|마감/.test(ms)) confirmedClosedCount++;
+    // 그 외(정보 없음 등)는 어디에도 집계하지 않음 → data_basis_note에서 '불명확' 처리
+
     if (idx > 0) {
       if (h.short_term && history[idx - 1].short_term && h.short_term !== history[idx - 1].short_term) flipsShort++;
       if (h.medium_term && history[idx - 1].medium_term && h.medium_term !== history[idx - 1].medium_term) flipsMedium++;
@@ -380,20 +392,22 @@ function summarizeTrendHistory(history) {
       ? new Date(h.analyzed_at).toLocaleString('ko-KR', { month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit' })
       : '-';
     const conf = h.confidence != null ? `${(h.confidence * 100).toFixed(0)}%` : '-';
+    const ms = String(h.market_status || '');
     let basis = '';
     if (h.is_after_hours_quote) basis = ' [확정 종가]';
-    else if (h.market_status && String(h.market_status).includes('정규장')) basis = ' [장중 잠정]';
+    else if (ms.includes('정규장')) basis = ' [장중 잠정]';
+    else if (/휴장|마감/.test(ms)) basis = ' [확정 종가]';
     return `- ${dt}: 단기 ${h.short_term || '-'} / 중기 ${h.medium_term || '-'} (강도 ${h.strength || '-'}, 확신 ${conf})${basis}`;
   }).join('\n');
 
-  const confirmedCount = afterHoursCount + (count - afterHoursCount - intradayCount); // 장외/휴장/마감도 확정치로 간주
+  const confirmedTotal = afterHoursCount + confirmedClosedCount;
   let dataBasisNote = '';
-  if (afterHoursCount > 0 && intradayCount === 0) {
+  if (confirmedTotal > 0 && intradayCount === 0) {
     dataBasisNote = `최근 ${count}회 모두 확정 종가 기준`;
-  } else if (afterHoursCount === 0 && intradayCount > 0) {
+  } else if (confirmedTotal === 0 && intradayCount > 0) {
     dataBasisNote = `최근 ${count}회 모두 장중 잠정치 기준`;
-  } else if (afterHoursCount > 0 && intradayCount > 0) {
-    dataBasisNote = `최근 ${count}회 중 ${afterHoursCount}회 확정 종가, ${intradayCount}회 장중 잠정`;
+  } else if (confirmedTotal > 0 && intradayCount > 0) {
+    dataBasisNote = `최근 ${count}회 중 ${confirmedTotal}회 확정 종가, ${intradayCount}회 장중 잠정`;
   } else {
     dataBasisNote = `최근 ${count}회 데이터 기준 불명확`;
   }
@@ -409,6 +423,7 @@ function summarizeTrendHistory(history) {
     flips_medium: flipsMedium,
     after_hours_count: afterHoursCount,
     intraday_count: intradayCount,
+    confirmed_closed_count: confirmedClosedCount,
     data_basis_note: dataBasisNote,
   };
 }
@@ -688,7 +703,6 @@ async function runTrendAgent(env, payload) {
     w52PosStr = `${(((pd.current_price - pd.w52_lwpr) / (pd.w52_hgpr - pd.w52_lwpr)) * 100).toFixed(1)}%`;
   }
 
-  // ★ 시장 상태 / 확정 여부 컨텍스트
   const marketStatus = pd.market_status || '정보 없음';
   const isAfterHours = pd.is_after_hours_quote === true;
   let dataBasisContext = '';
@@ -800,7 +814,6 @@ async function runJudgeAgent(env, payload) {
   const hist = payload.trend_history_summary;
   const pd = payload.price_data || {};
 
-  // ★ 데이터 기준 컨텍스트
   const marketStatus = pd.market_status || '정보 없음';
   const isAfterHours = pd.is_after_hours_quote === true;
   let dataBasisContext = '';
