@@ -1,5 +1,10 @@
 // functions/api/analyze.js
 // POST /api/analyze — HTTP 핸들러, 오케스트레이션, 입력 검증, 이력 조회, 일관성 보정
+//
+// [v25.5 변경사항]
+// - 추세 이력은 종목 기준으로 모든 사용자 통합 조회 (서비스 롤 사용)
+// - 일관성 보정·중복 판정은 여전히 유저별
+// - 프라이버시: market_facts에서 trend 관련 필드만 사용, 보유/판단 정보는 노출 안 함
 
 import { createClient } from '@supabase/supabase-js';
 import {
@@ -11,7 +16,7 @@ import {
   runJudgeAgent,
 } from './_agents.js';
 
-const RULESET_VERSION = 'RULESET_AI_V25_4_REVIEW_FIX';
+const RULESET_VERSION = 'RULESET_AI_V25_5_GLOBAL_TREND_HISTORY';
 const MAX_BODY_BYTES = 100 * 1024;
 const MAX_NEWS_ITEMS = 30;
 const MAX_URL_LENGTH = 2048;
@@ -19,7 +24,7 @@ const MAX_URL_LENGTH = 2048;
 // 이력 정책
 const TREND_HISTORY_DAYS = 15;
 const TREND_HISTORY_LOOKBACK_DAYS = 45;
-const TREND_HISTORY_MAX_ROWS = 200;
+const TREND_HISTORY_MAX_ROWS = 500;   // ★ 200 → 500 (사용자 확장 대비)
 const TREND_INTRADAY_FALLBACK_MAX = 5;
 const DUPLICATE_WINDOW_MS = 5 * 60 * 1000;
 const DUPLICATE_PRICE_TOLERANCE_PCT = 0.5;
@@ -139,7 +144,7 @@ export async function onRequestPost(context) {
   try {
     if (!env.AI) throw new Error('AI_NOT_CONFIGURED');
 
-    // (A) 일관성 기준점: 판단 보류 제외 최근 5건
+    // (A) 일관성 기준점: 유저별 (판단 보류 제외 최근 5건)
     let recentFlipCount = 0;
     try {
       const { data: prevRuns, error: prevErr } = await supabase
@@ -164,7 +169,7 @@ export async function onRequestPost(context) {
       }
     } catch (dbErr) { console.warn('[analyze] prev runs query failed:', dbErr.message); }
 
-    // (B) 중복 판정 기준점: 최신 1건 (판단 보류 포함)
+    // (B) 중복 판정 기준점: 유저별 최신 1건 (판단 보류 포함)
     try {
       const { data: latestRuns, error: latestErr } = await supabase
         .from('stock_analysis_runs')
@@ -174,8 +179,8 @@ export async function onRequestPost(context) {
       if (!latestErr && latestRuns && latestRuns.length > 0) latestRun = latestRuns[0];
     } catch (dbErr) { console.warn('[analyze] latest run query failed:', dbErr.message); }
 
-    // (C) 추세 이력 조회
-    const trendHistoryResult = await loadRecentTrendHistory(supabase, userId, ticker);
+    // (C) 추세 이력 조회 — ★ 종목 기준 모든 사용자 통합 (서비스 롤)
+    const trendHistoryResult = await loadRecentTrendHistory(env, ticker);
     trendSummary = summarizeTrendHistory(trendHistoryResult.entries, trendHistoryResult.status);
 
     // (D) [1] + [2] 병렬
@@ -415,6 +420,7 @@ export async function onRequestPost(context) {
     trend_history_stability: trendSummary?.stability ?? 'unknown',
     trend_history_label: trendSummary?.stability_label ?? '-',
     trend_history_sample_mode: trendSummary?.sample_mode ?? 'unknown',
+    trend_history_scope: 'global',   // ★ 신규: 통합 이력임을 명시
     saved,
     save_skip_reason: saveSkipReason,
     cleanup_triggered: cleanupTriggered,
@@ -422,70 +428,30 @@ export async function onRequestPost(context) {
 }
 
 // ─────────────────────────────────────────────────────────────
-// 추천 정규화 (정확 매칭 + 동의어)
+// ★ 추세 이력 조회 — 종목 기준 모든 사용자 통합 (서비스 롤)
+//
+// [프라이버시 원칙]
+// - market_facts에서 trend 방향·확신도·market_status만 사용
+// - 보유 수량·평단·최종 판단·뉴스 요약 등은 조회 후에도 사용하지 않음
+// - 클라이언트 직접 접근 차단 (RLS 유지), 백엔드에서만 서비스 롤 사용
 // ─────────────────────────────────────────────────────────────
-function normalizeRecommendation(raw, analysisType) {
-  if (typeof raw !== 'string') return null;
-  const cleaned = raw.replace(/\s+/g, '').trim();
-  if (!cleaned) return null;
+async function loadRecentTrendHistory(env, ticker) {
+  if (!env.SUPABASE_SERVICE_ROLE_KEY) {
+    console.warn('[analyze] loadRecentTrendHistory: SERVICE_ROLE_KEY missing → unavailable');
+    return { status: 'unavailable', entries: [] };
+  }
 
-  const validRecs = analysisType === 'sell' ? VALID_RECS_SELL : VALID_RECS_BUY;
-  for (const rec of validRecs) {
-    if (rec.replace(/\s+/g, '') === cleaned) return rec;
-  }
-  if (REC_SYNONYM_MAP[cleaned]) {
-    const mapped = REC_SYNONYM_MAP[cleaned];
-    if (validRecs.includes(mapped)) return mapped;
-  }
-  return null;
-}
-
-// ─────────────────────────────────────────────────────────────
-// 에이전트 출력 검증
-// ─────────────────────────────────────────────────────────────
-function validatePvOutput(out) {
-  if (!out || typeof out !== 'object') return { valid: false, reason: 'NOT_OBJECT' };
-  if (typeof out.price_flow_analysis !== 'string' || !out.price_flow_analysis.trim()) {
-    return { valid: false, reason: 'MISSING_PRICE_FLOW' };
-  }
-  if (typeof out.volume_analysis !== 'string' || !out.volume_analysis.trim()) {
-    return { valid: false, reason: 'MISSING_VOLUME' };
-  }
-  return { valid: true, reason: null };
-}
-
-function validateNewsOutput(out) {
-  if (!out || typeof out !== 'object') return { valid: false, reason: 'NOT_OBJECT' };
-  if (typeof out.news_analysis !== 'string' || !out.news_analysis.trim()) {
-    return { valid: false, reason: 'MISSING_ANALYSIS' };
-  }
-  return { valid: true, reason: null };
-}
-
-function validateTrendOutput(out) {
-  if (!out || typeof out !== 'object') return { valid: false, reason: 'NOT_OBJECT' };
-  if (!['상승', '횡보', '하락'].includes(out.short_term_trend)) return { valid: false, reason: 'INVALID_SHORT_TERM' };
-  if (!['상승', '횡보', '하락'].includes(out.medium_term_trend)) return { valid: false, reason: 'INVALID_MEDIUM_TERM' };
-  if (!['강', '중', '약'].includes(out.trend_strength)) return { valid: false, reason: 'INVALID_STRENGTH' };
-  if (typeof out.trend_confidence !== 'number' || !Number.isFinite(out.trend_confidence)
-      || out.trend_confidence < 0 || out.trend_confidence > 1) {
-    return { valid: false, reason: 'INVALID_CONFIDENCE' };
-  }
-  return { valid: true, reason: null };
-}
-
-// ─────────────────────────────────────────────────────────────
-// 추세 이력 조회 (일별 샘플링) + 상태 구분
-// ─────────────────────────────────────────────────────────────
-async function loadRecentTrendHistory(supabase, userId, ticker) {
   const since = new Date(Date.now() - TREND_HISTORY_LOOKBACK_DAYS * 24 * 60 * 60 * 1000).toISOString();
 
   try {
-    const { data, error } = await supabase
+    const admin = createClient(env.SUPABASE_URL, env.SUPABASE_SERVICE_ROLE_KEY, {
+      auth: { persistSession: false, autoRefreshToken: false, detectSessionInUrl: false },
+    });
+
+    const { data, error } = await admin
       .from('stock_analysis_runs')
       .select('analyzed_at, market_facts')
-      .eq('user_id', userId)
-      .eq('ticker', ticker)
+      .eq('ticker', ticker)                  // ★ user_id 필터 제거 (종목 기준 통합)
       .gte('analyzed_at', since)
       .order('analyzed_at', { ascending: false })
       .limit(TREND_HISTORY_MAX_ROWS);
@@ -506,6 +472,7 @@ async function loadRecentTrendHistory(supabase, userId, ticker) {
       const ms = String(pd.market_status || '');
       const isAfterHours = pd.is_after_hours_quote === true || /애프터마켓|시간외/.test(ms);
 
+      // ★ 프라이버시: 추세 관련 필드만 추출, 사용자 식별 정보 제외
       const entry = {
         analyzed_at: row.analyzed_at,
         short_term: t.short_term_trend || null,
