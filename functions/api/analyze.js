@@ -1,9 +1,10 @@
 // functions/api/analyze.js
 import { createClient } from '@supabase/supabase-js';
 
-const RULESET_VERSION = 'RULESET_AI_V20_SUMMARY5_NEWSLOOSE';
+const RULESET_VERSION = 'RULESET_AI_V21_NEWS_LOOSE';
 const MAX_BODY_BYTES = 100 * 1024;
 const MAX_NEWS_ITEMS = 30;
+const MAX_NEWS_FOR_AI = 20;
 const MAX_URL_LENGTH = 2048;
 
 export async function onRequestPost(context) {
@@ -112,7 +113,6 @@ export async function onRequestPost(context) {
     const newsAnalysisResult = await runNewsAgent(env, { ticker, stock_name, news_items });
     newsAgentStatus = newsAnalysisResult.status || 'success';
 
-    // ★ 심판에게 price/volume 뉴스 분석 결과를 모두 전달 → 5문장 종합
     const judgeResult = await runJudgeAgent(env, {
       ticker, stock_name,
       analysis_result: analysisResult,
@@ -148,8 +148,8 @@ export async function onRequestPost(context) {
       fallbackReason = 'STALE_PRICE';
     }
 
-    const newsAnalysisText = (newsAnalysisResult.news_analysis || '뉴스 데이터 없음.') +
-      (newsAgentStatus === 'success' ? ' (정상)' : ' (비정상)');
+    // ★ (정상)/(비정상) 접미사 제거. 순수 분석 텍스트만
+    const newsAnalysisText = newsAnalysisResult.news_analysis || '뉴스 데이터 없음.';
 
     finalData = {
       recommendation: finalRecommendation,
@@ -196,8 +196,8 @@ export async function onRequestPost(context) {
       ruleset_version: RULESET_VERSION,
       market_facts: { price_data, volume_data, news_items, analysis_type, holdings_data },
       overall_summary: finalData.overall_summary,
-      price_flow_summary: null,   // ★ UI에서 제거됨
-      volume_summary: null,       // ★ UI에서 제거됨
+      price_flow_summary: null,
+      volume_summary: null,
       news_summary: finalData.news_analysis,
       tip: '',
       sources: news_items?.map((n) => ({ title: n.title, url: n.url })) ?? null,
@@ -312,7 +312,7 @@ function validateAnalyzeInput(body) {
 }
 
 // ------------------------------------------------------------
-// 분석 에이전트 (가격/거래량)
+// 가격/거래량 분석 에이전트
 // ------------------------------------------------------------
 async function runAnalysisAgent(env, payload) {
   const isSell = payload.analysis_type === 'sell';
@@ -356,70 +356,101 @@ async function runAnalysisAgent(env, payload) {
 }
 
 // ------------------------------------------------------------
-// 뉴스 분석 에이전트 (필터링 완화 + Fallback 강화)
+// 뉴스 분석 에이전트 (필터 완화 + 2차 재시도)
 // ------------------------------------------------------------
 async function runNewsAgent(env, payload) {
   if (!payload.news_items || payload.news_items.length === 0) {
-    return { news_analysis: '최근 5일 이내 확인된 관련 뉴스가 없음.', status: 'success' };
+    return { news_analysis: '최근 확인된 관련 뉴스가 없음.', status: 'success' };
   }
 
+  const itemsForAI = payload.news_items.slice(0, MAX_NEWS_FOR_AI);
+  const newsStr = itemsForAI
+    .map((n, i) => {
+      const dateStr = n.published_at ? n.published_at.slice(0, 10) : '날짜미상';
+      return `[${i + 1}] (${dateStr}) ${String(n.title || '').slice(0, 200)}`;
+    })
+    .join('\n');
+
   try {
-    const newsStr = payload.news_items.slice(0, MAX_NEWS_ITEMS)
-      .map((n, i) => `[${i+1}] ${String(n.title || '').slice(0, 200)}`)
-      .join('\n');
+    // ★ 1차: 넓은 범위의 뉴스 종합 분석 유도
+    const systemPrompt = `당신은 '${payload.stock_name}' 종목 뉴스 요약가입니다. 다음 뉴스 목록을 종합하여 이 종목의 주가에 영향을 줄 수 있는 요인을 1~3문장으로 정리하세요.
 
-    // ★ 필터링 완화: "주가에 직결되는" 대신 "종목과 관련된 뉴스"를 우선.
-    //   스포츠/연예/정치는 여전히 제외하되, 회사 관련 실적/사업/시장/산업 뉴스는 폭넓게 포함.
-    //   관련 뉴스가 1개라도 있으면 요약을 생성하도록 강제.
-    const systemPrompt = `당신은 주식 뉴스 요약가입니다. 다음 뉴스 목록은 '${payload.stock_name}'에 대해 수집된 기사들입니다.
+[핵심 원칙 - 반드시 준수]
+1. 다음 뉴스 중 '${payload.stock_name}' 회사 관련, 또는 이 회사가 속한 **산업/시장/경쟁사/규제/정책** 관련 내용이 하나라도 있으면 반드시 그 내용을 1~3문장으로 요약하세요.
+2. 다음 주제는 모두 포함 대상입니다:
+   - 회사: 실적, 공시, 계약, 신제품, 투자, 구조조정, 배당, 자사주
+   - 산업/시장: 동종업계 동향, 수요 변화, 금리/환율 영향, 원자재
+   - 규제/정책: 정부 정책, 법안, 규제 변화
+3. 다음만 제외: 스포츠 선수 개인사, 연예인 사생활, 정치인 개인사, 단순 홍보
+4. "뉴스가 없다"고 응답할 수 있는 경우는 오직 다음뿐입니다:
+   - 목록이 완전히 비었거나
+   - 모든 기사가 명백히 위 제외 항목(스포츠/연예/정치 개인사)인 경우
+5. 뉴스가 1건이라도 있으면, 그 뉴스에서 주가에 영향을 줄 수 있는 **가장 관련성 높은 관점**을 1~3문장으로 뽑아내세요. "관련성 약함"으로 뭉개지 마세요.
+6. '~함', '~임' 체를 사용하세요.
 
-[핵심 규칙]
-- 아래 뉴스 중 '${payload.stock_name}'이라는 회사/종목과 관련 있는 내용이 1개라도 있으면, 반드시 그 내용을 1~2문장으로 요약하세요.
-- 실적, 사업, 계약, 투자, 신제품, 산업 동향, 시장 상황, 규제, 배당, 자사주, 주주 관련 등 회사와 관련된 모든 내용을 포함하세요.
-- 오직 아래 경우에만 "주가에 영향을 줄 만한 뉴스가 없음"이라고 응답하세요:
-  * 목록의 모든 기사가 회사와 완전히 무관한 경우 (예: 스포츠 선수 이적, 연예인 결혼, 정치 이슈 등)
-- 뉴스 목록에 없는 내용을 지어내지 마세요.
-- '~함', '~임' 체를 사용하세요.
-
-반드시 JSON 형식으로 응답하세요.`;
+반드시 JSON 형식으로만 응답하세요.`;
 
     const userPrompt = `[종목] ${payload.stock_name} (${payload.ticker})
-[수집된 뉴스 목록 (${payload.news_items.length}건)]
+[수집된 뉴스 ${itemsForAI.length}건]
 ${newsStr}
 
 [응답 JSON 스키마]
-{"news_analysis": "관련 뉴스 1~2문장 요약 또는 '주가에 영향을 줄 만한 뉴스가 없음'"}`;
+{"news_analysis": "위 뉴스에서 주가에 영향을 줄 수 있는 내용 1~3문장 요약. 정말 관련이 없을 때만 '주가에 영향을 줄 만한 뉴스가 없음'."}`;
 
     const response = await env.AI.run('@cf/meta/llama-3.3-70b-instruct-fp8-fast', {
       messages: [{ role: 'system', content: systemPrompt }, { role: 'user', content: userPrompt }],
-      max_tokens: 512, temperature: 0.2, // ★ 0.1 → 0.2로 완화 (표현 자유도 약간 확보)
+      max_tokens: 512, temperature: 0.3,
     });
 
     const parsed = extractJSON(response?.response || '{}');
-    let newsText = parsed.news_analysis;
+    let newsText = parsed.news_analysis || '';
 
-    // ★ Fallback: AI가 "없음"으로만 응답했지만 뉴스가 수집된 경우, 첫 2개 제목을 노출
-    if (!newsText || newsText.includes('없음') || newsText.includes('없')) {
-      const titles = payload.news_items
-        .slice(0, 2)
-        .map((n) => String(n.title || '').slice(0, 80))
-        .filter(Boolean);
-      if (titles.length > 0) {
-        newsText = `관련 기사가 확인됨: ${titles.map(t => `"${t}"`).join(', ')} — 상세한 주가 영향은 원문 확인 필요.`;
-      } else {
-        newsText = '최근 5일 이내 확인된 관련 뉴스가 없음.';
-      }
+    // ★ 2차 재시도: AI가 "없음"으로 응답했지만 실제 뉴스가 있는 경우
+    if (isNegativeNewsResponse(newsText)) {
+      console.log(`[analyze] 뉴스 1차 응답이 "없음" → 재시도 (${itemsForAI.length}건 존재)`);
+      try {
+        const retryPrompt = `다음 뉴스 제목들을 보고 '${payload.stock_name}' 주가에 영향을 줄 수 있는 내용을 **1~2문장으로 반드시 요약**하세요. 관련성이 약해도 가장 그럴듯한 관점을 찾아내세요. JSON으로만 응답: {"news_analysis": "..."}\n\n${newsStr}`;
+        const retryResponse = await env.AI.run('@cf/meta/llama-3.3-70b-instruct-fp8-fast', {
+          messages: [{ role: 'user', content: retryPrompt }],
+          max_tokens: 400, temperature: 0.4,
+        });
+        const retryParsed = extractJSON(retryResponse?.response || '{}');
+        if (retryParsed.news_analysis && !isNegativeNewsResponse(retryParsed.news_analysis)) {
+          newsText = retryParsed.news_analysis;
+        }
+      } catch (e) { console.warn('[analyze] 뉴스 재시도 실패:', e.message); }
+    }
+
+    // ★ 3차 최종: 2차도 실패 → 제목 노출 없이 건수와 상태만 안내
+    if (!newsText || isNegativeNewsResponse(newsText)) {
+      newsText = `최근 수집된 ${itemsForAI.length}건의 관련 기사에서 뚜렷한 주가 영향 요인은 확인되지 않았음. 시장 상황 변화에 따라 재확인이 필요함.`;
     }
 
     return { news_analysis: newsText, status: 'success' };
   } catch (e) {
     console.error('뉴스 에이전트 오류:', e.message);
-    return { news_analysis: '뉴스 분석 실패.', status: 'error' };
+    return {
+      news_analysis: '뉴스 분석 중 일시적 오류가 발생했음. 잠시 후 다시 시도해 주세요.',
+      status: 'error'
+    };
   }
 }
 
+// "없음" 판정 헬퍼 (표현 변형 대응)
+function isNegativeNewsResponse(text) {
+  if (!text) return true;
+  const t = String(text);
+  if (t.includes('주가에 영향을 줄 만한 뉴스가 없')) return true;
+  if (t.includes('관련 뉴스가 없')) return true;
+  if (t.includes('확인된 뉴스가 없')) return true;
+  if (t.includes('관련된 뉴스가 없')) return true;
+  // 아주 짧은 응답도 실패로 간주 (예: "없음.")
+  if (t.trim().length < 20 && /없/.test(t)) return true;
+  return false;
+}
+
 // ------------------------------------------------------------
-// 심판 에이전트 (5문장 종합 분석)
+// 심판 에이전트 (5문장 종합)
 // ------------------------------------------------------------
 async function runJudgeAgent(env, payload) {
   const isSell = payload.analysis_type === 'sell';
