@@ -9,10 +9,11 @@ const supabase = createClient(SUPABASE_URL, SUPABASE_ANON_KEY, {
 });
 
 const ALLOWED_NAMES = ['박필립', '윤혜영'];
-const BATCH_ALLOWED_USER = '박필립';     // 이력 쌓기 버튼 노출 대상
-const BATCH_TOP_COUNT = 10;              // 상위 N개 고정
-const BATCH_RANDOM_COUNT = 10;           // 11위~100위 중 랜덤 N개
-const BATCH_DELAY_MS = 2500;             // 개별 분석 간 지연
+const BATCH_ALLOWED_USER = '박필립';
+const BATCH_TOP_COUNT = 10;
+const BATCH_RANDOM_COUNT = 10;
+const BATCH_DELAY_MS = 2500;
+const HIDDEN_POLL_MS = 1000; // 백그라운드 대기 중 재확인 주기
 
 let currentUser = null, currentQuote = null, transactions = [], editingTxId = null;
 let currentScreen = 'holdings';
@@ -48,7 +49,6 @@ async function handleAuthState(session) {
     const name = mapEmailToName(currentUser.email) || currentUser.email || '';
     $('#current-user-name').textContent = name;
 
-    // ★ 박필립 계정에서만 "이력 쌓기" 버튼 노출
     const batchBtn = $('#batch-build-btn');
     if (batchBtn) batchBtn.hidden = (name !== BATCH_ALLOWED_USER);
 
@@ -449,7 +449,6 @@ function setupAnalyze() {
   $('#analyze-btn').addEventListener('click', () => runAnalysis(currentQuote?.ticker, currentQuote?.stock_name, currentQuote?.price, 'main'));
 }
 
-// ★ batch 모드 지원: targetType === 'batch'일 때 UI 조작 및 alert 스킵
 async function runAnalysis(ticker, name, price, targetType = 'main', cardElement = null) {
   if (!ticker) return;
   const isSilent = targetType === 'batch';
@@ -593,11 +592,19 @@ async function runAnalysis(ticker, name, price, targetType = 'main', cardElement
   }
 }
 
-// ★ 인기 종목 배치 이력 쌓기
+// ★ 인기 종목 배치 이력 쌓기 (백그라운드 일시정지/재개 로직 추가)
 function setupBatchButton() {
   const btn = $('#batch-build-btn');
   if (!btn) return;
   btn.addEventListener('click', runBatchAnalysis);
+}
+
+// ★ document.hidden 상태일 때 배치를 일시정지하고, 복귀 시 재개하는 헬퍼
+async function waitWhileHidden(btn, currentIdx, total) {
+  while (document.hidden) {
+    btn.textContent = `일시정지 중 (탭 복귀 시 재개) ${currentIdx}/${total}`;
+    await new Promise(r => setTimeout(r, HIDDEN_POLL_MS));
+  }
 }
 
 async function runBatchAnalysis() {
@@ -642,8 +649,12 @@ async function runBatchAnalysis() {
 
     // 3) 순차 분석
     for (let i = 0; i < targets.length; i++) {
+      // ★ 3-1. 분석 시작 전 백그라운드 상태 체크 (일시정지)
+      await waitWhileHidden(btn, i + 1, total);
+
       const stock = targets[i];
       btn.textContent = `이력 쌓기 ${i + 1}/${total} · ${stock.name}`;
+
       try {
         await runAnalysis(stock.ticker, stock.name, null, 'batch');
         succeeded++;
@@ -651,7 +662,10 @@ async function runBatchAnalysis() {
         console.warn(`[batch] ${stock.name}(${stock.ticker}) 실패:`, e.message);
         failed++;
       }
+
+      // ★ 3-2. 다음 종목 전 대기 중에도 백그라운드 상태 체크
       if (i < targets.length - 1) {
+        await waitWhileHidden(btn, i + 1, total);
         await new Promise(r => setTimeout(r, BATCH_DELAY_MS));
       }
     }
