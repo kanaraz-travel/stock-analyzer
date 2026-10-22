@@ -30,7 +30,7 @@ import {
   runJudgeAgent,
 } from './_agents.js';
 
-const RULESET_VERSION = 'RULESET_AI_V25_8_JUDGE_STRICT';
+const RULESET_VERSION = 'RULESET_AI_V25_9_HISTORY_GUARD';
 const MAX_BODY_BYTES = 100 * 1024;
 
 const DUPLICATE_WINDOW_MS = 5 * 60 * 1000;
@@ -80,6 +80,25 @@ export async function onRequestPost(context) {
   const dataQuality = computeDataQuality(price_data);
   const isStale = price_data?.price_source === 'STALE';
 
+  // ★ 신규: 과거 시세 데이터 누락 감지 (KIS API 점검 시간 등)
+  // history.js가 실패하거나 데이터가 부족하면 return_1m, ma20_disparity가 모두 null이 됨
+  const hasHistoryData = price_data?.return_1m != null || price_data?.ma20_disparity != null;
+  if (!hasHistoryData) {
+    console.warn('[analyze] history data missing → reject analysis');
+    return jsonResponse({
+      score: null,
+      recommendation: '판단 보류',
+      overall_summary: '과거 시세 데이터를 불러오지 못해 분석을 진행할 수 없습니다. 증권사 API 점검 시간일 수 있으니 잠시 후 다시 시도해 주세요.',
+      data_quality: { status: 'INSUFFICIENT', label: '과거 데이터 누락', quote_time_verified: false },
+      fallback: true,
+      fallback_reason: 'HISTORY_DATA_MISSING',
+      ruleset_version: RULESET_VERSION,
+      saved: false,
+      save_skip_reason: 'DATA_INSUFFICIENT',
+    });
+  }
+
+  // ★ 데이터 기준 시각 확인 불가 또는 부족 시 차단
   if (dataQuality.status === 'UNKNOWN' || dataQuality.status === 'INSUFFICIENT') {
     return jsonResponse({
       score: null,
@@ -96,8 +115,8 @@ export async function onRequestPost(context) {
 
   const referenceScore = computeReferenceScore(price_data);
   let finalData = null;
-  let judgeConfidence = null;   // ★ 심판 원본 확신도 (검증 통과 시에만)
-  let originalJudgeRec = null;  // ★ 심판 원본 추천 (보정 전)
+  let judgeConfidence = null;
+  let originalJudgeRec = null;
   let isFallback = false;
   let fallbackReason = null;
   let dataQualityNote = null;
@@ -201,7 +220,7 @@ export async function onRequestPost(context) {
       else { agentStatus.trend = { ok: false, status: 'invalid', reason: v.reason }; trendResult = null; }
     }
 
-    // (F) [4] 심판 (예외는 즉시 실패 처리)
+    // (F) [4] 심판
     const judgeRaw = await runJudgeAgent(env, {
       ticker, stock_name, analysis_type, holdings_data, price_data,
       price_volume_result: pvResult,
@@ -330,7 +349,6 @@ export async function onRequestPost(context) {
   } catch (e) {
     console.error('[analyze] internal error:', e && e.message, e && e.stack);
     isFallback = true;
-    // ★ 심판 실패 사유를 fallbackReason에 반영
     fallbackReason = e.fallbackReason || 'AI_ERROR';
     finalData = {
       recommendation: '판단 보류',
@@ -392,8 +410,8 @@ export async function onRequestPost(context) {
           agent_status: agentStatus,
           trend_history_summary: trendSummary,
           data_quality_note: dataQualityNote,
-          judge_confidence: judgeConfidence,       // ★ 심판 원본 확신도
-          judge_recommendation: originalJudgeRec,  // ★ 심판 원본 추천 (보정 전)
+          judge_confidence: judgeConfidence,
+          judge_recommendation: originalJudgeRec,
         },
         overall_summary: finalData.overall_summary,
         price_flow_summary: pvResult?.price_flow_analysis ?? null,
@@ -420,7 +438,6 @@ export async function onRequestPost(context) {
     }
   } catch (cleanupErr) { console.warn('[analyze] cleanup trigger failed:', cleanupErr.message); }
 
-  // ★ 응답: 확신도는 심판 원본, recommendation_adjusted로 보정 여부 노출
   const recMeta = getRecommendationMeta(finalData.recommendation);
   const confInterp = interpretConfidence(judgeConfidence);
   const recommendationAdjusted = originalJudgeRec != null && finalData.recommendation !== originalJudgeRec;
@@ -432,7 +449,6 @@ export async function onRequestPost(context) {
     recommendation_hint: recMeta.hint,
     recommendation_adjusted: recommendationAdjusted,
     original_recommendation: recommendationAdjusted ? originalJudgeRec : undefined,
-    // ★ confidence는 항상 "심판 원본"이며, 최종 등급이 보정됐을 수 있음을 의미
     confidence: judgeConfidence,
     confidence_interpretation: confInterp,
     overall_summary: finalData.overall_summary,
