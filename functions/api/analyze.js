@@ -18,6 +18,8 @@ import {
   computeReferenceScore,
   saveAnalysisRun,
   cleanupOldRuns,
+  getRecommendationMeta,
+  interpretConfidence,
   jsonResponse,
 } from './_pipeline.js';
 
@@ -28,10 +30,9 @@ import {
   runJudgeAgent,
 } from './_agents.js';
 
-const RULESET_VERSION = 'RULESET_AI_V25_6_REVIEW3';
+const RULESET_VERSION = 'RULESET_AI_V25_7_CONFIRMED_CLOSE_AWARE';
 const MAX_BODY_BYTES = 100 * 1024;
 
-// 오케스트레이션 정책
 const DUPLICATE_WINDOW_MS = 5 * 60 * 1000;
 const DUPLICATE_PRICE_TOLERANCE_PCT = 0.5;
 const CLEANUP_PROBABILITY = 0.2;
@@ -95,6 +96,7 @@ export async function onRequestPost(context) {
 
   const referenceScore = computeReferenceScore(price_data);
   let finalData = null;
+  let finalConfidence = null;
   let isFallback = false;
   let fallbackReason = null;
   let dataQualityNote = null;
@@ -210,7 +212,6 @@ export async function onRequestPost(context) {
       previous_recommendation: previousRec,
     }).catch(e => {
       console.error('[analyze] judge agent exception:', e.message);
-      // ★ 사용자 응답에는 일반화된 코드만 (원본 예외 메시지는 서버 로그에만)
       agentStatus.judge = { ok: false, status: 'error', reason: 'AGENT_EXCEPTION' };
       return null;
     });
@@ -220,7 +221,6 @@ export async function onRequestPost(context) {
       throw new Error('JUDGE_FAILED');
     }
 
-    // ★ 심판 정규화 실패 시 판단 보류 강제 (일관성·중복에서 자동 제외)
     let normalizedRec = normalizeRecommendation(judgeRaw.recommendation, analysis_type);
     let isJudgeInvalid = false;
 
@@ -236,6 +236,7 @@ export async function onRequestPost(context) {
     let confidence = judgeRaw.confidence;
     if (typeof confidence !== 'number' || !Number.isFinite(confidence)) confidence = null;
     else confidence = Math.max(0, Math.min(1, confidence));
+    finalConfidence = confidence;
 
     let finalSummary = (typeof judgeRaw.overall_summary === 'string' && judgeRaw.overall_summary.trim().length > 0)
       ? judgeRaw.overall_summary
@@ -271,30 +272,33 @@ export async function onRequestPost(context) {
       finalSummary = `[판단 유지] ${finalSummary} (확신도 ${confStr} < 임계 ${(effectiveThreshold * 100).toFixed(0)}%)`;
     }
 
-    // ★ 핵심 분석가 실패 처리
+    // 핵심 분석가 실패 처리
     const pvFailed = !agentStatus.price_volume.ok;
     const trendFailed = !agentStatus.trend.ok;
 
     if (pvFailed && trendFailed) {
-      // ★ 두 핵심 분석가 모두 실패 → 판단 보류 강제 + fallback
       finalRecommendation = '판단 보류';
       finalSummary = `[핵심 분석 실패로 판단 보류] ${finalSummary}`;
       isFallback = true;
       fallbackReason = 'CRITICAL_AGENT_FAILURE';
     } else if (pvFailed || trendFailed) {
-      // 한쪽만 실패 → 강도 하향
       if (finalRecommendation === '매수 추천') finalRecommendation = '매수 고려';
       else if (finalRecommendation === '매도 추천') finalRecommendation = '매도 고려';
       const missed = pvFailed ? '가격·거래량 분석 누락' : '추세 분석 누락';
       finalSummary = `[${missed}으로 강도 하향] ${finalSummary}`;
     }
 
-    // ★ 데이터 신선도에 따른 강도 하향 (STALE / DELAYED / OK_UNVERIFIED 모두 적용)
+    // ★ 데이터 신선도 다운그레이드 (A 옵션)
     const downgradeStrong = () => {
       if (finalRecommendation === '매수 추천') return '매수 고려';
       if (finalRecommendation === '매도 추천') return '매도 고려';
       return finalRecommendation;
     };
+
+    // ★ 확정 종가 판별: 애프터마켓/시간외/장마감/휴장
+    const ms = String(price_data?.market_status || '');
+    const isConfirmedClose = price_data?.is_after_hours_quote === true
+      || /마감|애프터마켓|시간외|휴장/.test(ms);
 
     if (dataQuality.status === 'STALE') {
       finalRecommendation = downgradeStrong();
@@ -305,9 +309,16 @@ export async function onRequestPost(context) {
       finalSummary = `[데이터 지연으로 강도 하향] ${finalSummary}`;
       dataQualityNote = 'DELAYED';
     } else if (dataQuality.quote_time_verified === false) {
-      finalRecommendation = downgradeStrong();
-      finalSummary = `[시세 시각 미확인으로 강도 하향] ${finalSummary}`;
-      dataQualityNote = 'OK_UNVERIFIED';
+      // ★ 장마감/애프터마켓은 확정 종가이므로 하향하지 않음
+      if (isConfirmedClose) {
+        dataQualityNote = 'OK_CONFIRMED_CLOSE';
+        // 하향 없음
+      } else {
+        // 장중인데 시각 미확인 → 하향 유지
+        finalRecommendation = downgradeStrong();
+        finalSummary = `[시세 시각 미확인으로 강도 하향] ${finalSummary}`;
+        dataQualityNote = 'OK_UNVERIFIED';
+      }
     }
 
     finalData = { recommendation: finalRecommendation, overall_summary: finalSummary };
@@ -324,17 +335,17 @@ export async function onRequestPost(context) {
     }
   }
 
-  // ── 저장 판단 ──
+  // 저장 판단
   let saved = false;
   let saveSkipReason = null;
 
-  // ★ 중복 판정 (analysis_type 비교 추가)
+  // 중복 판정 (analysis_type 비교)
   let isDuplicate = false;
   if (latestRun && finalData?.recommendation && trendResult) {
     const latestType = latestRun.market_facts?.analysis_type;
     const currType = analysis_type || 'buy';
 
-    if (latestType === currType) {  // ★ 분석 유형이 같을 때만 중복 판정
+    if (latestType === currType) {
       const latestRec = latestRun.recommendation;
       const latestTrend = latestRun.market_facts?.agent_outputs?.trend;
       const latestPrice = latestRun.market_facts?.price_data?.current_price;
@@ -376,6 +387,7 @@ export async function onRequestPost(context) {
           agent_status: agentStatus,
           trend_history_summary: trendSummary,
           data_quality_note: dataQualityNote,
+          judge_confidence: finalConfidence,
         },
         overall_summary: finalData.overall_summary,
         price_flow_summary: pvResult?.price_flow_analysis ?? null,
@@ -402,9 +414,17 @@ export async function onRequestPost(context) {
     }
   } catch (cleanupErr) { console.warn('[analyze] cleanup trigger failed:', cleanupErr.message); }
 
+  // ★ 응답에 부가 정보 추가 (표현 다양화)
+  const recMeta = getRecommendationMeta(finalData.recommendation);
+  const confInterp = interpretConfidence(finalConfidence);
+
   return jsonResponse({
     score: referenceScore,
     recommendation: finalData.recommendation,
+    recommendation_label: recMeta.label,
+    recommendation_hint: recMeta.hint,
+    confidence: finalConfidence,
+    confidence_interpretation: confInterp,
     overall_summary: finalData.overall_summary,
     data_quality: dataQuality,
     data_quality_note: dataQualityNote,

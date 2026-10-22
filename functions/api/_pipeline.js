@@ -1,6 +1,5 @@
 // functions/api/_pipeline.js
 // 분석 파이프라인의 도메인 규칙: 검증, 정규화, 이력 조회, 일관성 판정, 저장, 정리.
-// 라우팅 대상 아님 (_ prefix).
 
 import { createClient } from '@supabase/supabase-js';
 
@@ -8,40 +7,74 @@ import { createClient } from '@supabase/supabase-js';
 export const VALID_RECS_BUY = ['매수 추천', '매수 고려', '기다리기', '매도 고려', '매도 추천', '판단 보류'];
 export const VALID_RECS_SELL = ['매도 추천', '부분 매도 고려', '보유 유지', '추가 매수 고려', '매수 추천', '판단 보류'];
 
-// ─── 동의어 매핑 (analysis_type별로 분리) ───
+// ─── 등급별 자연어 부제 / 행동 힌트 ───
+const REC_METADATA = {
+  '매수 추천': {
+    label: '적극 매수 관점',
+    hint: '여러 지표가 정렬된 강한 매수 신호입니다. 다만 분할 매수로 리스크를 관리하세요.',
+  },
+  '매수 고려': {
+    label: '신중한 매수 검토',
+    hint: '긍정적 신호가 있으나 확신이 완전하지 않습니다. 추가 확인 후 진입을 검토하세요.',
+  },
+  '기다리기': {
+    label: '관망 (지켜보기)',
+    hint: '방향성이 뚜렷하지 않습니다. 추세가 명확해질 때까지 관망이 안전합니다.',
+  },
+  '매도 고려': {
+    label: '리스크 인지, 일부 정리 검토',
+    hint: '부정적 신호가 나타나고 있습니다. 일부 이익실현이나 손절을 검토하세요.',
+  },
+  '매도 추천': {
+    label: '적극 매도 관점',
+    hint: '여러 지표가 정렬된 강한 매도 신호입니다. 보유 중이라면 정리를 우선 검토하세요.',
+  },
+  '판단 보류': {
+    label: '판단 유보',
+    hint: '데이터 부족 또는 상충 신호로 판단을 내리기 어렵습니다. 재분석을 권장합니다.',
+  },
+  '부분 매도 고려': {
+    label: '일부 이익실현 검토',
+    hint: '일부 매도로 이익을 확정하고 리스크를 줄이는 것을 검토하세요.',
+  },
+  '보유 유지': {
+    label: '홀드 (유지)',
+    hint: '현재 포지션 유지가 적절합니다. 추가 매수나 매도 신호는 아직 뚜렷하지 않습니다.',
+  },
+  '추가 매수 고려': {
+    label: '추가 매수 검토',
+    hint: '보유 종목에 대한 긍정 신호가 있습니다. 비중 조절을 고려한 추가 매수를 검토하세요.',
+  },
+};
+
+export function getRecommendationMeta(rec) {
+  return REC_METADATA[rec] || { label: rec || '-', hint: '' };
+}
+
+export function interpretConfidence(confidence) {
+  if (confidence == null || !Number.isFinite(confidence)) {
+    return { level: 'unknown', label: '확신도 미제공' };
+  }
+  const pct = (confidence * 100).toFixed(0);
+  if (confidence >= 0.8) return { level: 'high', label: `높은 확신 (${pct}%)` };
+  if (confidence >= 0.6) return { level: 'medium', label: `중간 확신 (${pct}%)` };
+  if (confidence >= 0.4) return { level: 'low', label: `낮은 확신 (${pct}%)` };
+  return { level: 'very_low', label: `매우 낮은 확신 (${pct}%)` };
+}
+
+// ─── 동의어 매핑 (analysis_type별) ───
 const REC_SYNONYMS_BUY = {
-  '매수': '매수 고려',
-  '매수추천': '매수 추천',
-  '적극매수': '매수 추천',
-  '강력매수': '매수 추천',
-  '매도': '매도 고려',
-  '매도추천': '매도 추천',
-  '적극매도': '매도 추천',
-  '강력매도': '매도 추천',
-  '기다림': '기다리기',
-  '대기': '기다리기',
-  '관망': '기다리기',
-  '관망세': '기다리기',
-  '중립': '판단 보류',
-  '판단보류': '판단 보류',
+  '매수': '매수 고려', '매수추천': '매수 추천', '적극매수': '매수 추천', '강력매수': '매수 추천',
+  '매도': '매도 고려', '매도추천': '매도 추천', '적극매도': '매도 추천', '강력매도': '매도 추천',
+  '기다림': '기다리기', '대기': '기다리기', '관망': '기다리기', '관망세': '기다리기',
+  '중립': '판단 보류', '판단보류': '판단 보류',
 };
 const REC_SYNONYMS_SELL = {
-  '매도': '부분 매도 고려',
-  '매도추천': '매도 추천',
-  '적극매도': '매도 추천',
-  '강력매도': '매도 추천',
-  '매수': '추가 매수 고려',
-  '매수추천': '추가 매수 고려',
-  '보유': '보유 유지',
-  '홀드': '보유 유지',
-  '홀딩': '보유 유지',
-  '존버': '보유 유지',
-  '기다림': '보유 유지',
-  '대기': '보유 유지',
-  '관망': '보유 유지',
-  '관망세': '보유 유지',
-  '중립': '판단 보류',
-  '판단보류': '판단 보류',
+  '매도': '부분 매도 고려', '매도추천': '매도 추천', '적극매도': '매도 추천', '강력매도': '매도 추천',
+  '매수': '추가 매수 고려', '매수추천': '추가 매수 고려',
+  '보유': '보유 유지', '홀드': '보유 유지', '홀딩': '보유 유지', '존버': '보유 유지',
+  '기다림': '보유 유지', '대기': '보유 유지', '관망': '보유 유지', '관망세': '보유 유지',
+  '중립': '판단 보류', '판단보류': '판단 보류',
 };
 
 // ─── 판단 강도 매핑 ───
@@ -66,7 +99,7 @@ const MAX_NEWS_ITEMS = 30;
 const MAX_URL_LENGTH = 2048;
 
 // ─────────────────────────────────────────────────────────────
-// 추천 등급 정규화 (정확 + 명시적 동의어만, 부분 매칭 없음)
+// 추천 등급 정규화 (정확 + 명시적 동의어만)
 // ─────────────────────────────────────────────────────────────
 export function normalizeRecommendation(raw, analysisType) {
   if (raw && typeof raw === 'object') {
@@ -80,17 +113,14 @@ export function normalizeRecommendation(raw, analysisType) {
   const validRecs = analysisType === 'sell' ? VALID_RECS_SELL : VALID_RECS_BUY;
   const cleanRec = (r) => r.replace(/\s+/g, '').replace(/[^\w가-힣]/g, '');
 
-  // 1) 정확 매칭
   for (const rec of validRecs) {
     if (cleanRec(rec) === cleaned) return rec;
   }
-  // 2) 분석 유형별 명시적 동의어
   const synonyms = analysisType === 'sell' ? REC_SYNONYMS_SELL : REC_SYNONYMS_BUY;
   if (synonyms[cleaned]) {
     const mapped = synonyms[cleaned];
     if (validRecs.includes(mapped)) return mapped;
   }
-  // 부분 매칭 없음 — 정규화 실패는 상위에서 판단 보류로 폴백
   return null;
 }
 
@@ -99,22 +129,15 @@ export function normalizeRecommendation(raw, analysisType) {
 // ─────────────────────────────────────────────────────────────
 export function validatePvOutput(out) {
   if (!out || typeof out !== 'object') return { valid: false, reason: 'NOT_OBJECT' };
-  if (typeof out.price_flow_analysis !== 'string' || !out.price_flow_analysis.trim()) {
-    return { valid: false, reason: 'MISSING_PRICE_FLOW' };
-  }
-  if (typeof out.volume_analysis !== 'string' || !out.volume_analysis.trim()) {
-    return { valid: false, reason: 'MISSING_VOLUME' };
-  }
+  if (typeof out.price_flow_analysis !== 'string' || !out.price_flow_analysis.trim()) return { valid: false, reason: 'MISSING_PRICE_FLOW' };
+  if (typeof out.volume_analysis !== 'string' || !out.volume_analysis.trim()) return { valid: false, reason: 'MISSING_VOLUME' };
   return { valid: true, reason: null };
 }
 
 export function validateNewsOutput(out) {
   if (!out || typeof out !== 'object') return { valid: false, reason: 'NOT_OBJECT' };
-  // ★ 신규: 뉴스 에이전트 자체가 error를 반환한 경우 실패로 처리
   if (out.status === 'error') return { valid: false, reason: 'AGENT_ERROR' };
-  if (typeof out.news_analysis !== 'string' || !out.news_analysis.trim()) {
-    return { valid: false, reason: 'MISSING_ANALYSIS' };
-  }
+  if (typeof out.news_analysis !== 'string' || !out.news_analysis.trim()) return { valid: false, reason: 'MISSING_ANALYSIS' };
   return { valid: true, reason: null };
 }
 
@@ -124,9 +147,7 @@ export function validateTrendOutput(out) {
   if (!['상승', '횡보', '하락'].includes(out.medium_term_trend)) return { valid: false, reason: 'INVALID_MEDIUM_TERM' };
   if (!['강', '중', '약'].includes(out.trend_strength)) return { valid: false, reason: 'INVALID_STRENGTH' };
   if (typeof out.trend_confidence !== 'number' || !Number.isFinite(out.trend_confidence)
-      || out.trend_confidence < 0 || out.trend_confidence > 1) {
-    return { valid: false, reason: 'INVALID_CONFIDENCE' };
-  }
+      || out.trend_confidence < 0 || out.trend_confidence > 1) return { valid: false, reason: 'INVALID_CONFIDENCE' };
   return { valid: true, reason: null };
 }
 
@@ -152,7 +173,6 @@ export function validateAnalyzeInput(body) {
     if (ma20_disparity != null && !Number.isFinite(ma20_disparity)) errors.push('ma20_disparity는 유한한 숫자여야 합니다.');
     if (w52_hgpr != null && (!Number.isFinite(w52_hgpr) || w52_hgpr < 0)) errors.push('w52_hgpr은 0 이상이어야 합니다.');
     if (w52_lwpr != null && (!Number.isFinite(w52_lwpr) || w52_lwpr < 0)) errors.push('w52_lwpr은 0 이상이어야 합니다.');
-
     if (quote_as_of != null) {
       const t = new Date(quote_as_of).getTime();
       if (isNaN(t)) errors.push('quote_as_of는 유효한 시간이어야 합니다.');
@@ -217,9 +237,7 @@ export function computeDataQuality(price_data) {
   if (quoteTimeStr) {
     const qt = new Date(quoteTimeStr).getTime();
     if (!isNaN(qt)) {
-      if (qt > now + FUTURE_TOLERANCE_MS) {
-        return { status: 'UNKNOWN', label: '시세 시각이 미래로 설정됨', quote_time_verified: false };
-      }
+      if (qt > now + FUTURE_TOLERANCE_MS) return { status: 'UNKNOWN', label: '시세 시각이 미래로 설정됨', quote_time_verified: false };
       const ageMin = Math.max(0, (now - qt) / 60000);
       if (ageMin > 60) return { status: 'STALE', label: '오래된 데이터', age_min: Math.round(ageMin), quote_time_verified: true };
       if (ageMin > 10) return { status: 'DELAYED', label: '지연된 데이터', age_min: Math.round(ageMin), quote_time_verified: true };
@@ -229,9 +247,7 @@ export function computeDataQuality(price_data) {
   if (serverTimeStr) {
     const st = new Date(serverTimeStr).getTime();
     if (!isNaN(st)) {
-      if (st > now + FUTURE_TOLERANCE_MS) {
-        return { status: 'UNKNOWN', label: '서버 시각이 미래로 설정됨', quote_time_verified: false };
-      }
+      if (st > now + FUTURE_TOLERANCE_MS) return { status: 'UNKNOWN', label: '서버 시각이 미래로 설정됨', quote_time_verified: false };
       const ageMin = Math.max(0, (now - st) / 60000);
       if (ageMin <= 10) {
         let label = '최근 조회 (시세 기준 시각 미확인)';
@@ -247,7 +263,7 @@ export function computeDataQuality(price_data) {
 }
 
 // ─────────────────────────────────────────────────────────────
-// 추세 이력 조회 — 종목 기준 통합 + 품질 필터
+// 추세 이력 조회
 // ─────────────────────────────────────────────────────────────
 export async function loadRecentTrendHistory(env, ticker) {
   if (!env.SUPABASE_SERVICE_ROLE_KEY) {
@@ -287,7 +303,6 @@ export async function loadRecentTrendHistory(env, ticker) {
       const agStatus = mf.agent_status || {};
       const dqNote = mf.data_quality_note;
 
-      // ★ 품질 필터: 실패 흔적이 있거나 STALE 데이터는 이력에서 제외
       if (agStatus.trend?.ok === false) continue;
       if (agStatus.trend?.status === 'invalid') continue;
       if (dqNote === 'STALE' || dqNote === 'STALE_SOURCE') continue;
@@ -296,12 +311,10 @@ export async function loadRecentTrendHistory(env, ticker) {
       const ms = String(pd.market_status || '');
       const isAfterHours = pd.is_after_hours_quote === true || /애프터마켓|시간외/.test(ms);
 
-      // 시장 상태 분류 (확정/장중/불명)
       let basisClass = 'unknown';
       if (isAfterHours) basisClass = 'confirmed';
       else if (ms.includes('정규장')) basisClass = 'intraday';
       else if (/휴장|마감/.test(ms)) basisClass = 'confirmed';
-      else basisClass = 'unknown';
 
       const entry = {
         analyzed_at: row.analyzed_at,
@@ -324,7 +337,6 @@ export async function loadRecentTrendHistory(env, ticker) {
     if (byDate.size >= 3) {
       return { status: 'loaded', entries: Array.from(byDate.values()).slice(0, TREND_HISTORY_DAYS) };
     }
-    // 3일 미만이면 최근 관측값 사용 (라벨은 recent_fallback)
     return { status: 'loaded', entries: allEntries.slice(0, TREND_RECENT_FALLBACK_MAX) };
   } catch (e) {
     console.warn('[pipeline] loadRecentTrendHistory exception:', e.message);
@@ -345,26 +357,22 @@ export function summarizeTrendHistory(history, loadStatus) {
     return {
       count: 0, distinct_days: 0, sample_mode: 'unavailable',
       text: '- 이력 조회 실패 (DB 오류)',
-      stability: 'insufficient',
-      stability_label: '판단 보류 (이력 조회 실패)',
+      stability: 'insufficient', stability_label: '판단 보류 (이력 조회 실패)',
       short_term_distribution: null, medium_term_distribution: null,
       flips_short: 0, flips_medium: 0,
       after_hours_count: 0, intraday_count: 0, confirmed_closed_count: 0, unknown_count: 0,
-      latest_age_days: null, max_gap_days: null,
-      data_basis_note: '이력 조회 실패',
+      latest_age_days: null, max_gap_days: null, data_basis_note: '이력 조회 실패',
     };
   }
   if (!history || history.length === 0) {
     return {
       count: 0, distinct_days: 0, sample_mode: 'none',
       text: '- 이전 추세 판단 이력 없음 (첫 분석)',
-      stability: 'insufficient',
-      stability_label: '판단 보류 (이력 없음)',
+      stability: 'insufficient', stability_label: '판단 보류 (이력 없음)',
       short_term_distribution: null, medium_term_distribution: null,
       flips_short: 0, flips_medium: 0,
       after_hours_count: 0, intraday_count: 0, confirmed_closed_count: 0, unknown_count: 0,
-      latest_age_days: null, max_gap_days: null,
-      data_basis_note: '데이터 없음',
+      latest_age_days: null, max_gap_days: null, data_basis_note: '데이터 없음',
     };
   }
 
@@ -380,7 +388,6 @@ export function summarizeTrendHistory(history, loadStatus) {
     const kstDate = getKstDate(h.analyzed_at);
     if (kstDate) distinctDates.add(kstDate);
 
-    // basis_class 기반 카운트 (이전: market_status 문자열 매칭)
     if (h.basis_class === 'confirmed') {
       if (h.is_after_hours_quote) afterHoursCount++;
       else confirmedClosedCount++;
@@ -400,8 +407,7 @@ export function summarizeTrendHistory(history, loadStatus) {
   const sortedDates = Array.from(distinctDates).sort();
   const latestDateStr = sortedDates[sortedDates.length - 1];
   const latestDateMs = latestDateStr ? new Date(latestDateStr + 'T00:00:00+09:00').getTime() : null;
-  const latestAgeDays = latestDateMs != null
-    ? Math.max(0, Math.floor((Date.now() - latestDateMs) / 86400000)) : null;
+  const latestAgeDays = latestDateMs != null ? Math.max(0, Math.floor((Date.now() - latestDateMs) / 86400000)) : null;
 
   let maxGapDays = 0;
   for (let i = 1; i < sortedDates.length; i++) {
@@ -447,7 +453,6 @@ export function summarizeTrendHistory(history, loadStatus) {
     return `- ${dt}: 단기 ${h.short_term || '-'} / 중기 ${h.medium_term || '-'} (강도 ${h.strength || '-'}, 확신 ${conf})${basis}`;
   }).join('\n');
 
-  // ★ 확정 종가 판정 개선: unknown이 0일 때만 "모두 확정" 문구
   const confirmedTotal = afterHoursCount + confirmedClosedCount;
   let dataBasisNote = '';
   if (confirmedTotal === count) dataBasisNote = `최근 ${count}건 모두 확정 종가`;
