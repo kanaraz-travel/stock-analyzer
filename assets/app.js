@@ -269,9 +269,6 @@ async function handleSearch() {
 }
 
 // ★ 개선: 시장 상태에 따라 시각 라벨 분기
-//   - 장중(정규장)인데 시세 시각 미확인 → 경고 유지
-//   - 장마감/휴장 → "장 마감 종가" 안내, 경고 문구 제거
-//   - 시간외(애프터마켓/단일가) → "시간외 (정규장 종가 기준)" 안내, 경고 문구 제거
 function renderQuote(q) {
   $('#quote-card').hidden = false;
   $('#stock-name').textContent = q.stock_name || q.ticker;
@@ -298,7 +295,6 @@ function renderQuote(q) {
     } else if (isAfterHours) {
       timeLabel = `데이터 조회 시각: ${ts} · 시간외 (정규장 종가 기준)`;
     } else {
-      // 정규장(또는 판단 불가) + 시세 기준 시각 미확인 → 경고 유지
       timeLabel = `데이터 조회 시각: ${ts} (시세 기준 시각 미확인)`;
     }
   } else {
@@ -553,62 +549,7 @@ async function runAnalysis(ticker, name, price, targetType = 'main', cardElement
   }
 }
 
-// ★ 신규: 추세 파트를 문자열 배열로 변환 (메인/인라인 공용)
-function buildTrendParts(data) {
-  const at = data?.analysis_trend;
-  const nt = data?.news_trend;
-  const parts = [];
-  if (at?.short_term) parts.push(`단기 ${at.short_term}`);
-  if (at?.medium_term) parts.push(`중기 ${at.medium_term}`);
-  if (at?.momentum) parts.push(`강도 ${at.momentum}`);
-  if (nt?.direction) parts.push(`뉴스 ${nt.direction}${nt.strength ? `(${nt.strength})` : ''}`);
-  if (nt?.key_theme && nt.key_theme !== '-' && nt.key_theme !== '정보 없음') parts.push(`테마: ${nt.key_theme}`);
-  return parts;
-}
-
-// ★ 신규: 메인 분석 결과에 추세 블록 렌더링 (없으면 동적 생성)
-function renderMainTrendBlock(data) {
-  const container = $('#analysis-result');
-  if (!container) return;
-
-  const parts = buildTrendParts(data);
-  let trendBlock = container.querySelector('#trend-block');
-
-  if (parts.length === 0) {
-    if (trendBlock) trendBlock.hidden = true;
-    return;
-  }
-
-  if (!trendBlock) {
-    trendBlock = document.createElement('div');
-    trendBlock.id = 'trend-block';
-    trendBlock.className = 'analysis-block';
-
-    const title = document.createElement('h4');
-    title.className = 'analysis-block-title';
-    title.textContent = '추세 분석';
-    trendBlock.appendChild(title);
-
-    const text = document.createElement('p');
-    text.id = 'trend-summary';
-    text.className = 'body-text';
-    trendBlock.appendChild(text);
-
-    // 뉴스 분석 블록 다음에 삽입
-    const newsEl = $('#news-analysis-summary');
-    if (newsEl && newsEl.parentNode && newsEl.parentNode.parentNode) {
-      newsEl.parentNode.parentNode.insertBefore(trendBlock, newsEl.parentNode.nextSibling);
-    } else {
-      container.appendChild(trendBlock);
-    }
-  }
-
-  const summaryEl = trendBlock.querySelector('#trend-summary');
-  if (summaryEl) summaryEl.textContent = parts.join(' · ');
-  trendBlock.hidden = false;
-}
-
-// ★ 수정: 분석 시각만 표시, fallback note 참조 제거 + 추세 블록 추가
+// ★ 뉴스/추세 블록 제거. 종합 분석만 표시.
 function renderAnalysisResult(data, scrollTo = true) {
   $('#analysis-result').hidden = false;
   const badge = $('#recommendation-badge');
@@ -624,15 +565,11 @@ function renderAnalysisResult(data, scrollTo = true) {
   $('#analysis-timestamp').textContent = `분석 시각: ${tsStr}`;
 
   $('#overall-summary').textContent = data.overall_summary || '-';
-  $('#news-analysis-summary').textContent = data.news_analysis || '-';
-
-  // ★ 신규: 추세 분석 블록
-  renderMainTrendBlock(data);
 
   if (scrollTo && currentScreen === 'analysis') $('#analysis-result').scrollIntoView({ behavior: 'smooth', block: 'start' });
 }
 
-// ★ 수정: 인라인 결과에서도 추세 블록 표시
+// ★ 인라인 결과도 종합 분석만 표시
 function renderInlineAnalysisResult(data, cardElement, scrollTo = true) {
   const container = cardElement.querySelector('.holding-inline-result');
   if (!container) return;
@@ -650,7 +587,6 @@ function renderInlineAnalysisResult(data, cardElement, scrollTo = true) {
   const ts = document.createElement('div'); ts.className = 'analysis-timestamp'; ts.textContent = formatDateTime(data.analyzed_at || new Date().toISOString());
   headDiv.appendChild(badge); headDiv.appendChild(ts); container.appendChild(headDiv);
 
-  // 종합 분석 블록
   const overallBlock = document.createElement('div');
   overallBlock.className = 'analysis-block';
   const overallTitle = document.createElement('h4');
@@ -662,37 +598,6 @@ function renderInlineAnalysisResult(data, cardElement, scrollTo = true) {
   overallText.textContent = data.overall_summary || '-';
   overallBlock.appendChild(overallText);
   container.appendChild(overallBlock);
-
-  // 뉴스 분석 블록
-  const newsBlock = document.createElement('div');
-  newsBlock.className = 'analysis-block';
-  const newsTitle = document.createElement('h4');
-  newsTitle.className = 'analysis-block-title';
-  newsTitle.textContent = '뉴스 분석';
-  newsBlock.appendChild(newsTitle);
-  const newsText = document.createElement('p');
-  newsText.style.fontSize = '13px';
-  newsText.style.lineHeight = '1.7';
-  newsText.textContent = data.news_analysis || '-';
-  newsBlock.appendChild(newsText);
-  container.appendChild(newsBlock);
-
-  // ★ 신규: 추세 분석 블록 (정보가 있을 때만)
-  const trendParts = buildTrendParts(data);
-  if (trendParts.length > 0) {
-    const trendBlock = document.createElement('div');
-    trendBlock.className = 'analysis-block';
-    const trendTitle = document.createElement('h4');
-    trendTitle.className = 'analysis-block-title';
-    trendTitle.textContent = '추세 분석';
-    trendBlock.appendChild(trendTitle);
-    const trendText = document.createElement('p');
-    trendText.style.fontSize = '13px';
-    trendText.style.lineHeight = '1.7';
-    trendText.textContent = trendParts.join(' · ');
-    trendBlock.appendChild(trendText);
-    container.appendChild(trendBlock);
-  }
 
   if (scrollTo) container.scrollIntoView({ behavior: 'smooth', block: 'start' });
 }
