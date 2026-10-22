@@ -1,9 +1,9 @@
 // functions/api/analyze.js
 import { createClient } from '@supabase/supabase-js';
 
-const RULESET_VERSION = 'RULESET_AI_V19_REVIEW_FIXED';
+const RULESET_VERSION = 'RULESET_AI_V20_SUMMARY5_NEWSLOOSE';
 const MAX_BODY_BYTES = 100 * 1024;
-const MAX_NEWS_ITEMS = 20;
+const MAX_NEWS_ITEMS = 30;
 const MAX_URL_LENGTH = 2048;
 
 export async function onRequestPost(context) {
@@ -21,7 +21,6 @@ export async function onRequestPost(context) {
   if (userError || !userData?.user) return jsonResponse({ error: '인증이 필요합니다.', error_code: 'UNAUTHORIZED' }, 401);
   const userId = userData.user.id;
 
-  // ★ 개선: 실제 UTF-8 바이트 수 검사
   let rawBody = '';
   try { rawBody = await request.text(); } catch {
     return jsonResponse({ error: '요청을 읽을 수 없습니다.', error_code: 'INVALID_BODY' }, 400);
@@ -50,14 +49,11 @@ export async function onRequestPost(context) {
   const dataQuality = computeDataQuality(price_data);
   const isStale = price_data?.price_source === 'STALE';
 
-  // 데이터 부족 → 판단 보류 강제
   if (dataQuality.status === 'UNKNOWN' || dataQuality.status === 'INSUFFICIENT') {
     const ret = {
       score: null,
       recommendation: '판단 보류',
       overall_summary: '시세 기준 시각을 확인할 수 없거나 데이터가 부족하여 판단을 보류합니다.',
-      price_flow_summary: '데이터 부족으로 분석 불가',
-      volume_summary: '데이터 부족으로 분석 불가',
       news_analysis: '데이터 부족으로 분석 불가',
       news_agent_status: 'skipped',
       data_quality: dataQuality,
@@ -74,8 +70,8 @@ export async function onRequestPost(context) {
         score: null, recommendation: '판단 보류',
         ruleset_version: RULESET_VERSION,
         market_facts: { price_data, volume_data, news_items, analysis_type, holdings_data },
-        overall_summary: ret.overall_summary, price_flow_summary: ret.price_flow_summary,
-        volume_summary: ret.volume_summary, news_summary: ret.news_analysis,
+        overall_summary: ret.overall_summary,
+        price_flow_summary: null, volume_summary: null, news_summary: ret.news_analysis,
         tip: '', sources: null,
       });
     } catch (e) { console.error('[analyze] saveAnalysisRun failed:', e.message); }
@@ -101,8 +97,8 @@ export async function onRequestPost(context) {
         .from('stock_analysis_runs')
         .select('recommendation, analyzed_at')
         .eq('user_id', userId).eq('ticker', ticker)
-        .eq('market_facts->>analysis_type', analysis_type || 'buy') // ★ 매수/매도 분석 어휘가 섞이지 않게
-        .neq('recommendation', '판단 보류')                          // ★ 실패/보류 결과가 다음 판단을 붙잡지 않게
+        .eq('market_facts->>analysis_type', analysis_type || 'buy')
+        .neq('recommendation', '판단 보류')
         .order('analyzed_at', { ascending: false }).limit(1);
       if (prevRuns && prevRuns.length > 0 && validRecs.includes(prevRuns[0].recommendation)) {
         previousRec = prevRuns[0].recommendation;
@@ -116,6 +112,7 @@ export async function onRequestPost(context) {
     const newsAnalysisResult = await runNewsAgent(env, { ticker, stock_name, news_items });
     newsAgentStatus = newsAnalysisResult.status || 'success';
 
+    // ★ 심판에게 price/volume 뉴스 분석 결과를 모두 전달 → 5문장 종합
     const judgeResult = await runJudgeAgent(env, {
       ticker, stock_name,
       analysis_result: analysisResult,
@@ -131,7 +128,6 @@ export async function onRequestPost(context) {
     let finalRecommendation = judgeResult.recommendation;
     let finalSummary = judgeResult.overall_summary || '-';
 
-    // 히스테리시스
     const shouldKeep =
       previousRec && previousRec !== finalRecommendation &&
       (confidence == null || confidence < 0.8);
@@ -141,7 +137,6 @@ export async function onRequestPost(context) {
       finalSummary = `[판단 유지] ${finalSummary} (확신도 ${confStr})`;
     }
 
-    // ★ 데이터 지연 / 시세 대체 → 강한 추천 하향
     if (dataQuality.status === 'STALE' && !isStale) {
       if (finalRecommendation === '매수 추천') { finalRecommendation = '매수 고려'; finalSummary = `[데이터 지연으로 강도 하향] ${finalSummary}`; }
       else if (finalRecommendation === '매도 추천') { finalRecommendation = '매도 고려'; finalSummary = `[데이터 지연으로 강도 하향] ${finalSummary}`; }
@@ -159,8 +154,6 @@ export async function onRequestPost(context) {
     finalData = {
       recommendation: finalRecommendation,
       overall_summary: finalSummary,
-      price_flow_summary: analysisResult.price_flow_analysis || '-',
-      volume_summary: analysisResult.volume_analysis || '-',
       news_analysis: newsAnalysisText,
     };
 
@@ -168,7 +161,6 @@ export async function onRequestPost(context) {
     const recClean = String(finalData.recommendation).replace(/\s+/g, '');
     const isValid = validRecs.some(r => r.replace(/\s+/g, '') === recClean || r.replace(/\s+/g, '').includes(recClean));
     if (!isValid) {
-      // ★ 수정: 분석 유형에 맞는 어휘로만 보정
       if (analysis_type === 'sell') {
         if (recClean.includes('매도')) finalData.recommendation = '부분 매도 고려';
         else if (recClean.includes('매수')) finalData.recommendation = '추가 매수 고려';
@@ -182,15 +174,12 @@ export async function onRequestPost(context) {
       }
     }
   } catch (e) {
-    // ★ 상세 오류는 서버 로그에만
     console.error('[analyze] internal error:', e && e.message, e && e.stack);
     isFallback = true;
     fallbackReason = 'AI_ERROR';
     finalData = {
       recommendation: '판단 보류',
       overall_summary: 'AI 분석이 일시적으로 실패하여 판단을 보류합니다. 잠시 후 다시 시도해 주세요.',
-      price_flow_summary: '분석 불가',
-      volume_summary: '분석 불가',
       news_analysis: '분석 불가 (비정상)',
     };
     newsAgentStatus = 'error';
@@ -207,8 +196,8 @@ export async function onRequestPost(context) {
       ruleset_version: RULESET_VERSION,
       market_facts: { price_data, volume_data, news_items, analysis_type, holdings_data },
       overall_summary: finalData.overall_summary,
-      price_flow_summary: finalData.price_flow_summary,
-      volume_summary: finalData.volume_summary,
+      price_flow_summary: null,   // ★ UI에서 제거됨
+      volume_summary: null,       // ★ UI에서 제거됨
       news_summary: finalData.news_analysis,
       tip: '',
       sources: news_items?.map((n) => ({ title: n.title, url: n.url })) ?? null,
@@ -219,8 +208,6 @@ export async function onRequestPost(context) {
     score: scoreResult.totalScore,
     recommendation: finalData.recommendation,
     overall_summary: finalData.overall_summary,
-    price_flow_summary: finalData.price_flow_summary,
-    volume_summary: finalData.volume_summary,
     news_analysis: finalData.news_analysis,
     news_agent_status: newsAgentStatus,
     data_quality: dataQuality,
@@ -230,13 +217,14 @@ export async function onRequestPost(context) {
   });
 }
 
-// 데이터 품질: quote_time_verified 필드 명시
+// ------------------------------------------------------------
+// 데이터 품질
+// ------------------------------------------------------------
 function computeDataQuality(price_data) {
   const marketStatus = price_data?.market_status || '';
   const serverTimeStr = price_data?.server_time || null;
   const quoteTimeStr = price_data?.quote_as_of || null;
 
-  // ★ 수정: 시세 재조회 실패(이전 가격 사용) → UNKNOWN(판단 보류)로 빠지지 않고 STALE 경로로
   if (price_data?.price_source === 'STALE') {
     return { status: 'STALE', label: '시세 재조회 실패 (이전 가격 사용)', quote_time_verified: false };
   }
@@ -323,6 +311,9 @@ function validateAnalyzeInput(body) {
   return { valid: errors.length === 0, errors };
 }
 
+// ------------------------------------------------------------
+// 분석 에이전트 (가격/거래량)
+// ------------------------------------------------------------
 async function runAnalysisAgent(env, payload) {
   const isSell = payload.analysis_type === 'sell';
   const role = isSell ? '주식 매도 분석가' : '주식 매수 분석가';
@@ -344,7 +335,6 @@ async function runAnalysisAgent(env, payload) {
     const cur = vd.current_volume, avg = vd.avg_volume_20;
     const intraday = String(pd.market_status || '').includes('정규장');
     if (cur != null && avg != null && avg > 0) {
-      // ★ 수정: 장중 누적 거래량은 하루치 평균과 직접 비교하지 않음
       volumeStr = intraday
         ? `장중 누적 ${cur.toLocaleString()}주 (직전 20거래일 평균 ${avg.toLocaleString()}주, 장중이라 하루 거래량과 직접 비교 불가)`
         : `평균대비 ${(cur / avg).toFixed(2)}배`;
@@ -365,61 +355,131 @@ async function runAnalysisAgent(env, payload) {
   return extractJSON(response?.response || '{}');
 }
 
+// ------------------------------------------------------------
+// 뉴스 분석 에이전트 (필터링 완화 + Fallback 강화)
+// ------------------------------------------------------------
 async function runNewsAgent(env, payload) {
   if (!payload.news_items || payload.news_items.length === 0) {
     return { news_analysis: '최근 5일 이내 확인된 관련 뉴스가 없음.', status: 'success' };
   }
+
   try {
     const newsStr = payload.news_items.slice(0, MAX_NEWS_ITEMS)
-      .map((n, i) => `[${i+1}] ${String(n.title || '').slice(0, 200)}`).join('\n');
-    const systemPrompt = `당신은 주식 뉴스 분석가입니다. 다음 뉴스 목록에서 '${payload.stock_name}'의 주가에 실질적으로 영향을 줄 수 있는 뉴스만 선별하세요.
-[규칙]
-1. 목록에 있는 뉴스만 참고하세요.
-2. 스포츠, 연예, 정치 뉴스는 제외하세요.
-3. 실적, 공시, 계약 등 주가 직결 뉴스는 반드시 포함하세요.
-4. 관련 뉴스가 있으면 1~2문장으로 요약하세요.
-반드시 JSON으로 응답하세요.`;
-    const userPrompt = `[종목] ${payload.stock_name} (${payload.ticker})\n[최근 5일 뉴스]\n${newsStr}\n\n[응답 JSON 스키마]\n{"news_analysis": "주가 영향 뉴스 요약 또는 '주가에 영향을 줄 만한 뉴스가 없음'"}`;
+      .map((n, i) => `[${i+1}] ${String(n.title || '').slice(0, 200)}`)
+      .join('\n');
+
+    // ★ 필터링 완화: "주가에 직결되는" 대신 "종목과 관련된 뉴스"를 우선.
+    //   스포츠/연예/정치는 여전히 제외하되, 회사 관련 실적/사업/시장/산업 뉴스는 폭넓게 포함.
+    //   관련 뉴스가 1개라도 있으면 요약을 생성하도록 강제.
+    const systemPrompt = `당신은 주식 뉴스 요약가입니다. 다음 뉴스 목록은 '${payload.stock_name}'에 대해 수집된 기사들입니다.
+
+[핵심 규칙]
+- 아래 뉴스 중 '${payload.stock_name}'이라는 회사/종목과 관련 있는 내용이 1개라도 있으면, 반드시 그 내용을 1~2문장으로 요약하세요.
+- 실적, 사업, 계약, 투자, 신제품, 산업 동향, 시장 상황, 규제, 배당, 자사주, 주주 관련 등 회사와 관련된 모든 내용을 포함하세요.
+- 오직 아래 경우에만 "주가에 영향을 줄 만한 뉴스가 없음"이라고 응답하세요:
+  * 목록의 모든 기사가 회사와 완전히 무관한 경우 (예: 스포츠 선수 이적, 연예인 결혼, 정치 이슈 등)
+- 뉴스 목록에 없는 내용을 지어내지 마세요.
+- '~함', '~임' 체를 사용하세요.
+
+반드시 JSON 형식으로 응답하세요.`;
+
+    const userPrompt = `[종목] ${payload.stock_name} (${payload.ticker})
+[수집된 뉴스 목록 (${payload.news_items.length}건)]
+${newsStr}
+
+[응답 JSON 스키마]
+{"news_analysis": "관련 뉴스 1~2문장 요약 또는 '주가에 영향을 줄 만한 뉴스가 없음'"}`;
+
     const response = await env.AI.run('@cf/meta/llama-3.3-70b-instruct-fp8-fast', {
       messages: [{ role: 'system', content: systemPrompt }, { role: 'user', content: userPrompt }],
-      max_tokens: 512, temperature: 0.1,
+      max_tokens: 512, temperature: 0.2, // ★ 0.1 → 0.2로 완화 (표현 자유도 약간 확보)
     });
+
     const parsed = extractJSON(response?.response || '{}');
-    if (!parsed.news_analysis) return { news_analysis: 'AI가 뉴스 분석 결과를 반환하지 않음.', status: 'error' };
-    return { news_analysis: parsed.news_analysis, status: 'success' };
+    let newsText = parsed.news_analysis;
+
+    // ★ Fallback: AI가 "없음"으로만 응답했지만 뉴스가 수집된 경우, 첫 2개 제목을 노출
+    if (!newsText || newsText.includes('없음') || newsText.includes('없')) {
+      const titles = payload.news_items
+        .slice(0, 2)
+        .map((n) => String(n.title || '').slice(0, 80))
+        .filter(Boolean);
+      if (titles.length > 0) {
+        newsText = `관련 기사가 확인됨: ${titles.map(t => `"${t}"`).join(', ')} — 상세한 주가 영향은 원문 확인 필요.`;
+      } else {
+        newsText = '최근 5일 이내 확인된 관련 뉴스가 없음.';
+      }
+    }
+
+    return { news_analysis: newsText, status: 'success' };
   } catch (e) {
     console.error('뉴스 에이전트 오류:', e.message);
     return { news_analysis: '뉴스 분석 실패.', status: 'error' };
   }
 }
 
+// ------------------------------------------------------------
+// 심판 에이전트 (5문장 종합 분석)
+// ------------------------------------------------------------
 async function runJudgeAgent(env, payload) {
   const isSell = payload.analysis_type === 'sell';
   const prevRec = payload.previous_recommendation;
+
   let holdingsContext = '';
   if (payload.holdings_data) {
     const hd = payload.holdings_data;
     holdingsContext = `사용자는 현재 ${hd.quantity}주를 평균 ${hd.avg_cost}원에 보유 중이며 수익률은 ${hd.return_rate.toFixed(2)}%임.`;
-  } else { holdingsContext = '사용자는 해당 종목을 보유하고 있지 않음.'; }
+    if (hd.first_buy_date) holdingsContext += ` 최초 매수일은 ${hd.first_buy_date}임.`;
+  } else {
+    holdingsContext = '사용자는 해당 종목을 보유하고 있지 않음.';
+  }
+
   const systemPrompt = `당신은 최종 판단을 내리는 심판입니다. 반드시 JSON으로 응답하세요. '~함', '~임' 체를 사용하세요.
+
+[overall_summary 작성 규칙 - 매우 중요]
+overall_summary는 다음 5가지를 각각 1문장씩 포함한 총 5문장으로 작성하세요:
+1. 가격 흐름 요약 (최근 1일/1개월/20일선/52주 위치 등을 종합)
+2. 거래량 상태 요약 (평균 대비, 장중 여부 등)
+3. 뉴스/공시 관련 내용 (또는 뉴스 부재)
+4. 리스크 요인 (변동성, 데이터 신뢰도, 상충 신호 등)
+5. 종합 판단 및 사용자 행동 제안 (보유 상황 반영)
+
+각 문장은 40자 이상 80자 이내로, 초보자가 이해할 수 있는 쉬운 한국어로 작성하세요.
+
 [판단 일관성 규칙]
 - 이전 판단과 동일한 등급을 유지하는 것은 언제나 환영합니다.
 - 이전 판단을 번복하려면 명확한 근거와 함께 confidence를 0.8 이상으로 높게 책정해야 합니다.
 - 확신이 부족하면 이전 판단을 유지하고 confidence를 0.7 이하로 책정하세요.`;
+
   const schema = isSell
-    ? `{"recommendation": "매도 추천" | "부분 매도 고려" | "보유 유지" | "추가 매수 고려" | "판단 보류", "confidence": 0.0~1.0, "overall_summary": "판단 이유 (1~2문장)"}`
-    : `{"recommendation": "매수 추천" | "매수 고려" | "기다리기" | "매도 고려" | "매도 추천", "confidence": 0.0~1.0, "overall_summary": "판단 이유 (1~2문장)"}`;
+    ? `{"recommendation": "매도 추천" | "부분 매도 고려" | "보유 유지" | "추가 매수 고려" | "판단 보류", "confidence": 0.0~1.0, "overall_summary": "5문장 종합 분석"}`
+    : `{"recommendation": "매수 추천" | "매수 고려" | "기다리기" | "매도 고려" | "매도 추천", "confidence": 0.0~1.0, "overall_summary": "5문장 종합 분석"}`;
+
   const prevContext = prevRec ? `[직전 판단] ${prevRec}` : '[직전 판단] 없음 (첫 분석)';
+
   const userPrompt = `${prevContext}
-[가격/거래량 분석] ${payload.analysis_result.price_flow_analysis || '-'} ${payload.analysis_result.volume_analysis || '-'}
-[뉴스 분석] ${payload.news_analysis_result?.news_analysis || '없음'}
-[사용자 상황] ${holdingsContext}
+
+[가격 분석가 의견]
+${payload.analysis_result.price_flow_analysis || '-'}
+
+[거래량 분석가 의견]
+${payload.analysis_result.volume_analysis || '-'}
+
+[뉴스 분석가 의견]
+${payload.news_analysis_result?.news_analysis || '없음'}
+
+[사용자 상황]
+${holdingsContext}
+
+[요청]
+위 4개 자료를 종합해 5문장 종합 분석(overall_summary)과 최종 판단(recommendation), 확신도(confidence)를 생성하세요.
 
 [응답 JSON 스키마]
 ${schema}`;
+
   const response = await env.AI.run('@cf/meta/llama-3.3-70b-instruct-fp8-fast', {
     messages: [{ role: 'system', content: systemPrompt }, { role: 'user', content: userPrompt }],
-    max_tokens: 512, temperature: 0.1,
+    max_tokens: 1024, temperature: 0.1,
   });
   return extractJSON(response?.response || '{}');
 }

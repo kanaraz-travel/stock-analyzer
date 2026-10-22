@@ -167,7 +167,6 @@ function updateMarketStatusBadge(statusText) {
   else badge.className = 'badge badge--status-gray';
 }
 
-// ★ 수정: AFTER_HOURS/AFTER_MARKET을 "지연"이 아닌 정상 상태로 표시
 function updateDataStatusBadge(status) {
   const badge = $('#data-status-badge');
   if (status === 'LATEST' || status === 'OK' || status === 'MARKET_OPEN') {
@@ -269,7 +268,6 @@ async function handleSearch() {
   } finally { btn.disabled = false; btn.textContent = '조회'; }
 }
 
-// ★ quote_note 필드가 있으면 시세 시각 옆에 표시
 function renderQuote(q) {
   $('#quote-card').hidden = false;
   $('#stock-name').textContent = q.stock_name || q.ticker;
@@ -289,9 +287,7 @@ function renderQuote(q) {
   } else {
     timeLabel = '시각 정보 없음';
   }
-  if (q.quote_note) {
-    timeLabel += ` · ${q.quote_note}`;
-  }
+  if (q.quote_note) timeLabel += ` · ${q.quote_note}`;
   $('#quote-as-of').textContent = timeLabel;
 
   if (analysisCache.has(q.ticker)) {
@@ -328,7 +324,6 @@ async function loadHoldings() {
   await refreshHoldingsView();
 }
 
-// ★ 수정: 시세 실패 시 캐시 우선 사용, 실패해도 배지 변경 안 함(시간외 정상 실패 방지), 대기 500ms
 async function refreshHoldingsView(holdingsData) {
   if (!holdingsData) holdingsData = computeHoldings(transactions);
   const { currentHoldings, overSells } = holdingsData;
@@ -355,31 +350,19 @@ async function refreshHoldingsView(holdingsData) {
         const q = await res.json();
         anySuccess = true;
         lastSuccessfulStatus = q.data_status;
-        if (currentPriceMap.size === 0) {
-          updateMarketStatusBadge(q.market_status);
-        }
-        if (q.price != null && q.price > 0) {
-          price = q.price;
-          priceCache.set(h.ticker, q.price);
-        }
+        if (currentPriceMap.size === 0) updateMarketStatusBadge(q.market_status);
+        if (q.price != null && q.price > 0) { price = q.price; priceCache.set(h.ticker, q.price); }
       }
-    } catch { /* 시간외 일시적 실패는 무시 */ }
+    } catch { /* 시간외 일시적 실패 무시 */ }
 
-    // ★ 실패 시 캐시의 마지막 정상 가격 사용
-    if (price == null) {
-      price = priceCache.get(h.ticker) || null;
-    }
+    if (price == null) price = priceCache.get(h.ticker) || null;
 
     currentPriceMap.set(h.ticker, price);
     totalCurrentValue += (price || h.avgCost) * h.qty;
     await new Promise(r => setTimeout(r, 500));
   }
 
-  // ★ 성공한 요청이 있으면 그 data_status로 배지 표시
-  //   전부 실패했더라도 시간외에는 "연결 끊김"으로 표시하지 않고 이전 상태 유지
-  if (anySuccess && lastSuccessfulStatus) {
-    updateDataStatusBadge(lastSuccessfulStatus);
-  }
+  if (anySuccess && lastSuccessfulStatus) updateDataStatusBadge(lastSuccessfulStatus);
 
   renderHoldingsList(currentHoldings, currentPriceMap);
   renderHoldingsSummary(holdingsData, totalCost, totalCurrentValue);
@@ -565,6 +548,7 @@ function getFallbackMessage(reason) {
   }
 }
 
+// ★ 수정: 종합 분석(5문장) + 뉴스 분석만 표시
 function renderAnalysisResult(data, scrollTo = true) {
   $('#analysis-result').hidden = false;
   const badge = $('#recommendation-badge');
@@ -582,9 +566,11 @@ function renderAnalysisResult(data, scrollTo = true) {
     ? ' · 시세 기준시각 미확인' : '';
   $('#analysis-timestamp').textContent = `분석 시각: ${tsStr}${qualityLabel}${verifiedLabel}`;
 
-  $('#overall-summary').textContent = data.overall_summary || '-';
-  $('#price-flow-summary').textContent = data.price_flow_summary || '-';
-  $('#volume-summary').textContent = data.volume_summary || '-';
+  // ★ 종합 분석 (여러 문장을 단락으로 나눠 표시)
+  const overallEl = $('#overall-summary');
+  overallEl.textContent = data.overall_summary || '-';
+
+  // ★ 뉴스 분석
   $('#news-analysis-summary').textContent = data.news_analysis || '-';
 
   const note = $('#ai-fallback-note');
@@ -594,6 +580,7 @@ function renderAnalysisResult(data, scrollTo = true) {
   if (scrollTo && currentScreen === 'analysis') $('#analysis-result').scrollIntoView({ behavior: 'smooth', block: 'start' });
 }
 
+// ★ 인라인 분석도 동일하게 종합 분석 + 뉴스 분석만
 function renderInlineAnalysisResult(data, cardElement, scrollTo = true) {
   const container = cardElement.querySelector('.holding-inline-result');
   if (!container) return;
@@ -611,14 +598,32 @@ function renderInlineAnalysisResult(data, cardElement, scrollTo = true) {
   const ts = document.createElement('div'); ts.className = 'analysis-timestamp'; ts.textContent = formatDateTime(data.analyzed_at || new Date().toISOString());
   headDiv.appendChild(badge); headDiv.appendChild(ts); container.appendChild(headDiv);
 
-  const summary = document.createElement('p');
-  summary.className = 'overall-summary'; summary.style.fontSize = '14px'; summary.style.marginBottom = '14px';
-  summary.textContent = data.overall_summary || '-';
-  container.appendChild(summary);
+  // 종합 분석 블록
+  const overallBlock = document.createElement('div');
+  overallBlock.className = 'analysis-block';
+  const overallTitle = document.createElement('h4');
+  overallTitle.className = 'analysis-block-title';
+  overallTitle.textContent = '종합 분석';
+  overallBlock.appendChild(overallTitle);
+  const overallText = document.createElement('p');
+  overallText.className = 'overall-summary-text';
+  overallText.textContent = data.overall_summary || '-';
+  overallBlock.appendChild(overallText);
+  container.appendChild(overallBlock);
 
-  container.appendChild(createAnalysisBlock('가격 분석', data.price_flow_summary));
-  container.appendChild(createAnalysisBlock('거래량 분석', data.volume_summary));
-  container.appendChild(createAnalysisBlock('뉴스 분석', data.news_analysis));
+  // 뉴스 분석 블록
+  const newsBlock = document.createElement('div');
+  newsBlock.className = 'analysis-block';
+  const newsTitle = document.createElement('h4');
+  newsTitle.className = 'analysis-block-title';
+  newsTitle.textContent = '뉴스 분석';
+  newsBlock.appendChild(newsTitle);
+  const newsText = document.createElement('p');
+  newsText.style.fontSize = '13px';
+  newsText.style.lineHeight = '1.7';
+  newsText.textContent = data.news_analysis || '-';
+  newsBlock.appendChild(newsText);
+  container.appendChild(newsBlock);
 
   if (data.fallback) {
     const note = document.createElement('p');
@@ -628,16 +633,6 @@ function renderInlineAnalysisResult(data, cardElement, scrollTo = true) {
   }
 
   if (scrollTo) container.scrollIntoView({ behavior: 'smooth', block: 'start' });
-}
-
-function createAnalysisBlock(title, content) {
-  const block = document.createElement('div'); block.className = 'analysis-block';
-  const h4 = document.createElement('h4'); h4.className = 'analysis-block-title'; h4.textContent = title;
-  block.appendChild(h4);
-  const p = document.createElement('p'); p.style.fontSize = '13px'; p.style.lineHeight = '1.6';
-  p.textContent = content || '-';
-  block.appendChild(p);
-  return block;
 }
 
 function computeHoldings(txs) {
@@ -914,15 +909,10 @@ async function canSell(ticker, quantity, sellDate, excludeId = null) {
   let net = 0;
   for (const tx of data || []) {
     if (excludeId && tx.id === excludeId) continue;
-
-    if (tx.trade_date < sellDate) {
-      // 이전 날짜: 항상 집계
-    } else if (tx.trade_date === sellDate) {
+    if (tx.trade_date < sellDate) { /* 이전 날짜: 항상 집계 */ }
+    else if (tx.trade_date === sellDate) {
       if (excludeCreatedAt && tx.created_at && tx.created_at >= excludeCreatedAt) continue;
-    } else {
-      continue;
-    }
-
+    } else { continue; }
     if (tx.transaction_type === 'BUY') net += Number(tx.quantity);
     else net -= Number(tx.quantity);
   }

@@ -23,40 +23,66 @@ export async function onRequestGet(context) {
     }
 
     const xmlText = await res.text();
-    let items = parseRssItems(xmlText);
+    const items = parseRssItems(xmlText);
     const fetchedAt = new Date().toISOString();
 
-    // ★ 개선 #6: 최근 5일 + 유효 발행 시각 확인 (없으면 제외)
     const fiveDaysAgo = new Date();
     fiveDaysAgo.setDate(fiveDaysAgo.getDate() - 5);
+    const fourteenDaysAgo = new Date();
+    fourteenDaysAgo.setDate(fourteenDaysAgo.getDate() - 14);
 
-    items = items
-      .filter(item => {
-        if (typeof item.title !== 'string' || item.title.length === 0 || item.title.length > 500) return false;
-        if (typeof item.url !== 'string' || item.url.length > MAX_URL_LENGTH || !/^https?:\/\//i.test(item.url)) return false;
+    // ★ 각 항목 기본 검증 (제목/URL만 필수, 발행 시각은 선택)
+    const validItems = items.filter((item) => {
+      if (typeof item.title !== 'string' || item.title.length === 0 || item.title.length > 500) return false;
+      if (typeof item.url !== 'string' || item.url.length > MAX_URL_LENGTH || !/^https?:\/\//i.test(item.url)) return false;
+      return true;
+    }).map((item) => ({
+      title: item.title.slice(0, 500),
+      url: item.url,
+      published_at: item.published_at, // null 가능
+      source_name: item.source_name || '네이버 금융',
+      fetched_at: fetchedAt,
+    }));
+
+    // ★ 우선순위 1: 5일 이내 기사
+    const within5 = validItems.filter((item) => {
+      if (!item.published_at) return false;
+      const t = new Date(item.published_at);
+      return !isNaN(t.getTime()) && t >= fiveDaysAgo;
+    });
+
+    // ★ 우선순위 2: 5~14일 이내 기사 (5일 기사가 3개 미만일 때 보충)
+    let finalItems = within5;
+    if (within5.length < 3) {
+      const within14 = validItems.filter((item) => {
         if (!item.published_at) return false;
         const t = new Date(item.published_at);
-        if (isNaN(t.getTime())) return false;
-        if (t < fiveDaysAgo) return false;
-        return true;
-      })
-      .map(item => ({
-        title: item.title.slice(0, 500),
-        url: item.url,
-        published_at: item.published_at,
-        source_name: item.source_name || '네이버 금융',
-        fetched_at: fetchedAt,
-      }))
-      .slice(0, 5);
+        return !isNaN(t.getTime()) && t >= fourteenDaysAgo && t < fiveDaysAgo;
+      });
+      finalItems = [...within5, ...within14].slice(0, 10);
+    } else {
+      finalItems = within5.slice(0, 10);
+    }
 
-    return jsonResponse({ items, delayed: false });
+    // ★ 최종적으로 0개면, 발행 시각 없는 기사도 포함 (제목/URL만 유효)
+    if (finalItems.length === 0) {
+      finalItems = validItems.slice(0, 5);
+    }
+
+    return jsonResponse({
+      items: finalItems,
+      delayed: false,
+      // ★ 신뢰도 힌트: 5일 이내 기사가 있는지 여부
+      has_recent_within_5d: within5.length > 0,
+      total_collected: validItems.length,
+      within_5d_count: within5.length,
+    });
   } catch (err) {
     console.error('news.js Error:', err.message);
     return jsonResponse({ error: '뉴스를 가져오는 중 오류가 발생했습니다.' }, 502);
   }
 }
 
-// ★ 개선 #6: URL 중복 제거 + 발행 시각 없는 기사는 스킵
 function parseRssItems(xml) {
   const items = [];
   const seenUrls = new Set();
@@ -78,15 +104,17 @@ function parseRssItems(xml) {
     if (seenUrls.has(urlKey)) continue;
     seenUrls.add(urlKey);
 
-    // ★ 발행 시각 없으면 제외
-    if (!pubDateMatch) continue;
-    const pubDate = new Date(pubDateMatch[1]);
-    if (isNaN(pubDate.getTime())) continue;
+    // ★ 발행 시각이 없으면 null로 (제외하지 않음)
+    let publishedAt = null;
+    if (pubDateMatch) {
+      const d = new Date(pubDateMatch[1]);
+      if (!isNaN(d.getTime())) publishedAt = d.toISOString();
+    }
 
     items.push({
       title: decodeHtmlEntities(titleMatch[1].replace(/<!\[CDATA\[|\]\]>/g, '')),
       url,
-      published_at: pubDate.toISOString(),
+      published_at: publishedAt,
       source_name: sourceMatch ? decodeHtmlEntities(sourceMatch[1]) : '네이버 금융',
     });
   }
