@@ -15,16 +15,36 @@ body { max-width: 480px; margin: 0 auto; min-height: 100vh; }
 .current-user-name { font-size: 12px; color: var(--text-muted); }
 .header-meta { display: flex; justify-content: space-between; align-items: center; gap: 6px; margin-top: 8px; flex-wrap: wrap; }
 .header-badges { display: flex; gap: 6px; flex-wrap: wrap; }
+.header-actions { display: flex; gap: 6px; align-items: center; }
 .badge { font-size: 11px; padding: 3px 8px; border-radius: 999px; background: var(--surface-2); color: var(--text-muted); border: 1px solid var(--border); }
 .badge--muted { opacity: 0.8; }
 .badge--status-green { background: #ecfdf5; color: var(--status-green); border-color: #a7f3d0; }
 .badge--status-orange { background: #fffbeb; color: var(--status-orange); border-color: #fde68a; }
 .badge--status-gray { background: #f3f4f6; color: var(--status-gray); border-color: #e5e7eb; }
-/* ★ 신규: 시간외/애프터마켓용 파란 배지 */
 .badge--status-blue { background: #eff6ff; color: var(--status-blue); border-color: #bfdbfe; }
 .refresh-btn { background: var(--surface); border: 1px solid var(--border); border-radius: 8px; padding: 4px 10px; color: var(--text-muted); font-size: 11px; font-weight: 600; cursor: pointer; white-space: nowrap; transition: all 0.2s; }
 .refresh-btn:hover { color: var(--text); border-color: var(--text-muted); }
 .refresh-btn:disabled { opacity: 0.5; cursor: not-allowed; }
+
+/* ★ 이력 쌓기 버튼 */
+.batch-btn {
+  background: var(--surface);
+  border: 1px solid var(--primary);
+  border-radius: 8px;
+  padding: 4px 10px;
+  color: var(--primary);
+  font-size: 11px;
+  font-weight: 700;
+  cursor: pointer;
+  white-space: nowrap;
+  transition: all 0.2s;
+  max-width: 180px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.batch-btn:hover:not(:disabled) { background: var(--primary); color: #fff; }
+.batch-btn:disabled { opacity: 0.6; cursor: not-allowed; }
+
 .logout-btn { background: var(--surface); border: 1px solid var(--border); border-radius: 8px; padding: 6px 12px; color: var(--text-muted); font-size: 12px; cursor: pointer; }
 .logout-btn:hover { color: var(--text); border-color: var(--text-muted); }
 .screen { display: none; padding: 12px 16px; }

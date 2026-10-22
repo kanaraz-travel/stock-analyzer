@@ -9,10 +9,16 @@ const supabase = createClient(SUPABASE_URL, SUPABASE_ANON_KEY, {
 });
 
 const ALLOWED_NAMES = ['박필립', '윤혜영'];
+const BATCH_ALLOWED_USER = '박필립';     // 이력 쌓기 버튼 노출 대상
+const BATCH_TOP_COUNT = 10;              // 상위 N개 고정
+const BATCH_RANDOM_COUNT = 10;           // 11위~100위 중 랜덤 N개
+const BATCH_DELAY_MS = 2500;             // 개별 분석 간 지연
+
 let currentUser = null, currentQuote = null, transactions = [], editingTxId = null;
 let currentScreen = 'holdings';
 let countdown = 5, countdownInterval = null, isRefreshing = false;
 let isAnalyzingMain = false;
+let isBatching = false;
 const priceCache = new Map();
 const analysisCache = new Map();
 
@@ -28,7 +34,7 @@ function getBorderColor(ticker) {
 
 async function init() {
   renderLoginButtons(); setupLogoutButton(); setupRefreshButton(); setupNavigation();
-  setupSearch(); setupAnalyze(); setupTransactionForm(); setupVisibility();
+  setupSearch(); setupAnalyze(); setupTransactionForm(); setupVisibility(); setupBatchButton();
 
   supabase.auth.onAuthStateChange((_event, session) => handleAuthState(session));
   const { data: { session } } = await supabase.auth.getSession();
@@ -39,7 +45,13 @@ async function handleAuthState(session) {
   currentUser = session?.user || null;
   if (currentUser) {
     $('#screen-login').hidden = true; $('#app-shell').hidden = false;
-    $('#current-user-name').textContent = mapEmailToName(currentUser.email) || currentUser.email || '';
+    const name = mapEmailToName(currentUser.email) || currentUser.email || '';
+    $('#current-user-name').textContent = name;
+
+    // ★ 박필립 계정에서만 "이력 쌓기" 버튼 노출
+    const batchBtn = $('#batch-build-btn');
+    if (batchBtn) batchBtn.hidden = (name !== BATCH_ALLOWED_USER);
+
     switchScreen('holdings');
     updateMarketStatusBadge(getMarketStatusClient());
     await loadHoldings();
@@ -59,7 +71,7 @@ function mapEmailToName(email) {
 function resetState() {
   stopCountdown(); currentQuote = null; transactions = []; editingTxId = null;
   priceCache.clear(); analysisCache.clear();
-  isAnalyzingMain = false;
+  isAnalyzingMain = false; isBatching = false;
   $('#quote-card').hidden = true; $('#analysis-result').hidden = true;
   $('#ticker-input').value = ''; $('#search-error').hidden = true;
   $('#transaction-form').reset(); $('#tx-id').value = ''; $('#tx-error').hidden = true;
@@ -71,6 +83,12 @@ function resetState() {
   const dataBadge = $('#data-status-badge');
   dataBadge.textContent = '데이터 상태 확인 중';
   dataBadge.className = 'badge badge--muted';
+  const batchBtn = $('#batch-build-btn');
+  if (batchBtn) {
+    batchBtn.hidden = true;
+    batchBtn.disabled = false;
+    batchBtn.textContent = '이력 쌓기';
+  }
 }
 
 function renderLoginButtons() {
@@ -108,6 +126,7 @@ function mapAuthError(msg) {
 
 function setupLogoutButton() {
   $('#logout-btn').addEventListener('click', async () => {
+    if (isBatching) { alert('이력 쌓기가 진행 중입니다. 완료 후 로그아웃해 주세요.'); return; }
     if (!confirm('로그아웃하시겠습니까?')) return;
     stopCountdown(); await supabase.auth.signOut();
   });
@@ -137,7 +156,7 @@ function updateRefreshButton() {
 
 function setupRefreshButton() {
   $('#refresh-btn').addEventListener('click', async () => {
-    if (isRefreshing || countdown > 0) return;
+    if (isRefreshing || countdown > 0 || isBatching) return;
     isRefreshing = true; stopCountdown(); updateRefreshButton();
     try { await performRefresh(); } finally { isRefreshing = false; startCountdown(); }
   });
@@ -268,7 +287,6 @@ async function handleSearch() {
   } finally { btn.disabled = false; btn.textContent = '조회'; }
 }
 
-// ★ 개선: 시장 상태에 따라 시각 라벨 분기
 function renderQuote(q) {
   $('#quote-card').hidden = false;
   $('#stock-name').textContent = q.stock_name || q.ticker;
@@ -431,26 +449,36 @@ function setupAnalyze() {
   $('#analyze-btn').addEventListener('click', () => runAnalysis(currentQuote?.ticker, currentQuote?.stock_name, currentQuote?.price, 'main'));
 }
 
+// ★ batch 모드 지원: targetType === 'batch'일 때 UI 조작 및 alert 스킵
 async function runAnalysis(ticker, name, price, targetType = 'main', cardElement = null) {
   if (!ticker) return;
-  const btn = targetType === 'main' ? $('#analyze-btn') : cardElement.querySelector('.btn-ai-analyze');
-  const originalText = btn.textContent;
-  btn.disabled = true; btn.textContent = '분석 중…';
-  if (targetType === 'main') { isAnalyzingMain = true; $('#analysis-result').hidden = true; }
-  else {
-    const inlineResult = cardElement.querySelector('.holding-inline-result');
-    if (inlineResult) { inlineResult.hidden = true; inlineResult.innerHTML = ''; }
+  const isSilent = targetType === 'batch';
+
+  let btn = null;
+  let originalText = '';
+  if (!isSilent) {
+    btn = targetType === 'main' ? $('#analyze-btn') : cardElement.querySelector('.btn-ai-analyze');
+    originalText = btn.textContent;
+    btn.disabled = true; btn.textContent = '분석 중…';
+    if (targetType === 'main') { isAnalyzingMain = true; $('#analysis-result').hidden = true; }
+    else {
+      const inlineResult = cardElement.querySelector('.holding-inline-result');
+      if (inlineResult) { inlineResult.hidden = true; inlineResult.innerHTML = ''; }
+    }
   }
 
   try {
     let { data: { session } } = await supabase.auth.getSession();
-    if (!session) { alert('로그인 세션이 없습니다.'); await supabase.auth.signOut(); return; }
+    if (!session) {
+      if (!isSilent) { alert('로그인 세션이 없습니다.'); await supabase.auth.signOut(); }
+      throw new Error('로그인 세션이 없습니다.');
+    }
 
     let freshQuote = null;
     try {
       const qRes = await fetch(`/api/quote?ticker=${encodeURIComponent(ticker)}`);
       if (qRes.ok) freshQuote = await qRes.json();
-    } catch (e) { console.warn('시세 조회 실패', e); }
+    } catch (e) { if (!isSilent) console.warn('시세 조회 실패', e); }
 
     const hasFreshPrice = freshQuote?.price != null && freshQuote.price > 0;
     const priceSource = hasFreshPrice ? 'FRESH' : 'STALE';
@@ -492,7 +520,7 @@ async function runAnalysis(ticker, name, price, targetType = 'main', cardElement
       ]);
       if (newsRes.ok) { const nd = await newsRes.json(); newsItems = nd.items || []; }
       if (histRes.ok) { historyData = await histRes.json(); }
-    } catch { console.warn('뉴스/과거데이터 로드 실패'); }
+    } catch { if (!isSilent) console.warn('뉴스/과거데이터 로드 실패'); }
 
     const currentVolume = freshQuote?.volume ?? historyData?.current_volume ?? null;
     const avgVolume20 = historyData?.avg_volume_20 ?? null;
@@ -515,7 +543,6 @@ async function runAnalysis(ticker, name, price, targetType = 'main', cardElement
         return_1m: historyData?.return_1m ?? null,
         ma20_disparity: historyData?.ma20_disparity ?? null,
         w52_hgpr: w52Hgpr, w52_lwpr: w52Lwpr,
-        // ★ 신규: 애프터마켓/확정 종가 판별 필드 전달
         is_after_hours_quote: freshQuote?.is_after_hours_quote ?? false,
         quote_note: freshQuote?.quote_note ?? null,
       },
@@ -534,7 +561,10 @@ async function runAnalysis(ticker, name, price, targetType = 'main', cardElement
       const { data: { session: retrySession } } = await supabase.auth.refreshSession();
       if (retrySession) {
         res = await fetch('/api/analyze', { method: 'POST', headers: { 'content-type': 'application/json', authorization: `Bearer ${retrySession.access_token}` }, body: JSON.stringify(payload) });
-      } else { alert('세션 만료'); await supabase.auth.signOut(); return; }
+      } else {
+        if (!isSilent) { alert('세션 만료'); await supabase.auth.signOut(); }
+        throw new Error('세션 만료');
+      }
     }
     const data = await res.json();
     if (!res.ok) {
@@ -543,16 +573,101 @@ async function runAnalysis(ticker, name, price, targetType = 'main', cardElement
     }
     data.analyzed_at = new Date().toISOString();
     analysisCache.set(ticker, data);
-    if (targetType === 'main') { renderAnalysisResult(data, currentScreen === 'analysis'); }
-    else { renderInlineAnalysisResult(data, cardElement, true); }
-  } catch (err) { alert(err.message || '분석에 실패했습니다.'); }
-  finally {
-    btn.disabled = false; btn.textContent = originalText;
-    if (targetType === 'main') isAnalyzingMain = false;
+
+    if (isSilent) {
+      // 배치 모드: UI 렌더링 없이 캐시만 저장
+    } else if (targetType === 'main') {
+      renderAnalysisResult(data, currentScreen === 'analysis');
+    } else {
+      renderInlineAnalysisResult(data, cardElement, true);
+    }
+    return data;
+  } catch (err) {
+    if (!isSilent) alert(err.message || '분석에 실패했습니다.');
+    throw err;
+  } finally {
+    if (!isSilent && btn) {
+      btn.disabled = false; btn.textContent = originalText;
+      if (targetType === 'main') isAnalyzingMain = false;
+    }
   }
 }
 
-// ★ 뉴스/추세 블록 제거. 종합 분석만 표시.
+// ★ 인기 종목 배치 이력 쌓기
+function setupBatchButton() {
+  const btn = $('#batch-build-btn');
+  if (!btn) return;
+  btn.addEventListener('click', runBatchAnalysis);
+}
+
+async function runBatchAnalysis() {
+  const userName = mapEmailToName(currentUser?.email);
+  if (userName !== BATCH_ALLOWED_USER) {
+    alert(`${BATCH_ALLOWED_USER} 계정에서만 사용할 수 있습니다.`);
+    return;
+  }
+  if (isBatching) return;
+
+  const btn = $('#batch-build-btn');
+  const originalText = btn.textContent;
+
+  isBatching = true;
+  btn.disabled = true;
+  btn.textContent = '인기 종목 불러오는 중...';
+
+  let targets = [];
+  let succeeded = 0;
+  let failed = 0;
+
+  try {
+    // 1) 인기 종목 조회
+    const res = await fetch('/api/popular');
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.error || '인기 종목을 불러오지 못했습니다.');
+
+    const items = Array.isArray(data.items) ? data.items : [];
+    if (items.length === 0) throw new Error('인기 종목이 없습니다.');
+
+    // 2) 상위 10개 + 11위~100위 중 랜덤 10개
+    const topN = items.slice(0, Math.min(BATCH_TOP_COUNT, items.length));
+    const pool = items.slice(BATCH_TOP_COUNT);
+    const shuffled = [...pool].sort(() => Math.random() - 0.5);
+    const randomN = shuffled.slice(0, Math.min(BATCH_RANDOM_COUNT, shuffled.length));
+
+    targets = [...topN, ...randomN];
+
+    if (targets.length === 0) throw new Error('분석할 종목이 없습니다.');
+
+    const total = targets.length;
+
+    // 3) 순차 분석
+    for (let i = 0; i < targets.length; i++) {
+      const stock = targets[i];
+      btn.textContent = `이력 쌓기 ${i + 1}/${total} · ${stock.name}`;
+      try {
+        await runAnalysis(stock.ticker, stock.name, null, 'batch');
+        succeeded++;
+      } catch (e) {
+        console.warn(`[batch] ${stock.name}(${stock.ticker}) 실패:`, e.message);
+        failed++;
+      }
+      if (i < targets.length - 1) {
+        await new Promise(r => setTimeout(r, BATCH_DELAY_MS));
+      }
+    }
+
+    btn.textContent = `완료 (성공 ${succeeded} / 실패 ${failed})`;
+    await new Promise(r => setTimeout(r, 4000));
+  } catch (err) {
+    console.error('[batch] error:', err);
+    alert(err.message || '이력 쌓기에 실패했습니다.');
+  } finally {
+    isBatching = false;
+    btn.disabled = false;
+    btn.textContent = originalText;
+  }
+}
+
 function renderAnalysisResult(data, scrollTo = true) {
   $('#analysis-result').hidden = false;
   const badge = $('#recommendation-badge');
@@ -572,7 +687,6 @@ function renderAnalysisResult(data, scrollTo = true) {
   if (scrollTo && currentScreen === 'analysis') $('#analysis-result').scrollIntoView({ behavior: 'smooth', block: 'start' });
 }
 
-// ★ 인라인 결과도 종합 분석만 표시
 function renderInlineAnalysisResult(data, cardElement, scrollTo = true) {
   const container = cardElement.querySelector('.holding-inline-result');
   if (!container) return;
