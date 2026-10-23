@@ -20,7 +20,7 @@ let currentScreen = 'holdings';
 let countdown = 5, countdownInterval = null, isRefreshing = false;
 let isAnalyzingMain = false;
 let isBatching = false;
-let lastSessionUserId = null; // ★ 중복 초기화 방지용
+let lastSessionUserId = null; // 중복 초기화 방지용
 
 const priceCache = new Map();
 const analysisCache = new Map();
@@ -30,7 +30,7 @@ const $$ = (sel) => document.querySelectorAll(sel);
 
 const BORDER_COLORS = ['#ef4444', '#f97316', '#f59e0b', '#84cc16', '#10b981', '#06b6d4', '#3b82f6', '#6366f1', '#8b5cf6', '#d946ef', '#ec4899', '#f43f5e'];
 function getBorderColor(ticker) {
-  if (!ticker || typeof ticker !== 'string') return '#9ca3af'; // ★ 방어 코드
+  if (!ticker || typeof ticker !== 'string') return '#9ca3af'; // 방어 코드
   let hash = 0;
   for (let i = 0; i < ticker.length; i++) hash = ticker.charCodeAt(i) + ((hash << 5) - hash);
   return BORDER_COLORS[Math.abs(hash) % BORDER_COLORS.length];
@@ -48,7 +48,7 @@ async function init() {
 async function handleAuthState(session) {
   const newUserId = session?.user?.id || null;
   
-  // ★ 동일 세션으로 중복 호출되는 것 방지 (Race Condition 해결)
+  // 동일 세션으로 중복 호출되는 것 방지 (Race Condition 해결)
   if (newUserId === lastSessionUserId) {
     return;
   }
@@ -359,7 +359,7 @@ async function refreshQuoteSilently(ticker) {
 
 async function loadHoldings() {
   if (!currentUser) return;
-  // ★ session에서 user_id를 명시적으로 필터링하여 RLS 의존성 제거
+  // session에서 user_id를 명시적으로 필터링하여 RLS 의존성 제거
   const { data: { session } } = await supabase.auth.getSession();
   if (!session) return;
 
@@ -372,9 +372,11 @@ async function loadHoldings() {
 
   if (error) { 
     console.error('loadHoldings error:', error.message); 
-    // 에러 발생 시 화면에 안내 (기존 데이터 유지)
     return; 
   }
+  
+  // ★ [디버깅용] DB에서 실제로 넘어온 데이터를 콘솔에 출력합니다.
+  console.log('🔥 [DB에서 가져온 원본 데이터]:', data);
   
   transactions = data || [];
   await refreshHoldingsView();
@@ -410,7 +412,6 @@ async function refreshHoldingsView(holdingsData) {
         if (currentPriceMap.size === 0) updateMarketStatusBadge(q.market_status);
         if (q.price != null && q.price > 0) { price = q.price; priceCache.set(h.ticker, q.price); }
       } else {
-        // ★ 502 등 실패 시 로깅
         console.warn(`[refreshHoldingsView] quote ${h.ticker} failed: HTTP ${res.status}`);
       }
     } catch (e) { 
@@ -771,7 +772,7 @@ function computeHoldings(txs) {
   });
 
   for (const tx of sorted) {
-    // ★ ticker나 stock_name이 없는 비정상 데이터 방어
+    // ticker나 stock_name이 없는 비정상 데이터 방어
     if (!tx.ticker || typeof tx.ticker !== 'string' || !tx.stock_name) {
       console.warn('[computeHoldings] invalid transaction skipped:', tx);
       continue;
@@ -853,7 +854,7 @@ function renderHoldingsList(holdings, priceMap) {
     list.appendChild(p); return;
   }
   holdings.forEach((h) => {
-    // ★ 렌더링 직전 데이터 방어 코드
+    // 렌더링 직전 데이터 방어 코드
     if (!h.ticker || !h.stock_name) {
       console.warn('[renderHoldingsList] invalid holding skipped:', h);
       return;
