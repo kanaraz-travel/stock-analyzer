@@ -13,13 +13,15 @@ const BATCH_ALLOWED_USER = '박필립';
 const BATCH_TOP_COUNT = 10;
 const BATCH_RANDOM_COUNT = 10;
 const BATCH_DELAY_MS = 2500;
-const HIDDEN_POLL_MS = 1000; // 백그라운드 대기 중 재확인 주기
+const HIDDEN_POLL_MS = 1000;
 
 let currentUser = null, currentQuote = null, transactions = [], editingTxId = null;
 let currentScreen = 'holdings';
 let countdown = 5, countdownInterval = null, isRefreshing = false;
 let isAnalyzingMain = false;
 let isBatching = false;
+let lastSessionUserId = null; // ★ 중복 초기화 방지용
+
 const priceCache = new Map();
 const analysisCache = new Map();
 
@@ -28,6 +30,7 @@ const $$ = (sel) => document.querySelectorAll(sel);
 
 const BORDER_COLORS = ['#ef4444', '#f97316', '#f59e0b', '#84cc16', '#10b981', '#06b6d4', '#3b82f6', '#6366f1', '#8b5cf6', '#d946ef', '#ec4899', '#f43f5e'];
 function getBorderColor(ticker) {
+  if (!ticker || typeof ticker !== 'string') return '#9ca3af'; // ★ 방어 코드
   let hash = 0;
   for (let i = 0; i < ticker.length; i++) hash = ticker.charCodeAt(i) + ((hash << 5) - hash);
   return BORDER_COLORS[Math.abs(hash) % BORDER_COLORS.length];
@@ -43,7 +46,15 @@ async function init() {
 }
 
 async function handleAuthState(session) {
+  const newUserId = session?.user?.id || null;
+  
+  // ★ 동일 세션으로 중복 호출되는 것 방지 (Race Condition 해결)
+  if (newUserId === lastSessionUserId) {
+    return;
+  }
+  lastSessionUserId = newUserId;
   currentUser = session?.user || null;
+
   if (currentUser) {
     $('#screen-login').hidden = true; $('#app-shell').hidden = false;
     const name = mapEmailToName(currentUser.email) || currentUser.email || '';
@@ -54,7 +65,10 @@ async function handleAuthState(session) {
 
     switchScreen('holdings');
     updateMarketStatusBadge(getMarketStatusClient());
+    
+    // 데이터 로드
     await loadHoldings();
+    
     startCountdown();
   } else {
     $('#screen-login').hidden = false; $('#app-shell').hidden = true;
@@ -344,12 +358,23 @@ async function refreshQuoteSilently(ticker) {
 
 async function loadHoldings() {
   if (!currentUser) return;
+  // ★ session에서 user_id를 명시적으로 필터링하여 RLS 의존성 제거
+  const { data: { session } } = await supabase.auth.getSession();
+  if (!session) return;
+
   const { data, error } = await supabase
     .from('stock_transactions')
     .select('*')
+    .eq('user_id', session.user.id)
     .order('trade_date', { ascending: true })
     .order('created_at', { ascending: true });
-  if (error) { console.error('loadHoldings error:', error.message); return; }
+
+  if (error) { 
+    console.error('loadHoldings error:', error.message); 
+    // 에러 발생 시 화면에 안내 (기존 데이터 유지)
+    return; 
+  }
+  
   transactions = data || [];
   await refreshHoldingsView();
 }
@@ -362,6 +387,7 @@ async function refreshHoldingsView(holdingsData) {
 
   let totalCost = 0, totalCurrentValue = 0;
   const currentPriceMap = new Map();
+  
   if (currentHoldings.length === 0) {
     renderHoldingsList([], currentPriceMap);
     renderHoldingsSummary(holdingsData, 0, 0);
@@ -382,8 +408,13 @@ async function refreshHoldingsView(holdingsData) {
         lastSuccessfulStatus = q.data_status;
         if (currentPriceMap.size === 0) updateMarketStatusBadge(q.market_status);
         if (q.price != null && q.price > 0) { price = q.price; priceCache.set(h.ticker, q.price); }
+      } else {
+        // ★ 502 등 실패 시 로깅
+        console.warn(`[refreshHoldingsView] quote ${h.ticker} failed: HTTP ${res.status}`);
       }
-    } catch { /* 시간외 일시적 실패 무시 */ }
+    } catch (e) { 
+      console.warn(`[refreshHoldingsView] quote ${h.ticker} exception:`, e.message);
+    }
 
     if (price == null) price = priceCache.get(h.ticker) || null;
 
@@ -592,14 +623,12 @@ async function runAnalysis(ticker, name, price, targetType = 'main', cardElement
   }
 }
 
-// ★ 인기 종목 배치 이력 쌓기 (백그라운드 일시정지/재개 로직 추가)
 function setupBatchButton() {
   const btn = $('#batch-build-btn');
   if (!btn) return;
   btn.addEventListener('click', runBatchAnalysis);
 }
 
-// ★ document.hidden 상태일 때 배치를 일시정지하고, 복귀 시 재개하는 헬퍼
 async function waitWhileHidden(btn, currentIdx, total) {
   while (document.hidden) {
     btn.textContent = `일시정지 중 (탭 복귀 시 재개) ${currentIdx}/${total}`;
@@ -627,7 +656,6 @@ async function runBatchAnalysis() {
   let failed = 0;
 
   try {
-    // 1) 인기 종목 조회
     const res = await fetch('/api/popular');
     const data = await res.json();
     if (!res.ok) throw new Error(data.error || '인기 종목을 불러오지 못했습니다.');
@@ -635,21 +663,17 @@ async function runBatchAnalysis() {
     const items = Array.isArray(data.items) ? data.items : [];
     if (items.length === 0) throw new Error('인기 종목이 없습니다.');
 
-    // 2) 상위 10개 + 11위~100위 중 랜덤 10개
     const topN = items.slice(0, Math.min(BATCH_TOP_COUNT, items.length));
     const pool = items.slice(BATCH_TOP_COUNT);
     const shuffled = [...pool].sort(() => Math.random() - 0.5);
     const randomN = shuffled.slice(0, Math.min(BATCH_RANDOM_COUNT, shuffled.length));
 
     targets = [...topN, ...randomN];
-
     if (targets.length === 0) throw new Error('분석할 종목이 없습니다.');
 
     const total = targets.length;
 
-    // 3) 순차 분석
     for (let i = 0; i < targets.length; i++) {
-      // ★ 3-1. 분석 시작 전 백그라운드 상태 체크 (일시정지)
       await waitWhileHidden(btn, i + 1, total);
 
       const stock = targets[i];
@@ -663,7 +687,6 @@ async function runBatchAnalysis() {
         failed++;
       }
 
-      // ★ 3-2. 다음 종목 전 대기 중에도 백그라운드 상태 체크
       if (i < targets.length - 1) {
         await waitWhileHidden(btn, i + 1, total);
         await new Promise(r => setTimeout(r, BATCH_DELAY_MS));
@@ -747,6 +770,12 @@ function computeHoldings(txs) {
   });
 
   for (const tx of sorted) {
+    // ★ ticker나 stock_name이 없는 비정상 데이터 방어
+    if (!tx.ticker || typeof tx.ticker !== 'string' || !tx.stock_name) {
+      console.warn('[computeHoldings] invalid transaction skipped:', tx);
+      continue;
+    }
+
     if (!map.has(tx.ticker)) {
       map.set(tx.ticker, {
         ticker: tx.ticker, stock_name: tx.stock_name,
@@ -823,6 +852,12 @@ function renderHoldingsList(holdings, priceMap) {
     list.appendChild(p); return;
   }
   holdings.forEach((h) => {
+    // ★ 렌더링 직전 데이터 방어 코드
+    if (!h.ticker || !h.stock_name) {
+      console.warn('[renderHoldingsList] invalid holding skipped:', h);
+      return;
+    }
+
     const cachedPrice = priceMap.get(h.ticker);
     const isFallback = cachedPrice == null || !Number.isFinite(cachedPrice) || cachedPrice <= 0;
     const currentPrice = isFallback ? h.avgCost : cachedPrice;
