@@ -5,11 +5,11 @@ const NAVER_MAIN = 'https://finance.naver.com/';
 const NAVER_BASE = 'https://finance.naver.com/sise/lastsearch2.naver';
 const NAVER_PAGES = 3;
 
-// 다음 금융 조회 급등 API 후보 경로들
+// 다음 금융 조회 급등 API (perPage 파라미터 사용)
 const DAUM_APIS = [
-  'https://finance.daum.net/api/quotes/rise?page=1&perPage=100',
-  'https://finance.daum.net/api/quotes/rise?limit=100',
-  'https://finance.daum.net/api/search/ranks?limit=100'
+  'https://finance.daum.net/api/quotes/rise?perPage=50&page=1',
+  'https://finance.daum.net/api/quotes/rise?perPage=30&page=1',
+  'https://finance.daum.net/api/quotes/rise?perPage=20&page=1'
 ];
 
 const EXCLUDE_KEYWORDS = [
@@ -56,13 +56,11 @@ async function fetchFromNaver() {
     try {
       const res = await fetch(url, { headers: getHeaders(NAVER_MAIN) });
       if (!res.ok) continue;
-
       const buffer = await res.arrayBuffer();
       let html;
       try { html = new TextDecoder('euc-kr').decode(buffer); }
       catch { html = new TextDecoder('utf-8').decode(buffer); }
 
-      // ★ 차단 감지: 실제 종목 행이 있는지 확인
       const rowRegex = /<tr[^>]*>([\s\S]*?)<\/tr>/g;
       let m;
       let pageAdded = 0;
@@ -86,7 +84,6 @@ async function fetchFromNaver() {
         if (items.length >= 80) break;
       }
 
-      // ★ 해당 페이지에서 추출된 종목이 0개면 차단된 것으로 간주하고 중단
       if (pageAdded === 0 && page === 1) {
         console.warn('[popular] 네이버 첫 페이지에서 종목을 추출하지 못했습니다. 차단 가능성.');
         break;
@@ -100,7 +97,7 @@ async function fetchFromNaver() {
   return items;
 }
 
-// 2차: 다음 금융 조회 급등 (응답 스키마 검증)
+// 2차: 다음 금융 조회 급등 (perPage 파라미터 적용)
 async function fetchFromDaum() {
   for (const url of DAUM_APIS) {
     try {
@@ -113,10 +110,10 @@ async function fetchFromDaum() {
       if (!res.ok) continue;
 
       const json = await res.json();
-      // ★ 응답 스키마 검증: data 배열이 있고, 각 항목에 symbolCode와 name이 있는지 확인
       const list = json.data || json.ranks || json.list || (Array.isArray(json) ? json : []);
       if (!Array.isArray(list) || list.length === 0) continue;
 
+      // 응답 스키마 검증
       const firstItem = list[0];
       if (!firstItem || (!firstItem.symbolCode && !firstItem.code && !firstItem.symbol)) {
         console.warn(`[popular] 다음 금융 응답 스키마가 예상과 다릅니다. (${url})`);
@@ -135,7 +132,7 @@ async function fetchFromDaum() {
 
         seen.add(ticker);
         items.push({ ticker, name });
-        if (items.length >= 100) break;
+        if (items.length >= 50) break;
       }
       if (items.length > 0) {
         console.log(`[popular] 다음 금융 성공 (${url}): ${items.length}건`);
@@ -189,7 +186,6 @@ async function fetchFromKis(env, existingTickers) {
     const name = row.hts_kor_isnm;
     if (!ticker || !name) continue;
 
-    // ★ 필터 완화: 6자리 숫자 코드이고, ETF/ETN 키워드가 없으면 통과
     if (!isValidTicker(ticker) || existingTickers.has(ticker) || isExcluded(name)) continue;
 
     existingTickers.add(ticker);
@@ -206,10 +202,8 @@ export async function onRequestGet(context) {
   const cacheKey = new Request(request.url, request);
   const cachedResponse = await cache.match(cacheKey);
 
-  // ★ 캐시된 응답이 있으면 반환 (5분간 유효)
   if (cachedResponse) {
     const cachedData = await cachedResponse.json();
-    // source_stats에 캐시 여부 추가
     return jsonResponse({ ...cachedData, source: `${cachedData.source} (cached)` });
   }
 
@@ -273,12 +267,11 @@ export async function onRequestGet(context) {
     fetched_at: new Date().toISOString(),
   };
 
-  // ★ 캐시에 저장 (5분 = 300초)
   const response = jsonResponse(responseBody);
   const cacheResponse = new Response(JSON.stringify(responseBody), {
     headers: {
       'content-type': 'application/json; charset=utf-8',
-      'cache-control': 'public, max-age=300', // 5분 캐싱
+      'cache-control': 'public, max-age=300',
     },
   });
   context.waitUntil(cache.put(cacheKey, cacheResponse));
