@@ -52,7 +52,11 @@ async function fetchFromNaver() {
     const url = page === 1 ? NAVER_BASE : `${NAVER_BASE}?&page=${page}`;
     try {
       const res = await fetch(url, { headers: getHeaders(NAVER_MAIN) });
-      if (!res.ok) continue;
+      if (!res.ok) {
+        console.warn(`[popular] 네이버 page ${page} HTTP ${res.status}`);
+        continue;
+      }
+
       const buffer = await res.arrayBuffer();
       let html;
       try { html = new TextDecoder('euc-kr').decode(buffer); }
@@ -81,8 +85,10 @@ async function fetchFromNaver() {
         if (items.length >= 80) break;
       }
 
+      console.log(`[popular] 네이버 page ${page}: +${pageAdded}건 (누적 ${items.length}건)`);
+
       if (pageAdded === 0 && page === 1) {
-        console.warn('[popular] 네이버 첫 페이지에서 종목을 추출하지 못했습니다. 차단 가능성.');
+        console.warn('[popular] 네이버 첫 페이지에서 종목을 추출하지 못했습니다. (봇 차단 가능성)');
         break;
       }
 
@@ -94,17 +100,17 @@ async function fetchFromNaver() {
   return items;
 }
 
-// 2차: 다음 금융 조회 급등 (trend/price_performance)
+// 2차: 다음 금융 조회 급등 (차단 감지 로깅 강화)
 async function fetchFromDaum() {
   const items = [];
   const seen = new Set();
 
-  // KOSPI와 KOSDAQ 시장을 각각 조회
   const markets = ['KOSPI', 'KOSDAQ'];
 
   for (const market of markets) {
     if (items.length >= 50) break;
     const url = `${DAUM_BASE}?${DAUM_PARAMS}&market=${market}`;
+    
     try {
       const res = await fetch(url, {
         headers: {
@@ -112,21 +118,39 @@ async function fetchFromDaum() {
           'Accept': 'application/json, text/plain, */*',
         },
       });
+
+      // ★ 차단 감지: HTTP 상태 코드 로깅
       if (!res.ok) {
-        console.warn(`[popular] 다음 금융 ${market} HTTP ${res.status}`);
+        console.error(`[popular] 다음 금융 ${market} 실패: HTTP ${res.status}`);
+        if (res.status === 403) {
+          console.error('[popular] 🚨 다음 금융에서 403 Forbidden 반환 (IP 차단 확실)');
+        } else if (res.status === 429) {
+          console.error('[popular] 🚨 다음 금융에서 429 Too Many Requests 반환 (요청 제한)');
+        }
+        continue;
+      }
+
+      // ★ 응답이 JSON인지 확인
+      const contentType = res.headers.get('content-type') || '';
+      if (!contentType.includes('application/json')) {
+        console.warn(`[popular] 다음 금융 ${market} 응답이 JSON이 아님 (Content-Type: ${contentType})`);
+        // HTML 차단 페이지일 가능성
+        const text = await res.text();
+        console.warn(`[popular] 응답 본문 앞부분: ${text.slice(0, 100)}...`);
         continue;
       }
 
       const json = await res.json();
       const list = json.data || json.ranks || json.list || (Array.isArray(json) ? json : []);
+      
       if (!Array.isArray(list) || list.length === 0) {
-        console.warn(`[popular] 다음 금융 ${market} 응답 비어있음`);
+        console.warn(`[popular] 다음 금융 ${market} 응답 데이터가 비어있음`);
         continue;
       }
 
       const firstItem = list[0];
       if (!firstItem || (!firstItem.symbolCode && !firstItem.code && !firstItem.symbol)) {
-        console.warn(`[popular] 다음 금융 ${market} 응답 스키마 불일치`);
+        console.warn(`[popular] 다음 금융 ${market} 응답 스키마 불일치. 첫 항목:`, firstItem);
         continue;
       }
 
@@ -147,7 +171,7 @@ async function fetchFromDaum() {
       console.log(`[popular] 다음 금융 ${market}: +${addedInMarket}건 (누적 ${items.length}건)`);
 
     } catch (e) {
-      console.warn(`[popular] 다음 금융 ${market} 실패:`, e.message);
+      console.warn(`[popular] 다음 금융 ${market} 요청 실패:`, e.message);
     }
   }
   return items;
@@ -183,10 +207,16 @@ async function fetchFromKis(env, existingTickers) {
       tr_id: 'FHPST01710000',
     },
   });
-  if (!res.ok) return [];
+  if (!res.ok) {
+    console.warn(`[popular] KIS API HTTP ${res.status}`);
+    return [];
+  }
 
   const data = await res.json();
-  if (data.rt_cd && data.rt_cd !== '0') return [];
+  if (data.rt_cd && data.rt_cd !== '0') {
+    console.warn(`[popular] KIS API 에러: ${data.msg1}`);
+    return [];
+  }
 
   const items = [];
   for (const row of data.output || []) {
