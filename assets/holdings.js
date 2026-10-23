@@ -46,11 +46,11 @@ export async function refreshHoldingsView(holdingsData) {
   let totalCost = 0, totalCurrentValue = 0;
   const currentPriceMap = new Map();
   
-  // ★ 보유 종목이 0개이더라도 상태 배지는 업데이트하도록 수정
+  // ★ 수정: 보유 종목이 0개일 때 상태 배지를 '연결 원활'로 표시
   if (currentHoldings.length === 0) {
     renderHoldingsList([], currentPriceMap);
     renderHoldingsSummary(holdingsData, 0, 0);
-    updateDataStatusBadge('MARKET_CLOSED'); // 데이터가 없음을 표시 (또는 'OK')
+    updateDataStatusBadge('OK'); // 'MARKET_CLOSED' -> 'OK'로 변경
     return;
   }
 
