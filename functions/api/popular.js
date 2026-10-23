@@ -3,7 +3,9 @@ import { getKisAccessToken } from './_kis_token.js';
 
 const NAVER_MAIN = 'https://finance.naver.com/';
 const NAVER_BASE = 'https://finance.naver.com/sise/lastsearch2.naver';
-const NAVER_PAGES = 4;
+const NAVER_PAGES = 3; // 차단 위험을 줄이기 위해 3페이지로 축소
+
+const DAUM_RANKS_API = 'https://finance.daum.net/api/search/ranks?limit=100';
 
 const EXCLUDE_KEYWORDS = [
   'KODEX', 'TIGER', 'KBSTAR', 'ARIRANG', 'HANARO',
@@ -21,59 +23,37 @@ function isValidTicker(ticker) {
   return /^\d{6}$/.test(String(ticker));
 }
 
-// 실제 크롬 브라우저의 Client Hints 및 보안 헤더 모방
-function getHeaders(cookie = '') {
-  const headers = {
+// 공통 헤더
+function getHeaders(referer = '') {
+  return {
     'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36',
-    'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8,application/signed-exchange;v=b3;q=0.7',
+    'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8',
     'Accept-Language': 'ko-KR,ko;q=0.9,en-US;q=0.8,en;q=0.7',
-    'Referer': NAVER_MAIN,
     'Sec-CH-UA': '"Chromium";v="125", "Google Chrome";v="125", "Not-A.Brand";v="99"',
     'Sec-CH-UA-Mobile': '?0',
     'Sec-CH-UA-Platform': '"Windows"',
     'Sec-Fetch-Dest': 'document',
     'Sec-Fetch-Mode': 'navigate',
-    'Sec-Fetch-Site': 'same-origin',
+    'Sec-Fetch-Site': referer ? 'same-origin' : 'none',
     'Sec-Fetch-User': '?1',
     'Upgrade-Insecure-Requests': '1',
-    'Cache-Control': 'max-age=0',
-    'Connection': 'keep-alive',
+    ...(referer ? { 'Referer': referer } : {})
   };
-  if (cookie) headers['Cookie'] = cookie;
-  return headers;
 }
 
-// 네이버 메인 방문 후 쿠키 획득
-async function getNaverCookies() {
-  try {
-    const res = await fetch(NAVER_MAIN, { headers: getHeaders() });
-    const setCookie = res.headers.get('set-cookie');
-    if (!setCookie) return '';
-    // set-cookie 헤더에서 이름=값 형태만 추출
-    return setCookie.split(',').map(c => c.split(';')[0].trim()).join('; ');
-  } catch (e) {
-    console.warn('[popular] 네이버 쿠키 획득 실패:', e.message);
-    return '';
-  }
-}
-
-// 네이버 금융 크롤링
-async function fetchFromNaver(cookie) {
+// ─────────────────────────────────────────────────────────────
+// 1차: 네이버 금융 크롤링
+// ─────────────────────────────────────────────────────────────
+async function fetchFromNaver() {
   const items = [];
   const seen = new Set();
 
   for (let page = 1; page <= NAVER_PAGES; page++) {
-    if (items.length >= 100) break;
-
+    if (items.length >= 80) break;
     const url = page === 1 ? NAVER_BASE : `${NAVER_BASE}?&page=${page}`;
     try {
-      const res = await fetch(url, { headers: getHeaders(cookie) });
-
-      if (!res.ok) {
-        console.warn(`[popular] 네이버 page ${page} HTTP ${res.status}`);
-        continue;
-      }
-
+      const res = await fetch(url, { headers: getHeaders(NAVER_MAIN) });
+      if (!res.ok) continue;
       const buffer = await res.arrayBuffer();
       let html;
       try { html = new TextDecoder('euc-kr').decode(buffer); }
@@ -85,40 +65,68 @@ async function fetchFromNaver(cookie) {
         const rowHtml = m[1];
         const codeMatch = rowHtml.match(/code=(\d{6})/);
         if (!codeMatch) continue;
-
         const ticker = codeMatch[1];
-        if (!isValidTicker(ticker)) continue;
-        if (seen.has(ticker)) continue;
+        if (!isValidTicker(ticker) || seen.has(ticker)) continue;
 
         let name = '';
         const tltleMatch = rowHtml.match(/<a[^>]*class="tltle"[^>]*>([\s\S]*?)<\/a>/);
         if (tltleMatch) name = tltleMatch[1].replace(/<[^>]*>/g, '').trim();
-        else {
-          const aMatch = rowHtml.match(/<a[^>]*href="[^"]*code=\d{6}"[^>]*>([\s\S]*?)<\/a>/);
-          if (aMatch) name = aMatch[1].replace(/<[^>]*>/g, '').trim();
-        }
-
         if (!name) continue;
         name = name.replace(/&amp;/g, '&').replace(/&lt;/g, '<').replace(/&gt;/g, '>');
-
         if (isExcluded(name)) continue;
 
         seen.add(ticker);
-        items.push({ rank: items.length + 1, ticker, name });
-        if (items.length >= 100) break;
+        items.push({ ticker, name });
+        if (items.length >= 80) break;
       }
-
-      // 봇 탐지 회피를 위한 페이지 간 랜덤 지연 (1~3초)
-      await new Promise(r => setTimeout(r, 1000 + Math.random() * 2000));
+      await new Promise(r => setTimeout(r, 1000 + Math.random() * 1000));
     } catch (e) {
       console.warn(`[popular] 네이버 page ${page} 실패:`, e.message);
     }
   }
-
   return items;
 }
 
-// KIS API 거래량 순위 폴백 (기존과 동일)
+// ─────────────────────────────────────────────────────────────
+// 2차: 다음 금융 조회 급등 API
+// ─────────────────────────────────────────────────────────────
+async function fetchFromDaum() {
+  const items = [];
+  const seen = new Set();
+
+  try {
+    const res = await fetch(DAUM_RANKS_API, {
+      headers: {
+        ...getHeaders('https://finance.daum.net/'),
+        'Accept': 'application/json, text/plain, */*',
+      },
+    });
+    if (!res.ok) throw new Error(`Daum HTTP ${res.status}`);
+
+    const json = await res.json();
+    const list = json.data || json.ranks || [];
+
+    for (const row of list) {
+      const code = row.symbolCode || row.code || '';
+      const ticker = code.replace(/^A/, '');
+      if (!isValidTicker(ticker) || seen.has(ticker)) continue;
+
+      const name = row.name || row.stockName || '';
+      if (!name || isExcluded(name)) continue;
+
+      seen.add(ticker);
+      items.push({ ticker, name });
+      if (items.length >= 100) break;
+    }
+  } catch (e) {
+    console.warn('[popular] 다음 금융 조회 급등 실패:', e.message);
+  }
+  return items;
+}
+
+// ─────────────────────────────────────────────────────────────
+// 3차: KIS API 거래량 순위 폴백
+// ─────────────────────────────────────────────────────────────
 async function fetchFromKis(env, existingTickers) {
   const baseUrl = env.KIS_BASE_URL || 'https://openapi.koreainvestment.com:9443';
   if (!env.KIS_APP_KEY || !env.KIS_APP_SECRET) return [];
@@ -148,7 +156,6 @@ async function fetchFromKis(env, existingTickers) {
       tr_id: 'FHPST01710000',
     },
   });
-
   if (!res.ok) return [];
 
   const data = await res.json();
@@ -158,62 +165,64 @@ async function fetchFromKis(env, existingTickers) {
   for (const row of data.output || []) {
     const ticker = row.mksc_shrn_iscd;
     const name = row.hts_kor_isnm;
-    const prdtType = row.prdt_type_cd;
-    const marketName = row.rprs_mrkt_kor_name || row.bstp_kor_isnm || '';
-
     if (!ticker || !name) continue;
-    if (!isValidTicker(ticker)) continue;
-    if (existingTickers.has(ticker)) continue;
-    if (isExcluded(name)) continue;
-    if (prdtType && prdtType !== '300') continue;
-
-    const mName = String(marketName).toUpperCase();
-    if (marketName && !mName.includes('유가증권') && !mName.includes('코스피') && !mName.includes('코스닥') && !mName.includes('KOSPI') && !mName.includes('KOSDAQ')) continue;
+    if (!isValidTicker(ticker) || existingTickers.has(ticker) || isExcluded(name)) continue;
 
     existingTickers.add(ticker);
     items.push({ ticker, name });
   }
-
   return items;
 }
 
+// ─────────────────────────────────────────────────────────────
+// 메인 핸들러: 3단계 폴백 + 중복 제거
+// ─────────────────────────────────────────────────────────────
 export async function onRequestGet(context) {
   const { env } = context;
   let items = [];
-  let source = 'naver_popular';
+  let source = 'none';
 
-  // 1차: 네이버 크롤링 시도 (쿠키 획득 후)
+  // 1차: 네이버
   try {
-    const cookie = await getNaverCookies();
-    items = await fetchFromNaver(cookie);
-    if (items.length === 0) throw new Error('네이버에서 종목을 추출하지 못했습니다.');
+    items = await fetchFromNaver();
+    if (items.length > 0) source = 'naver_popular';
   } catch (e) {
-    console.warn('[popular] 네이버 실패 → KIS 폴백:', e.message);
-    items = [];
+    console.warn('[popular] 네이버 실패:', e.message);
   }
 
-  // 2차: KIS API 폴백 (종목 부족 시)
+  // 2차: 다음 금융 (네이버가 20개 미만일 때, 중복 제외)
+  if (items.length < 20) {
+    try {
+      const existing = new Set(items.map(i => i.ticker));
+      const daumItems = await fetchFromDaum();
+      const newItems = daumItems.filter(i => !existing.has(i.ticker));
+      if (newItems.length > 0) {
+        items = [...items, ...newItems];
+        source = source === 'naver_popular' ? 'naver_plus_daum' : 'daum_popular';
+      }
+    } catch (e) {
+      console.warn('[popular] 다음 금융 실패:', e.message);
+    }
+  }
+
+  // 3차: KIS API (아직 20개 미만일 때, 중복 제외)
   if (items.length < 20) {
     try {
       const existing = new Set(items.map(i => i.ticker));
       const kisItems = await fetchFromKis(env, existing);
       if (kisItems.length > 0) {
-        items = [...items, ...kisItems.map(i => ({ rank: 0, ticker: i.ticker, name: i.name }))];
-        source = items.length > 0 ? 'naver_plus_kis' : 'kis_volume_rank_fallback';
+        items = [...items, ...kisItems];
+        source = source === 'none' ? 'kis_volume_rank' : `${source}_plus_kis`;
       }
-    } catch (kisErr) {
-      console.error('[popular] KIS 폴백 실패:', kisErr.message);
+    } catch (e) {
+      console.warn('[popular] KIS 폴백 실패:', e.message);
     }
   }
 
   items = items.map((item, idx) => ({ ...item, rank: idx + 1 }));
 
-  // 최종 확보된 종목이 없을 때만 에러 반환
   if (items.length === 0) {
-    return jsonResponse({
-      error: '인기 종목을 전혀 확보하지 못했습니다.',
-      error_code: 'EMPTY_RESULT',
-    }, 502);
+    return jsonResponse({ error: '모든 소스에서 종목을 확보하지 못했습니다.', error_code: 'EMPTY_RESULT' }, 502);
   }
 
   return jsonResponse({
