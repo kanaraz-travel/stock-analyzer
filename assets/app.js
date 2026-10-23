@@ -53,9 +53,8 @@ export function formatDateTime(iso) {
   return d.toLocaleString('ko-KR', { year: 'numeric', month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit' });
 }
 
-let isLogoutListenerAttached = false;
 let isLoggingOut = false;
-let isAppInitialized = false; // ★ 앱 전체 초기화 중복 방지 플래그
+let isAppInitialized = false;
 
 async function init() {
   if (isAppInitialized) return;
@@ -164,18 +163,28 @@ function mapAuthError(msg) {
 }
 
 function setupLogoutButton() {
-  if (isLogoutListenerAttached) return;
-  isLogoutListenerAttached = true;
+  const oldBtn = $('#logout-btn');
+  if (!oldBtn) return;
 
-  $('#logout-btn').addEventListener('click', async () => {
-    if (isLoggingOut) return; // ★ 중복 실행 완벽 차단
+  // ★ 버튼을 복제하여 기존에 달려있던 모든 이벤트 리스너를 완벽히 제거
+  const newBtn = oldBtn.cloneNode(true);
+  oldBtn.parentNode.replaceChild(newBtn, oldBtn);
+
+  newBtn.addEventListener('click', async () => {
+    if (isLoggingOut) return;
     if (state.isBatching) { alert('이력 쌓기가 진행 중입니다. 완료 후 로그아웃해 주세요.'); return; }
     if (!confirm('로그아웃하시겠습니까?')) return;
 
     isLoggingOut = true;
     stopCountdown();
     try {
-      await supabase.auth.signOut();
+      const { error } = await supabase.auth.signOut();
+      // ★ 이미 세션이 없는 경우(session_not_found) 에러는 무시
+      if (error && error.message !== 'session_not_found') {
+        console.error('Logout error:', error);
+      }
+    } catch (e) {
+      if (e.message !== 'session_not_found') console.error(e);
     } finally {
       isLoggingOut = false;
     }
