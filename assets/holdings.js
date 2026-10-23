@@ -23,14 +23,8 @@ export async function loadHoldings() {
 
   if (error) { 
     console.error('loadHoldings error:', error.message); 
-    updateDataStatusBadge('ERROR'); // ★ 에러 발생 시 배지 업데이트
+    updateDataStatusBadge('ERROR');
     return; 
-  }
-  
-  console.log('🔥 [DB에서 가져온 원본 데이터]:', data);
-  if (data && data.length > 0) {
-    const badRows = data.filter(tx => !tx.ticker || !tx.stock_name || !tx.transaction_type);
-    if (badRows.length > 0) console.warn('⚠️ [주의] 필수 필드 누락 데이터:', badRows);
   }
   
   state.transactions = data || [];
@@ -46,11 +40,11 @@ export async function refreshHoldingsView(holdingsData) {
   let totalCost = 0, totalCurrentValue = 0;
   const currentPriceMap = new Map();
   
-  // ★ 수정: 보유 종목이 0개일 때 상태 배지를 '연결 원활'로 표시
+  // ★ 보유 종목 0개: DB 쿼리는 성공했으므로 'OK'(연결 원활)
   if (currentHoldings.length === 0) {
     renderHoldingsList([], currentPriceMap);
     renderHoldingsSummary(holdingsData, 0, 0);
-    updateDataStatusBadge('OK'); // 'MARKET_CLOSED' -> 'OK'로 변경
+    updateDataStatusBadge('OK');
     return;
   }
 
@@ -82,7 +76,6 @@ export async function refreshHoldingsView(holdingsData) {
     await new Promise(r => setTimeout(r, 500));
   }
 
-  // ★ 시세 조회가 실패했더라도 배지는 '연결 끊김' 등으로 업데이트
   if (anySuccess && lastSuccessfulStatus) {
     updateDataStatusBadge(lastSuccessfulStatus);
   } else {
@@ -112,7 +105,6 @@ export function computeHoldings(txs) {
       continue;
     }
     
-    // ★ 대소문자 방어 코드 (buy, Buy, BUY 모두 처리)
     const txType = String(tx.transaction_type || '').toUpperCase();
 
     if (!map.has(tx.ticker)) {
@@ -402,6 +394,10 @@ async function saveTransaction() {
   finally { btn.disabled = false; btn.textContent = state.editingTxId ? '수정 저장' : '거래 저장'; }
 }
 
+// ★ 리팩터: 의도를 명확화. 동작은 이전과 동일.
+//   - 편집 대상 본인은 제외
+//   - 매도일 이후 날짜 거래 제외
+//   - 매도일과 같은 날이면, 편집 대상 created_at 이후 생성된 거래는 제외
 async function canSell(ticker, quantity, sellDate, excludeId = null) {
   const { data, error } = await supabase
     .from('stock_transactions')
@@ -418,13 +414,14 @@ async function canSell(ticker, quantity, sellDate, excludeId = null) {
 
   let net = 0;
   for (const tx of data || []) {
-    if (excludeId && tx.id === excludeId) continue;
-    if (tx.trade_date < sellDate) { /* 이전 날짜: 항상 집계 */ }
-    else if (tx.trade_date === sellDate) {
-      if (excludeCreatedAt && tx.created_at && tx.created_at >= excludeCreatedAt) continue;
-    } else { continue; }
-    if (tx.transaction_type === 'BUY') net += Number(tx.quantity);
-    else net -= Number(tx.quantity);
+    if (excludeId && tx.id === excludeId) continue;            // 편집 대상 제외
+    if (tx.trade_date > sellDate) continue;                    // 매도일 이후 제외
+    if (tx.trade_date === sellDate && excludeCreatedAt
+        && tx.created_at && tx.created_at >= excludeCreatedAt) continue;  // 같은 날 이후 생성 제외
+
+    const q = Number(tx.quantity) || 0;
+    if (tx.transaction_type === 'BUY') net += q;
+    else net -= q;
   }
 
   return quantity <= net + 1e-9;

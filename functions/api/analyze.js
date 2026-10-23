@@ -1,11 +1,11 @@
 // functions/api/analyze.js
 import { createClient } from '@supabase/supabase-js';
 import {
-  VALID_RECS_BUY, VALID_RECS_SELL, normalizeRecommendation, validateAnalyzeInput,
+  normalizeRecommendation, validateAnalyzeInput,
   validateNewsOutput, validateTrendOutput, computeDataQuality,
   loadRecentTrendHistory, summarizeTrendHistory, deriveConsistencyThreshold,
-  needsHighConfidenceForLevelJump, computeReferenceScore, saveAnalysisRun, cleanupOldRuns,
-  getRecommendationMeta, interpretConfidence, jsonResponse, buildPriceVolumeFacts
+  needsHighConfidenceForLevelJump, saveAnalysisRun, cleanupOldRuns,
+  jsonResponse, buildPriceVolumeFacts
 } from './_pipeline.js';
 import { runNewsAgent, runTrendAgent, runJudgeAgent } from './_agents.js';
 import { buildRuleBasedFallback } from './_fallback.js';
@@ -15,54 +15,141 @@ const MAX_BODY_BYTES = 100 * 1024;
 const CLEANUP_PROBABILITY = 0.2;
 
 export async function onRequestPost(context) {
-  // ... (인증 및 검증 로직 기존과 동일) ...
+  const { request, env } = context;
 
-  const dataQuality = computeDataQuality(price_data);
-  const isStale = price_data?.price_source === 'STALE';
+  // ─── 인증 ───
+  const authHeader = request.headers.get('authorization') || '';
+  const token = authHeader.replace(/^Bearer\s+/i, '').trim();
+  if (!token) return jsonResponse({ error: '인증이 필요합니다.' }, 401);
 
-  if (dataQuality.status === 'UNKNOWN' || dataQuality.status === 'INSUFFICIENT') {
-    return jsonResponse({ recommendation: '판단 보류', overall_summary: '시세 기준 시각 확인 불가로 판단을 보류합니다.', fallback: true, fallback_reason: 'DATA_INSUFFICIENT' });
+  if (!env.SUPABASE_URL || !env.SUPABASE_SERVICE_ROLE_KEY) {
+    return jsonResponse({ error: '서버 설정 오류입니다.' }, 500);
   }
 
-  const referenceScore = computeReferenceScore(price_data);
+  const supabase = createClient(env.SUPABASE_URL, env.SUPABASE_SERVICE_ROLE_KEY, {
+    auth: { persistSession: false, autoRefreshToken: false, detectSessionInUrl: false },
+  });
+
+  let userId;
+  try {
+    const { data: userData, error: authError } = await supabase.auth.getUser(token);
+    if (authError || !userData?.user) return jsonResponse({ error: '인증이 유효하지 않습니다.' }, 401);
+    userId = userData.user.id;
+  } catch {
+    return jsonResponse({ error: '인증 처리 중 오류가 발생했습니다.' }, 401);
+  }
+
+  // ─── 본문 크기 체크 ───
+  const contentLength = Number(request.headers.get('content-length') || 0);
+  if (contentLength > MAX_BODY_BYTES) {
+    return jsonResponse({ error: '요청 본문이 너무 큽니다.' }, 413);
+  }
+
+  // ─── 본문 파싱 ───
+  let body;
+  try { body = await request.json(); }
+  catch { return jsonResponse({ error: '요청 본문이 JSON이 아닙니다.' }, 400); }
+
+  // ─── 입력 검증 ───
+  const validation = validateAnalyzeInput(body);
+  if (!validation.valid) {
+    return jsonResponse({ error: '입력 데이터가 유효하지 않습니다.', details: validation.errors }, 400);
+  }
+
+  const { ticker, stock_name, price_data, volume_data, news_items, holdings_data } = body;
+  const analysis_type = body.analysis_type === 'sell' ? 'sell' : 'buy';
+
+  // ─── 데이터 품질 ───
+  const dataQuality = computeDataQuality(price_data);
+  if (dataQuality.status === 'UNKNOWN') {
+    return jsonResponse({
+      recommendation: '판단 보류',
+      overall_summary: '시세 기준 시각을 확인할 수 없어 판단을 보류합니다. 잠시 후 다시 시도해 주세요.',
+      fallback: true,
+      fallback_reason: 'DATA_INSUFFICIENT',
+      retry_hint: '잠시 후 다시 시도해 주세요.',
+      saved: false,
+    });
+  }
+
+  // ─── 이전 판단 / 추세 이력 조회 (병렬) ───
+  const [previousRec, trendHistory] = await Promise.all([
+    loadPreviousRecommendation(supabase, userId, ticker).catch(() => null),
+    loadRecentTrendHistory(env, ticker).catch(() => ({ status: 'unavailable', entries: [] })),
+  ]);
+  const trendSummary = summarizeTrendHistory(trendHistory?.entries || [], trendHistory?.status || 'unavailable');
+
+  // ─── 에이전트 상태 초기화 ───
+  const agentStatus = { news: { ok: false }, trend: { ok: false }, judge: { ok: false } };
+
+  // [1] 가격/거래량: 코드 생성 (0 뉴런)
+  const pvResult = buildPriceVolumeFacts(price_data, volume_data, analysis_type);
+  agentStatus.price_volume = { ok: true, status: 'success', reason: 'RULE_BASED' };
+
   let finalData = null;
   let isFallback = false;
   let fallbackReason = null;
   let quotaExceeded = false;
-
-  const agentStatus = { news: { ok: false }, trend: { ok: false }, judge: { ok: false } };
-  
-  // T6: PV 에이전트는 코드로 즉시 생성
-  const pvResult = buildPriceVolumeFacts(price_data, volume_data, analysis_type);
-  agentStatus.price_volume = { ok: true, status: 'success', reason: 'RULE_BASED' };
+  let newsResult = null;
+  let trendResult = null;
+  let judgeResult = null;
 
   try {
     if (!env.AI) throw new Error('AI_NOT_CONFIGURED');
 
-    // ... (이전 판단 조회 및 추세 이력 조회 로직 기존과 동일) ...
-    const previousRec = null; // 임시
-    const trendSummary = null; // 임시
-
-    // T4: 병렬 처리 (뉴스만 호출)
+    // [2] 뉴스
     const newsRaw = await runNewsAgent(env, { ticker, stock_name, news_items });
-    if (newsRaw.code === 'AI_QUOTA_EXCEEDED') quotaExceeded = true;
-    else if (newsRaw.status === 'success') { newsResult = newsRaw; agentStatus.news = { ok: true }; }
-
-    let trendResult = null;
-    if (!quotaExceeded) {
-      const trendRaw = await runTrendAgent(env, { ticker, stock_name, analysis_type, price_data, volume_data, price_volume_result: pvResult, news_result: newsResult, trend_history_summary: trendSummary });
-      if (trendRaw.code === 'AI_QUOTA_EXCEEDED') quotaExceeded = true;
-      else if (!trendRaw.__exception) { trendResult = trendRaw; agentStatus.trend = { ok: true }; }
+    if (newsRaw.code === 'AI_QUOTA_EXCEEDED') {
+      quotaExceeded = true;
+    } else if (newsRaw.status === 'success' && validateNewsOutput(newsRaw).valid) {
+      newsResult = newsRaw;
+      agentStatus.news = { ok: true };
+    } else if (newsRaw.status === 'error') {
+      agentStatus.news = { ok: false, reason: 'AGENT_ERROR' };
+    } else {
+      agentStatus.news = { ok: false, reason: 'INVALID_OUTPUT' };
     }
 
-    let judgeResult = null;
+    // [3] 추세
     if (!quotaExceeded) {
-      const judgeRaw = await runJudgeAgent(env, { ticker, stock_name, analysis_type, holdings_data, price_data, price_volume_result: pvResult, news_result: newsResult, trend_result: trendResult, trend_history_summary: trendSummary, previous_recommendation: previousRec });
-      if (judgeRaw.code === 'AI_QUOTA_EXCEEDED') quotaExceeded = true;
-      else if (!judgeRaw.__exception) { judgeResult = judgeRaw; agentStatus.judge = { ok: true }; }
+      const trendRaw = await runTrendAgent(env, {
+        ticker, stock_name, analysis_type, price_data, volume_data,
+        price_volume_result: pvResult,
+        news_result: newsResult,
+        trend_history_summary: trendSummary,
+      });
+      if (trendRaw.code === 'AI_QUOTA_EXCEEDED') {
+        quotaExceeded = true;
+      } else if (!trendRaw.__exception) {
+        const tv = validateTrendOutput(trendRaw);
+        if (tv.valid) { trendResult = trendRaw; agentStatus.trend = { ok: true }; }
+        else agentStatus.trend = { ok: false, reason: tv.reason };
+      } else {
+        agentStatus.trend = { ok: false, reason: trendRaw.message || 'EXCEPTION' };
+      }
     }
 
-    // ★ 폴백 분기
+    // [4] 심판
+    if (!quotaExceeded) {
+      const judgeRaw = await runJudgeAgent(env, {
+        ticker, stock_name, analysis_type, holdings_data, price_data,
+        price_volume_result: pvResult,
+        news_result: newsResult,
+        trend_result: trendResult,
+        trend_history_summary: trendSummary,
+        previous_recommendation: previousRec?.recommendation || null,
+      });
+      if (judgeRaw.code === 'AI_QUOTA_EXCEEDED') {
+        quotaExceeded = true;
+      } else if (!judgeRaw.__exception) {
+        judgeResult = judgeRaw;
+        agentStatus.judge = { ok: true };
+      } else {
+        agentStatus.judge = { ok: false, reason: judgeRaw.message || 'EXCEPTION' };
+      }
+    }
+
+    // ─── 결과 분기 ───
     if (quotaExceeded) {
       isFallback = true;
       fallbackReason = 'AI_QUOTA_EXCEEDED';
@@ -72,33 +159,118 @@ export async function onRequestPost(context) {
       fallbackReason = 'JUDGE_FAILED';
       finalData = buildRuleBasedFallback({ price_data, volume_data, analysis_type, trendResult });
     } else {
-      // 정상 처리
-      originalJudgeRec = normalizeRecommendation(judgeResult.recommendation, analysis_type);
-      judgeConfidence = judgeResult.confidence;
-      finalData = { recommendation: originalJudgeRec, overall_summary: judgeResult.overall_summary };
-      // ... (일관성 보정 및 강도 하향 로직 기존과 동일) ...
-    }
+      const normalizedRec = normalizeRecommendation(judgeResult.recommendation, analysis_type);
+      if (!normalizedRec) {
+        isFallback = true;
+        fallbackReason = 'JUDGE_INVALID_REC';
+        finalData = buildRuleBasedFallback({ price_data, volume_data, analysis_type, trendResult });
+      } else {
+        let finalRec = normalizedRec;
+        let judgeConfidence = Number(judgeResult.confidence);
+        if (!Number.isFinite(judgeConfidence)) judgeConfidence = 0.5;
 
+        // (a) 추세 강도 '약' → 강한 판단(추천)을 고려로 하향
+        if (trendResult?.trend_strength === '약') {
+          if (finalRec === '매수 추천') finalRec = '매수 고려';
+          else if (finalRec === '매도 추천') finalRec = '매도 고려';
+        }
+
+        // (b) 판단 일관성 보정
+        let consistencyNote = '';
+        if (previousRec?.recommendation) {
+          const threshold = deriveConsistencyThreshold(previousRec.analyzed_at, trendSummary?.flips_short || 0);
+          if (needsHighConfidenceForLevelJump(previousRec.recommendation, finalRec) && judgeConfidence < threshold) {
+            finalRec = previousRec.recommendation;
+            consistencyNote = '[판단 유지] ';
+          } else if (finalRec === previousRec.recommendation) {
+            consistencyNote = '[판단 유지] ';
+          }
+        }
+
+        finalData = {
+          recommendation: finalRec,
+          overall_summary: consistencyNote + (judgeResult.overall_summary || '-'),
+          confidence: judgeConfidence,
+          original_judge_recommendation: normalizedRec,
+        };
+      }
+    }
   } catch (e) {
     isFallback = true;
     fallbackReason = e.message === 'AI_QUOTA_EXCEEDED' ? 'AI_QUOTA_EXCEEDED' : 'AI_ERROR';
-    finalData = buildRuleBasedFallback({ price_data, volume_data, analysis_type });
+    finalData = buildRuleBasedFallback({ price_data, volume_data, analysis_type, trendResult });
   }
 
-  // 저장 로직: isFallback이면 저장 스킵
+  // ─── DB 저장 (정상 결과만) ───
   let saved = false;
-  if (!isFallback) {
-    // ... DB 저장 ...
-    saved = true;
+  if (!isFallback && finalData) {
+    try {
+      await saveAnalysisRun(supabase, {
+        user_id: userId,
+        ticker,
+        stock_name,
+        analysis_type,
+        analyzed_at: new Date().toISOString(),
+        recommendation: finalData.recommendation,
+        overall_summary: finalData.overall_summary,
+        ruleset_version: RULESET_VERSION,
+        market_facts: {
+          price_data,
+          volume_data,
+          agent_outputs: {
+            price_volume: pvResult,
+            news: newsResult,
+            trend: trendResult,
+            judge: judgeResult,
+          },
+          agent_status: agentStatus,
+          data_quality_note: dataQuality.status,
+          judge_confidence: finalData.confidence ?? null,
+          trend_history_summary: {
+            count: trendSummary.count,
+            distinct_days: trendSummary.distinct_days,
+            stability: trendSummary.stability,
+            flips_short: trendSummary.flips_short,
+            flips_medium: trendSummary.flips_medium,
+            sample_mode: trendSummary.sample_mode,
+          },
+        },
+      });
+      saved = true;
+
+      if (Math.random() < CLEANUP_PROBABILITY) {
+        try { await cleanupOldRuns(env, userId); } catch {}
+      }
+    } catch (e) {
+      console.error('[analyze] save failed:', e.message);
+    }
   }
 
   return jsonResponse({
-    recommendation: finalData.recommendation,
-    overall_summary: finalData.overall_summary,
+    recommendation: finalData?.recommendation || '판단 보류',
+    overall_summary: finalData?.overall_summary || '-',
     fallback: isFallback,
     fallback_reason: fallbackReason,
     retry_hint: quotaExceeded ? '한국시간 오전 9시 이후 다시 시도해 주세요.' : undefined,
     agent_status: agentStatus,
     saved,
   });
+}
+
+// ─────────────────────────────────────────────────────────────
+// 헬퍼: 이전 판단 조회
+// ─────────────────────────────────────────────────────────────
+async function loadPreviousRecommendation(supabase, userId, ticker) {
+  const since = new Date(Date.now() - 30 * 24 * 60 * 60 * 1000).toISOString();
+  const { data, error } = await supabase
+    .from('stock_analysis_runs')
+    .select('recommendation, analyzed_at')
+    .eq('user_id', userId)
+    .eq('ticker', ticker)
+    .gte('analyzed_at', since)
+    .order('analyzed_at', { ascending: false })
+    .limit(1)
+    .maybeSingle();
+  if (error || !data) return null;
+  return data;
 }

@@ -13,6 +13,16 @@ function isValidTicker(ticker) {
   return /^\d{6}$/.test(String(ticker));
 }
 
+function decodeHtmlEntities(str) {
+  return String(str)
+    .replace(/&amp;/g, '&')
+    .replace(/&lt;/g, '<')
+    .replace(/&gt;/g, '>')
+    .replace(/&quot;/g, '"')
+    .replace(/&#39;/g, "'")
+    .replace(/&nbsp;/g, ' ');
+}
+
 // ★ 각 소스 결과에서 "상위 10 + 11~100위 랜덤 10" = 20개를 확정
 function pickTopAndRandom(sourceItems) {
   const valid = sourceItems.filter(i => isValidTicker(i.ticker) && !isExcluded(i.name));
@@ -79,7 +89,7 @@ async function fetchFromDaum() {
   } catch { return []; }
 }
 
-// ★ 4순위 후보: KIS 거래량+등락률 (코스피/코스닥 시장 필터)
+// 4순위 후보: KIS 거래량+등락률 (코스피/코스닥 필터)
 async function fetchKisCandidates(env, limit = 100) {
   const baseUrl = env.KIS_BASE_URL || 'https://openapi.koreainvestment.com:9443';
   if (!env.KIS_APP_KEY || !env.KIS_APP_SECRET) return [];
@@ -95,10 +105,9 @@ async function fetchKisCandidates(env, limit = 100) {
         if (!ticker || !name) continue;
         if (!isValidTicker(ticker) || seen.has(ticker) || isExcluded(name)) continue;
 
-        // ★ 시장 구분 필터: 코스피/코스닥만
+        // 시장 구분 필터: 코스피/코스닥만
         const mkt = String(row.rprs_mrkt_kor_name || row.bstp_kor_isnm || '').toUpperCase();
         const isKospiKosdaq = /유가증권|코스피|코스닥|KOSPI|KOSDAQ/.test(mkt);
-        // 시장 정보가 아예 없는 경우는 허용(구형 응답 대비)
         if (mkt && !isKospiKosdaq) continue;
 
         seen.add(ticker);
@@ -162,7 +171,8 @@ async function fetchIssueStocks(kisCandidates) {
     let m;
     while ((m = itemRegex.exec(xml)) !== null) {
       const tm = m[1].match(/<title>(.*?)<\/title>/);
-      if (tm) titles.push(tm[1].replace(/<[^>]*>/g, ''));
+      // ★ HTML 엔티티 해제
+      if (tm) titles.push(decodeHtmlEntities(tm[1].replace(/<[^>]*>/g, '')));
     }
 
     const scoreMap = new Map();
@@ -181,7 +191,7 @@ async function fetchIssueStocks(kisCandidates) {
 }
 
 // ─────────────────────────────────────────────────────────────
-// 메인 핸들러: 요청하신 4단계 소스 우선순위 + 소스별 20개 확정
+// 메인 핸들러: 4단계 소스 우선순위 + 소스별 20개 확정
 // ─────────────────────────────────────────────────────────────
 export async function onRequestGet(context) {
   const { env } = context;
@@ -189,7 +199,7 @@ export async function onRequestGet(context) {
   let selected = [];
   let source = 'none';
 
-  // ★ 1순위: 네이버 (성공 시 20개 확정)
+  // 1순위: 네이버 (성공 시 20개 확정)
   if (selected.length < 20) {
     const naverRaw = await fetchFromNaver();
     const naverPicked = pickTopAndRandom(naverRaw);
@@ -199,7 +209,7 @@ export async function onRequestGet(context) {
     if (selected.length > 0 && source === 'none') source = 'naver';
   }
 
-  // ★ 2순위: 다음 (부족분만. 네이버가 20개 채웠으면 스킵)
+  // 2순위: 다음 (부족분만)
   if (selected.length < 20) {
     const daumRaw = await fetchFromDaum();
     const daumPicked = pickTopAndRandom(daumRaw);
@@ -209,7 +219,7 @@ export async function onRequestGet(context) {
     if (selected.length > 0 && source === 'none') source = 'daum';
   }
 
-  // ★ 3순위: 이슈 종목 (부족분만)
+  // 3순위: 이슈 종목 (부족분만)
   let kisCandidates = [];
   if (selected.length < 20) {
     kisCandidates = await fetchKisCandidates(env, 100);
@@ -220,7 +230,7 @@ export async function onRequestGet(context) {
     if (selected.length > 0 && source === 'none') source = 'issue';
   }
 
-  // ★ 4순위: KIS 보충 (부족분만, 코스피/코스닥 필터 적용됨)
+  // 4순위: KIS 보충 (부족분만, 코스피/코스닥 필터 적용됨)
   if (selected.length < 20) {
     if (kisCandidates.length === 0) kisCandidates = await fetchKisCandidates(env, 100);
     const newItems = kisCandidates.filter(d => !selected.find(i => i.ticker === d.ticker));

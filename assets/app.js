@@ -1,6 +1,9 @@
 // assets/app.js
 import { createClient } from 'https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2/+esm';
-import { initHoldings, loadHoldings } from './holdings.js';
+import { 
+  initHoldings, loadHoldings, refreshHoldingsView,
+  computeHoldings, renderHoldingsList, renderHoldingsSummary, renderOverSellWarning
+} from './holdings.js';
 import { initAnalysis } from './analysis.js';
 
 const SUPABASE_URL = 'https://hexykwjjkkozbeaqziem.supabase.co';
@@ -83,9 +86,7 @@ async function init() {
 async function handleAuthState(session) {
   const newUserId = session?.user?.id || null;
   
-  if (newUserId === state.currentUser?.id && state.isInitDone) {
-    return;
-  }
+  if (newUserId === state.currentUser?.id && state.isInitDone) return;
   
   state.currentUser = session?.user || null;
   state.isInitDone = false;
@@ -181,7 +182,6 @@ function setupLogoutButton() {
   const btn = $('#logout-btn');
   if (!btn) return;
 
-  // ★ onclick 프로퍼티에 할당하여 이벤트가 100% 하나만 존재하도록 강제
   btn.onclick = async (e) => {
     if (e) e.preventDefault();
     if (isLoggingOut) return;
@@ -257,24 +257,31 @@ export function updateMarketStatusBadge(statusText) {
   else badge.className = 'badge badge--status-gray';
 }
 
+// ★ 오른쪽 배지: 순수 API 연결 상태만 반영
+//   - ERROR 만 "연결 끊김"
+//   - DELAYED 는 "지연"
+//   - STALE 은 "오래된 데이터"
+//   - 그 외(OK/LATEST/UNKNOWN/MARKET_OPEN/AFTER_HOURS/MARKET_CLOSED 등)는 "연결 원활"
 export function updateDataStatusBadge(status) {
   const badge = $('#data-status-badge');
-  if (status === 'LATEST' || status === 'OK' || status === 'MARKET_OPEN') {
-    badge.textContent = '연결 원활'; badge.className = 'badge badge--status-green';
-  } else if (status === 'AFTER_HOURS') {
-    badge.textContent = '시간외 단일가'; badge.className = 'badge badge--status-blue';
-  } else if (status === 'AFTER_MARKET') {
-    badge.textContent = '애프터마켓'; badge.className = 'badge badge--status-blue';
+  if (!status) {
+    badge.textContent = '데이터 상태 확인 중';
+    badge.className = 'badge badge--muted';
+    return;
+  }
+  if (status === 'ERROR') {
+    badge.textContent = '연결 끊김';
+    badge.className = 'badge badge--status-gray';
   } else if (status === 'DELAYED') {
-    badge.textContent = '지연'; badge.className = 'badge badge--status-orange';
+    badge.textContent = '지연';
+    badge.className = 'badge badge--status-orange';
   } else if (status === 'STALE') {
-    badge.textContent = '오래된 데이터'; badge.className = 'badge badge--status-orange';
-  } else if (status === 'MARKET_CLOSED') {
-    badge.textContent = '장마감'; badge.className = 'badge badge--status-gray';
-  } else if (status === 'UNKNOWN') {
-    badge.textContent = '상태 확인 불가'; badge.className = 'badge badge--status-gray';
+    badge.textContent = '오래된 데이터';
+    badge.className = 'badge badge--status-orange';
   } else {
-    badge.textContent = '연결 끊김'; badge.className = 'badge badge--status-gray';
+    // OK, LATEST, UNKNOWN, MARKET_OPEN, AFTER_HOURS, AFTER_MARKET, MARKET_CLOSED 등 정상 응답
+    badge.textContent = '연결 원활';
+    badge.className = 'badge badge--status-green';
   }
 }
 

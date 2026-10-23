@@ -244,7 +244,7 @@ export function jsonResponse(body, status = 200) {
 }
 
 // ─────────────────────────────────────────────────────────────
-// 이력 조회 / 요약 (모든 export 보장)
+// 이력 조회 / 요약
 // ─────────────────────────────────────────────────────────────
 export async function loadRecentTrendHistory(env, ticker) {
   if (!env.SUPABASE_SERVICE_ROLE_KEY) return { status: 'unavailable', entries: [] };
@@ -301,7 +301,7 @@ export async function loadRecentTrendHistory(env, ticker) {
   }
 }
 
-// ★ 이 함수가 반드시 export 되어야 함 (빌드 에러 원인)
+// ★ 이력 요약 - 실제 텍스트 조립 및 sample_mode 필드 포함
 export function summarizeTrendHistory(history, loadStatus) {
   if (loadStatus === 'unavailable' || !history || history.length === 0) {
     return {
@@ -315,6 +315,7 @@ export function summarizeTrendHistory(history, loadStatus) {
       short_term_distribution: { '상승': 0, '횡보': 0, '하락': 0 },
       medium_term_distribution: { '상승': 0, '횡보': 0, '하락': 0 },
       data_basis_note: '-',
+      sample_mode: 'none',
     };
   }
 
@@ -337,21 +338,33 @@ export function summarizeTrendHistory(history, loadStatus) {
 
   const count = history.length;
   const distinctDays = distinctDates.size;
+
   let stability = 'medium', stabilityLabel = '보통';
   if (distinctDays < 3) { stability = 'insufficient'; stabilityLabel = '이력 부족'; }
   else if (flipsShort >= 2 || flipsMedium >= 2) { stability = 'unstable'; stabilityLabel = '낮음 (전환 잦음)'; }
   else if (flipsShort === 0 && flipsMedium === 0) { stability = 'stable'; stabilityLabel = '높음 (완전 일관)'; }
 
+  // ★ 실제 텍스트 조립
+  const text =
+    `최근 ${count}건 (${distinctDays}일) — ` +
+    `단기 [상승 ${shortDist['상승']}/횡보 ${shortDist['횡보']}/하락 ${shortDist['하락']}], ` +
+    `중기 [상승 ${mediumDist['상승']}/횡보 ${mediumDist['횡보']}/하락 ${mediumDist['하락']}], ` +
+    `안정성 ${stabilityLabel} (단기 전환 ${flipsShort}회, 중기 전환 ${flipsMedium}회).`;
+
+  const sampleMode = distinctDays >= 3 ? 'daily_sampled' : 'raw_entries';
+  const dataBasisNote = distinctDays >= 3 ? '일별 샘플링' : '원본 이력 (일별 샘플링 미적용)';
+
   return {
     count,
     distinct_days: distinctDays,
-    text: '- 이력 텍스트',
+    text,
     stability,
     stability_label: stabilityLabel,
     flips_short: flipsShort,
     flips_medium: flipsMedium,
     short_term_distribution: shortDist,
     medium_term_distribution: mediumDist,
-    data_basis_note: '일별 샘플링',
+    data_basis_note: dataBasisNote,
+    sample_mode: sampleMode,
   };
 }
