@@ -1,105 +1,100 @@
 // functions/api/popular.js
 import { getKisAccessToken } from './_kis_token.js';
 
-const NAVER_URL = 'https://finance.naver.com/sise/lastsearch2.naver';
-const MAX_ITEMS = 100;
+const NAVER_BASE = 'https://finance.naver.com/sise/lastsearch2.naver';
+const NAVER_PAGES = 4; // 1~4페이지 순회 (최대 약 120개)
+const MIN_REQUIRED = 20; // 최소 확보 종목 수
 
-// ETF 브랜드 필터 (KIS API 폴백 시 사용)
-const ETF_BRANDS = [
+// ETF/ETN/ELW 제외 키워드
+const EXCLUDE_KEYWORDS = [
   'KODEX', 'TIGER', 'KBSTAR', 'ARIRANG', 'HANARO',
   'SOL', 'ACE', 'PLUS', 'RISE', 'KOSEF',
   'TIMEFOLIO', '히어로즈', '마이다스', '파워',
+  '인버스', '레버리지', '선물', '합성', 'ETN', 'ELW'
 ];
 
-function isEtf(name) {
+function isExcluded(name) {
   const upper = String(name).toUpperCase();
-  return ETF_BRANDS.some(b => upper.includes(b.toUpperCase()));
+  return EXCLUDE_KEYWORDS.some(k => upper.includes(k.toUpperCase()));
+}
+
+// 종목 코드가 6자리 숫자인지 확인 (ETN/ELW 차단)
+function isValidTicker(ticker) {
+  return /^\d{6}$/.test(String(ticker));
 }
 
 // ─────────────────────────────────────────────────────────────
-// 1차: 네이버 금융 인기 검색 종목 크롤링
+// 1차: 네이버 금융 크롤링 (페이지네이션)
 // ─────────────────────────────────────────────────────────────
 async function fetchFromNaver() {
-  const res = await fetch(NAVER_URL, {
-    headers: {
-      'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-      'Accept': 'text/html,application/xhtml+xml',
-      'Accept-Language': 'ko-KR,ko;q=0.9',
-      'Referer': 'https://finance.naver.com/',
-    },
-  });
-
-  if (!res.ok) {
-    throw new Error(`Naver HTTP ${res.status}`);
-  }
-
-  const buffer = await res.arrayBuffer();
-  // 네이버 금융은 EUC-KR 인코딩
-  let html;
-  try {
-    html = new TextDecoder('euc-kr').decode(buffer);
-  } catch (e) {
-    html = new TextDecoder('utf-8').decode(buffer);
-  }
-
   const items = [];
   const seen = new Set();
 
-  // <tr> 단위로 파싱
-  const rowRegex = /<tr[^>]*>([\s\S]*?)<\/tr>/g;
-  let m;
-  while ((m = rowRegex.exec(html)) !== null) {
-    const rowHtml = m[1];
+  for (let page = 1; page <= NAVER_PAGES; page++) {
+    if (items.length >= 100) break;
 
-    // 종목 코드 추출 (code=숫자 6자리)
-    const codeMatch = rowHtml.match(/code=(\d{6})/);
-    if (!codeMatch) continue;
+    const url = page === 1 ? NAVER_BASE : `${NAVER_BASE}?&page=${page}`;
+    try {
+      const res = await fetch(url, {
+        headers: {
+          'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+          'Accept': 'text/html,application/xhtml+xml',
+          'Accept-Language': 'ko-KR,ko;q=0.9',
+          'Referer': 'https://finance.naver.com/',
+        },
+      });
 
-    const ticker = codeMatch[1];
-    if (seen.has(ticker)) continue;
+      if (!res.ok) continue;
 
-    // 종목명 추출 (a.tltle 또는 a 태그 내부 텍스트)
-    let name = '';
-    const tltleMatch = rowHtml.match(/<a[^>]*class="tltle"[^>]*>([\s\S]*?)<\/a>/);
-    if (tltleMatch) {
-      name = tltleMatch[1].replace(/<[^>]*>/g, '').trim();
-    } else {
-      // class가 없는 경우 a 태그 전체에서 추출
-      const aMatch = rowHtml.match(/<a[^>]*href="[^"]*code=\d{6}"[^>]*>([\s\S]*?)<\/a>/);
-      if (aMatch) name = aMatch[1].replace(/<[^>]*>/g, '').trim();
+      const buffer = await res.arrayBuffer();
+      let html;
+      try { html = new TextDecoder('euc-kr').decode(buffer); }
+      catch { html = new TextDecoder('utf-8').decode(buffer); }
+
+      const rowRegex = /<tr[^>]*>([\s\S]*?)<\/tr>/g;
+      let m;
+      while ((m = rowRegex.exec(html)) !== null) {
+        const rowHtml = m[1];
+        const codeMatch = rowHtml.match(/code=(\d{6})/);
+        if (!codeMatch) continue;
+
+        const ticker = codeMatch[1];
+        if (!isValidTicker(ticker)) continue;
+        if (seen.has(ticker)) continue;
+
+        let name = '';
+        const tltleMatch = rowHtml.match(/<a[^>]*class="tltle"[^>]*>([\s\S]*?)<\/a>/);
+        if (tltleMatch) name = tltleMatch[1].replace(/<[^>]*>/g, '').trim();
+        else {
+          const aMatch = rowHtml.match(/<a[^>]*href="[^"]*code=\d{6}"[^>]*>([\s\S]*?)<\/a>/);
+          if (aMatch) name = aMatch[1].replace(/<[^>]*>/g, '').trim();
+        }
+
+        if (!name) continue;
+        name = name.replace(/&amp;/g, '&').replace(/&lt;/g, '<').replace(/&gt;/g, '>');
+
+        if (isExcluded(name)) continue;
+
+        seen.add(ticker);
+        items.push({ rank: items.length + 1, ticker, name });
+        if (items.length >= 100) break;
+      }
+    } catch (e) {
+      console.warn(`[popular] 네이버 page ${page} 실패:`, e.message);
     }
-
-    if (!name) continue;
-
-    // 특수문자 및 HTML 엔티티 정리
-    name = name.replace(/&amp;/g, '&').replace(/&lt;/g, '<').replace(/&gt;/g, '>');
-
-    // ETF 제외 (네이버 페이지에서도 ETF가 섞여 있을 수 있음)
-    if (isEtf(name)) continue;
-
-    seen.add(ticker);
-    items.push({ rank: items.length + 1, ticker, name });
-    if (items.length >= MAX_ITEMS) break;
-  }
-
-  if (items.length === 0) {
-    throw new Error('네이버 페이지에서 종목을 추출하지 못했습니다.');
   }
 
   return items;
 }
 
 // ─────────────────────────────────────────────────────────────
-// 2차 폴백: KIS API 거래량 순위 조회
+// 2차 폴백: KIS API 거래량 순위 (부족분 보충)
 // ─────────────────────────────────────────────────────────────
-async function fetchFromKis(env) {
+async function fetchFromKis(env, existingTickers) {
   const baseUrl = env.KIS_BASE_URL || 'https://openapi.koreainvestment.com:9443';
-  if (!env.KIS_APP_KEY || !env.KIS_APP_SECRET) {
-    throw new Error('KIS API 키가 설정되지 않았습니다.');
-  }
+  if (!env.KIS_APP_KEY || !env.KIS_APP_SECRET) return [];
 
   const accessToken = await getKisAccessToken(env, baseUrl);
-
   const query = new URLSearchParams({
     FID_COND_MRKT_DIV_CODE: 'J',
     FID_COND_SCR_DIV_CODE: '20171',
@@ -125,14 +120,10 @@ async function fetchFromKis(env) {
     },
   });
 
-  if (!res.ok) {
-    throw new Error(`KIS API HTTP ${res.status}`);
-  }
+  if (!res.ok) return [];
 
   const data = await res.json();
-  if (data.rt_cd && data.rt_cd !== '0') {
-    throw new Error(`KIS API Error: ${data.msg1}`);
-  }
+  if (data.rt_cd && data.rt_cd !== '0') return [];
 
   const items = [];
   for (const row of data.output || []) {
@@ -142,57 +133,70 @@ async function fetchFromKis(env) {
     const marketName = row.rprs_mrkt_kor_name || row.bstp_kor_isnm || '';
 
     if (!ticker || !name) continue;
-    if (isEtf(name)) continue;
+    if (!isValidTicker(ticker)) continue;
+    if (existingTickers.has(ticker)) continue;
+    if (isExcluded(name)) continue;
     if (prdtType && prdtType !== '300') continue;
 
     const mName = String(marketName).toUpperCase();
     if (marketName && !mName.includes('유가증권') && !mName.includes('코스피') && !mName.includes('코스닥') && !mName.includes('KOSPI') && !mName.includes('KOSDAQ')) continue;
 
-    items.push({ rank: items.length + 1, ticker, name });
-    if (items.length >= MAX_ITEMS) break;
+    existingTickers.add(ticker);
+    items.push({ ticker, name });
+    if (items.length >= 30) break;
   }
 
   return items;
 }
 
 // ─────────────────────────────────────────────────────────────
-// 메인 핸들러 (네이버 우선, 실패 시 KIS 폴백)
+// 메인 핸들러
 // ─────────────────────────────────────────────────────────────
 export async function onRequestGet(context) {
   const { env } = context;
+  let items = [];
+  let source = 'naver_popular';
 
-  // 1차: 네이버 금융 인기 검색 종목
+  // 1차: 네이버 크롤링
   try {
-    const items = await fetchFromNaver();
-    return jsonResponse({
-      items,
-      total: items.length,
-      source: 'naver_popular',
-      fetched_at: new Date().toISOString(),
-    });
-  } catch (naverErr) {
-    console.warn('[popular] 네이버 크롤링 실패 → KIS API 폴백:', naverErr.message);
+    items = await fetchFromNaver();
+    if (items.length === 0) throw new Error('네이버에서 종목을 추출하지 못했습니다.');
+  } catch (e) {
+    console.warn('[popular] 네이버 실패 → KIS 폴백:', e.message);
+    items = [];
   }
 
-  // 2차: KIS API 거래량 순위 폴백
-  try {
-    const items = await fetchFromKis(env);
-    if (items.length === 0) {
-      return jsonResponse({ error: '조회된 인기 종목이 없습니다.', error_code: 'EMPTY_RESULT' }, 404);
+  // 2차: 20개 미만이면 KIS API로 보충
+  if (items.length < MIN_REQUIRED) {
+    try {
+      const existing = new Set(items.map(i => i.ticker));
+      const kisItems = await fetchFromKis(env, existing);
+      if (kisItems.length > 0) {
+        items = [...items, ...kisItems.map(i => ({ rank: 0, ticker: i.ticker, name: i.name }))];
+        source = items.length > 0 ? 'naver_plus_kis' : 'kis_volume_rank_fallback';
+      }
+    } catch (kisErr) {
+      console.error('[popular] KIS 폴백 실패:', kisErr.message);
     }
+  }
+
+  // 최종 순위 재정렬
+  items = items.map((item, idx) => ({ ...item, rank: idx + 1 }));
+
+  if (items.length < MIN_REQUIRED) {
     return jsonResponse({
+      error: `종목을 충분히 확보하지 못했습니다. (${items.length}개 / 최소 ${MIN_REQUIRED}개)`,
+      error_code: 'INSUFFICIENT_ITEMS',
       items,
-      total: items.length,
-      source: 'kis_volume_rank_fallback',
-      fetched_at: new Date().toISOString(),
-    });
-  } catch (kisErr) {
-    console.error('[popular] KIS API 폴백도 실패:', kisErr.message);
-    return jsonResponse({
-      error: '인기 종목을 불러오지 못했습니다. (네이버 및 KIS API 모두 실패)',
-      error_code: 'ALL_SOURCES_FAILED',
     }, 502);
   }
+
+  return jsonResponse({
+    items,
+    total: items.length,
+    source,
+    fetched_at: new Date().toISOString(),
+  });
 }
 
 function jsonResponse(body, status = 200) {

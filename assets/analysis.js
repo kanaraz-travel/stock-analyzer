@@ -15,15 +15,11 @@ export function initAnalysis() {
   
   const batchBtn = $('#batch-build-btn');
   if (batchBtn) {
-    batchBtn.parentNode.style.position = 'relative'; // 말풍선을 위해 relative 설정
+    batchBtn.parentNode.style.position = 'relative';
     batchBtn.addEventListener('click', () => {
-      if (batchState === 'idle') {
-        runBatchAnalysis();
-      } else if (batchState === 'result') {
-        showFailures();
-      } else if (batchState === 'failures') {
-        resetBatchButton();
-      }
+      if (batchState === 'idle') runBatchAnalysis();
+      else if (batchState === 'result') showFailures();
+      else if (batchState === 'failures') resetBatchButton();
     });
   }
 
@@ -264,12 +260,17 @@ async function runBatchAnalysis() {
   try {
     const res = await fetch('/api/popular');
     const data = await res.json();
-    if (!res.ok) throw new Error(data.error || '인기 종목을 불러오지 못했습니다.');
+    if (!res.ok) {
+      const detail = data.error || '인기 종목을 불러오지 못했습니다.';
+      throw new Error(detail);
+    }
 
     const items = Array.isArray(data.items) ? data.items : [];
-    if (items.length === 0) throw new Error('인기 종목이 없습니다.');
+    if (items.length < 20) {
+      console.warn(`[batch] 인기 종목이 ${items.length}개뿐입니다.`);
+    }
 
-    // 10개 + 10개 랜덤
+    // ★ 20개 확보 보장 로직 (10개 상위 + 10개 랜덤)
     const topN = items.slice(0, Math.min(10, items.length));
     const pool = items.slice(10);
     const shuffled = [...pool].sort(() => Math.random() - 0.5);
@@ -302,7 +303,7 @@ async function runBatchAnalysis() {
 
     btn.textContent = `완료 (성공 ${succeeded} / 실패 ${failed})`;
     btn.disabled = false;
-    batchState = 'result'; // 상태 변경
+    batchState = 'result';
 
   } catch (err) {
     console.error('[batch] error:', err);
