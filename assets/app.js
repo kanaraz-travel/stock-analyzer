@@ -23,7 +23,7 @@ export const state = {
   isBatching: false,
   priceCache: new Map(),
   analysisCache: new Map(),
-  isInitDone: false, // ★ 초기화 완료 플래그
+  isInitDone: false,
 };
 
 export const ALLOWED_NAMES = ['박필립', '윤혜영'];
@@ -65,7 +65,6 @@ async function init() {
   initAnalysis();
   setupVisibility();
 
-  // ★ 1. onAuthStateChange 등록
   supabase.auth.onAuthStateChange(async (event, session) => {
     console.log(`[Auth Event] ${event}`, session?.user?.email);
     if (event === 'SIGNED_IN' || event === 'INITIAL_SESSION') {
@@ -75,7 +74,6 @@ async function init() {
     }
   });
 
-  // ★ 2. 초기 세션 강제 확인 (Race Condition 방지)
   const { data: { session } } = await supabase.auth.getSession();
   if (session && !state.currentUser) {
     await handleAuthState(session);
@@ -85,7 +83,6 @@ async function init() {
 async function handleAuthState(session) {
   const newUserId = session?.user?.id || null;
   
-  // ★ 동일 유저에 대해 이미 처리 중이거나, 초기화가 끝난 상태라면 중복 실행 방지
   if (newUserId === state.currentUser?.id && state.isInitDone) {
     return;
   }
@@ -104,7 +101,6 @@ async function handleAuthState(session) {
     switchScreen('holdings');
     updateMarketStatusBadge(getMarketStatusClient());
     
-    // ★ 세션이 완벽히 맺어진 후 데이터를 로드하도록 보장
     try {
       await loadHoldings();
     } catch (e) {
@@ -140,7 +136,6 @@ function resetState() {
   $$('.login-name-btn').forEach((b) => (b.disabled = false));
   $('#login-error').hidden = true; $('#login-loading').hidden = true;
   
-  // ★ 데이터 상태 배지 초기화
   const dataBadge = $('#data-status-badge');
   dataBadge.textContent = '데이터 상태 확인 중';
   dataBadge.className = 'badge badge--muted';
@@ -183,13 +178,12 @@ function mapAuthError(msg) {
 }
 
 function setupLogoutButton() {
-  const oldBtn = $('#logout-btn');
-  if (!oldBtn) return;
+  const btn = $('#logout-btn');
+  if (!btn) return;
 
-  const newBtn = oldBtn.cloneNode(true);
-  oldBtn.parentNode.replaceChild(newBtn, oldBtn);
-
-  newBtn.addEventListener('click', async () => {
+  // ★ onclick 프로퍼티에 할당하여 이벤트가 100% 하나만 존재하도록 강제
+  btn.onclick = async (e) => {
+    if (e) e.preventDefault();
     if (isLoggingOut) return;
     if (state.isBatching) { alert('이력 쌓기가 진행 중입니다. 완료 후 로그아웃해 주세요.'); return; }
     if (!confirm('로그아웃하시겠습니까?')) return;
@@ -206,7 +200,7 @@ function setupLogoutButton() {
     } finally {
       isLoggingOut = false;
     }
-  });
+  };
 }
 
 export function startCountdown() {
