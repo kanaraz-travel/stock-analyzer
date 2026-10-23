@@ -1,6 +1,4 @@
 // functions/api/_agents.js
-// 4개 AI 에이전트의 실행 + 응답 파싱/정규화.
-
 import {
   buildPriceVolumePrompts,
   buildNewsPrompts,
@@ -11,20 +9,54 @@ import {
 
 const MODEL_ID = '@cf/meta/llama-3.3-70b-instruct-fp8-fast';
 
+// ★ AI 호출 공통 래퍼 (재시도 로직 포함)
+async function callAiWithRetry(env, messages, maxTokens, temperature) {
+  let lastError = null;
+  for (let attempt = 0; attempt < 3; attempt++) {
+    try {
+      const response = await env.AI.run(MODEL_ID, {
+        messages,
+        max_tokens: maxTokens,
+        temperature,
+      });
+      
+      // Cloudflare AI 응답에 에러가 포함된 경우 감지
+      if (response && response.error) {
+        throw new Error(response.error);
+      }
+      
+      return response;
+    } catch (e) {
+      lastError = e;
+      console.warn(`[AI Retry] Attempt ${attempt + 1} failed: ${e.message}`);
+      if (attempt < 2) {
+        // 1초, 2초 대기 후 재시도
+        await new Promise(r => setTimeout(r, 1000 * Math.pow(2, attempt)));
+      }
+    }
+  }
+  throw lastError;
+}
+
 // ─────────────────────────────────────────────────────────────
 // [1] 가격·거래량 분석가
 // ─────────────────────────────────────────────────────────────
 export async function runPriceVolumeAgent(env, payload) {
   const { system, user } = buildPriceVolumePrompts(payload);
-  const response = await env.AI.run(MODEL_ID, {
-    messages: [{ role: 'system', content: system }, { role: 'user', content: user }],
-    max_tokens: 512, temperature: 0.1,
-  });
-  return extractJSON(response?.response || '');
+  try {
+    const response = await callAiWithRetry(env, [
+      { role: 'system', content: system },
+      { role: 'user', content: user }
+    ], 512, 0.1);
+    return extractJSON(response?.response || '');
+  } catch (e) {
+    console.error('[pv agent error]', e.message);
+    return { __exception: true, message: e.message };
+  }
 }
 
 // ─────────────────────────────────────────────────────────────
-// [2] 뉴스 분석가 (★ 재시도 완전 교체)
+// [2] 뉴스 분석가
 // ─────────────────────────────────────────────────────────────
 export async function runNewsAgent(env, payload) {
   const prompts = buildNewsPrompts(payload);
@@ -40,37 +72,42 @@ export async function runNewsAgent(env, payload) {
   }
 
   try {
-    const response = await env.AI.run(MODEL_ID, {
-      messages: [{ role: 'system', content: prompts.system }, { role: 'user', content: prompts.user }],
-      max_tokens: 600, temperature: 0.3,
-    });
+    const response = await callAiWithRetry(env, [
+      { role: 'system', content: prompts.system },
+      { role: 'user', content: prompts.user }
+    ], 600, 0.3);
 
-    let parsed = extractJSON(response?.response || '');
+    const parsed = extractJSON(response?.response || '');
     let newsText = typeof parsed.news_analysis === 'string' ? parsed.news_analysis : '';
 
     if (isNegativeNewsResponse(newsText)) {
-      console.log(`[news] 1차 응답 "없음" → 재시도 (${prompts.itemCount}건)`);
+      console.log(`[news] 1차 응답 "없음" → 재시도`);
       try {
         const retry = buildNewsRetryPrompts({
           stock_name: payload.stock_name,
           newsJson: prompts.newsJson,
         });
-        const retryResponse = await env.AI.run(MODEL_ID, {
-          messages: [{ role: 'system', content: retry.system }, { role: 'user', content: retry.user }],
-          max_tokens: 500, temperature: 0.4,
-        });
+        const retryResponse = await callAiWithRetry(env, [
+          { role: 'system', content: retry.system },
+          { role: 'user', content: retry.user }
+        ], 500, 0.4);
+        
         const retryParsed = extractJSON(retryResponse?.response || '');
-
-        // ★ 전체 스키마 검증 후 완전 교체
         if (isValidNewsPayload(retryParsed)) {
-          parsed = retryParsed;
-          newsText = retryParsed.news_analysis;
+          return {
+            news_analysis: retryParsed.news_analysis,
+            news_sentiment: normalizeNewsSentiment(retryParsed.news_sentiment),
+            news_direction: normalizeNewsDirection(retryParsed.news_direction),
+            news_impact: normalizeNewsImpact(retryParsed.news_impact),
+            key_theme: typeof retryParsed.key_theme === 'string' ? retryParsed.key_theme.slice(0, 30) : '-',
+            status: 'success',
+          };
         }
       } catch (e) { console.warn('[news] retry failed:', e.message); }
     }
 
     if (!newsText || isNegativeNewsResponse(newsText)) {
-      newsText = `최근 수집된 ${prompts.itemCount}건의 관련 기사에서 뚜렷한 주가 영향 요인은 확인되지 않았음. 시장 상황 변화에 따라 재확인이 필요함.`;
+      newsText = `최근 수집된 ${prompts.itemCount}건의 관련 기사에서 뚜렷한 주가 영향 요인은 확인되지 않았음.`;
     }
 
     return {
@@ -86,19 +123,16 @@ export async function runNewsAgent(env, payload) {
     return {
       news_analysis: '뉴스 분석 중 일시적 오류가 발생했음.',
       news_sentiment: '중립', news_direction: '중립', news_impact: '약',
-      key_theme: '-', status: 'error',
+      key_theme: '-', status: 'error', __exception: true, message: e.message
     };
   }
 }
 
-// 재시도 응답 전체 스키마 검증
 function isValidNewsPayload(p) {
   return p
     && typeof p.news_analysis === 'string' && p.news_analysis.trim()
     && !isNegativeNewsResponse(p.news_analysis)
-    && typeof p.news_sentiment === 'string'
-    && typeof p.news_direction === 'string'
-    && typeof p.news_impact === 'string';
+    && typeof p.news_sentiment === 'string';
 }
 
 // ─────────────────────────────────────────────────────────────
@@ -106,15 +140,20 @@ function isValidNewsPayload(p) {
 // ─────────────────────────────────────────────────────────────
 export async function runTrendAgent(env, payload) {
   const { system, user } = buildTrendPrompts(payload);
-  const response = await env.AI.run(MODEL_ID, {
-    messages: [{ role: 'system', content: system }, { role: 'user', content: user }],
-    max_tokens: 700, temperature: 0.2,
-  });
-  return normalizeTrendResult(extractJSON(response?.response || ''));
+  try {
+    const response = await callAiWithRetry(env, [
+      { role: 'system', content: system },
+      { role: 'user', content: user }
+    ], 700, 0.2);
+    return normalizeTrendResult(extractJSON(response?.response || ''));
+  } catch (e) {
+    console.error('[trend agent error]', e.message);
+    return { __exception: true, message: e.message };
+  }
 }
 
 // ─────────────────────────────────────────────────────────────
-// [4] 심판 에이전트 (필수 필드 미충족 시 마지막 응답 반환 — 검증은 analyze.js 담당)
+// [4] 심판 에이전트
 // ─────────────────────────────────────────────────────────────
 export async function runJudgeAgent(env, payload) {
   const { system, user } = buildJudgePrompts(payload);
@@ -122,24 +161,24 @@ export async function runJudgeAgent(env, payload) {
   let parsed = {};
   for (let attempt = 0; attempt < 2; attempt++) {
     try {
-      const response = await env.AI.run(MODEL_ID, {
-        messages: [{ role: 'system', content: system }, { role: 'user', content: user }],
-        max_tokens: 1024, temperature: 0.1,
-      });
-      parsed = extractJSON(response?.response || '');
+      const response = await callAiWithRetry(env, [
+        { role: 'system', content: system },
+        { role: 'user', content: user }
+      ], 1024, 0.1);
 
+      parsed = extractJSON(response?.response || '');
       const hasRec = typeof parsed.recommendation === 'string' && parsed.recommendation.trim();
       const hasSummary = typeof parsed.overall_summary === 'string' && parsed.overall_summary.trim();
+      
       if (hasRec && hasSummary) return parsed;
-      console.warn(`[judge] attempt ${attempt + 1} missing required fields (rec=${!!hasRec}, summary=${!!hasSummary})`);
+      console.warn(`[judge] attempt ${attempt + 1} missing fields`);
     } catch (e) {
       console.warn(`[judge] attempt ${attempt + 1} error:`, e.message);
-      if (attempt === 1) throw e;
+      if (attempt === 1) return { __exception: true, message: e.message };
     }
     if (attempt === 0) await new Promise(r => setTimeout(r, 1000));
   }
-  // ★ 필드 누락 상태로도 마지막 parsed 반환 — analyze.js가 명시적 검증 후 실패 처리
-  return parsed;
+  return { __exception: true, message: 'EMPTY_RESPONSE' };
 }
 
 // ─────────────────────────────────────────────────────────────
@@ -178,13 +217,10 @@ function normalizeTrendResult(t) {
   if (['상승', '횡보', '하락'].includes(t.short_term_trend)) result.short_term_trend = t.short_term_trend;
   if (['상승', '횡보', '하락'].includes(t.medium_term_trend)) result.medium_term_trend = t.medium_term_trend;
   if (['강', '중', '약'].includes(t.trend_strength)) result.trend_strength = t.trend_strength;
-
-  // 범위 밖이면 필드 제외 → validateTrendOutput 실패 → 무효 처리
   if (typeof t.trend_confidence === 'number' && Number.isFinite(t.trend_confidence)
       && t.trend_confidence >= 0 && t.trend_confidence <= 1) {
     result.trend_confidence = t.trend_confidence;
   }
-
   if (typeof t.trend_reasoning === 'string' && t.trend_reasoning.length > 0) {
     result.trend_reasoning = t.trend_reasoning.slice(0, 500);
   }
@@ -194,7 +230,7 @@ function normalizeTrendResult(t) {
   if (Array.isArray(t.risk_factors)) {
     result.risk_factors = t.risk_factors.filter(d => typeof d === 'string' && d.length > 0).slice(0, 5);
   }
-  return Object.keys(result).length > 0 ? result : null;
+  return Object.keys(result).length > 0 ? result : { __exception: true, message: 'INVALID_TREND_RESULT' };
 }
 
 function extractJSON(data) {
