@@ -2,10 +2,9 @@
 import { getKisAccessToken } from './_kis_token.js';
 
 const NAVER_BASE = 'https://finance.naver.com/sise/lastsearch2.naver';
-const NAVER_PAGES = 4; // 1~4페이지 순회 (최대 약 120개)
-const MIN_REQUIRED = 20; // 최소 확보 종목 수
+const NAVER_MAIN = 'https://finance.naver.com/';
+const NAVER_PAGES = 4;
 
-// ETF/ETN/ELW 제외 키워드
 const EXCLUDE_KEYWORDS = [
   'KODEX', 'TIGER', 'KBSTAR', 'ARIRANG', 'HANARO',
   'SOL', 'ACE', 'PLUS', 'RISE', 'KOSEF',
@@ -18,15 +17,54 @@ function isExcluded(name) {
   return EXCLUDE_KEYWORDS.some(k => upper.includes(k.toUpperCase()));
 }
 
-// 종목 코드가 6자리 숫자인지 확인 (ETN/ELW 차단)
 function isValidTicker(ticker) {
   return /^\d{6}$/.test(String(ticker));
 }
 
-// ─────────────────────────────────────────────────────────────
-// 1차: 네이버 금융 크롤링 (페이지네이션)
-// ─────────────────────────────────────────────────────────────
-async function fetchFromNaver() {
+// 최신 브라우저 User-Agent 목록 (간헐적 변경용)
+const USER_AGENTS = [
+  'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36',
+  'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36',
+  'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36 Edg/124.0.0.0'
+];
+
+function getRandomUserAgent() {
+  return USER_AGENTS[Math.floor(Math.random() * USER_AGENTS.length)];
+}
+
+// 공통 헤더 생성
+function getHeaders(cookie = '') {
+  return {
+    'User-Agent': getRandomUserAgent(),
+    'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8',
+    'Accept-Language': 'ko-KR,ko;q=0.9,en-US;q=0.8,en;q=0.7',
+    'Referer': NAVER_MAIN,
+    'Sec-Fetch-Dest': 'document',
+    'Sec-Fetch-Mode': 'navigate',
+    'Sec-Fetch-Site': 'same-origin',
+    'Sec-Fetch-User': '?1',
+    'Cache-Control': 'no-cache',
+    'Pragma': 'no-cache',
+    ...(cookie ? { 'Cookie': cookie } : {})
+  };
+}
+
+// 네이버 메인 방문 후 쿠키 획득
+async function getNaverCookies() {
+  try {
+    const res = await fetch(NAVER_MAIN, { headers: getHeaders() });
+    const setCookie = res.headers.get('set-cookie');
+    if (!setCookie) return '';
+    // set-cookie 헤더에서 핵심 쿠키만 추출 (간단히 전체를 사용)
+    return setCookie.split(',').map(c => c.split(';')[0]).join('; ');
+  } catch (e) {
+    console.warn('[popular] 네이버 쿠키 획득 실패:', e.message);
+    return '';
+  }
+}
+
+// 네이버 금융 크롤링
+async function fetchFromNaver(cookie) {
   const items = [];
   const seen = new Set();
 
@@ -35,16 +73,12 @@ async function fetchFromNaver() {
 
     const url = page === 1 ? NAVER_BASE : `${NAVER_BASE}?&page=${page}`;
     try {
-      const res = await fetch(url, {
-        headers: {
-          'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-          'Accept': 'text/html,application/xhtml+xml',
-          'Accept-Language': 'ko-KR,ko;q=0.9',
-          'Referer': 'https://finance.naver.com/',
-        },
-      });
+      const res = await fetch(url, { headers: getHeaders(cookie) });
 
-      if (!res.ok) continue;
+      if (!res.ok) {
+        console.warn(`[popular] 네이버 page ${page} HTTP ${res.status}`);
+        continue;
+      }
 
       const buffer = await res.arrayBuffer();
       let html;
@@ -79,6 +113,9 @@ async function fetchFromNaver() {
         items.push({ rank: items.length + 1, ticker, name });
         if (items.length >= 100) break;
       }
+
+      // 페이지 간 지연 (Rate Limit 회피)
+      await new Promise(r => setTimeout(r, 1000 + Math.random() * 1000));
     } catch (e) {
       console.warn(`[popular] 네이버 page ${page} 실패:`, e.message);
     }
@@ -87,9 +124,7 @@ async function fetchFromNaver() {
   return items;
 }
 
-// ─────────────────────────────────────────────────────────────
-// 2차 폴백: KIS API 거래량 순위 (부족분 보충)
-// ─────────────────────────────────────────────────────────────
+// KIS API 거래량 순위 폴백 (기존과 동일)
 async function fetchFromKis(env, existingTickers) {
   const baseUrl = env.KIS_BASE_URL || 'https://openapi.koreainvestment.com:9443';
   if (!env.KIS_APP_KEY || !env.KIS_APP_SECRET) return [];
@@ -107,7 +142,7 @@ async function fetchFromKis(env, existingTickers) {
     FID_INPUT_PRICE_2: '0',
     FID_VOL_CNT: '0',
     FID_INPUT_DATE_1: '0',
-    FID_INPUT_CNT_1: '30',
+    FID_INPUT_CNT_1: '50',
   });
 
   const res = await fetch(`${baseUrl}/uapi/domestic-stock/v1/quotations/volume-rank?${query}`, {
@@ -143,31 +178,28 @@ async function fetchFromKis(env, existingTickers) {
 
     existingTickers.add(ticker);
     items.push({ ticker, name });
-    if (items.length >= 30) break;
   }
 
   return items;
 }
 
-// ─────────────────────────────────────────────────────────────
-// 메인 핸들러
-// ─────────────────────────────────────────────────────────────
 export async function onRequestGet(context) {
   const { env } = context;
   let items = [];
   let source = 'naver_popular';
 
-  // 1차: 네이버 크롤링
+  // 1차: 네이버 크롤링 (쿠키 획득 후)
   try {
-    items = await fetchFromNaver();
+    const cookie = await getNaverCookies();
+    items = await fetchFromNaver(cookie);
     if (items.length === 0) throw new Error('네이버에서 종목을 추출하지 못했습니다.');
   } catch (e) {
     console.warn('[popular] 네이버 실패 → KIS 폴백:', e.message);
     items = [];
   }
 
-  // 2차: 20개 미만이면 KIS API로 보충
-  if (items.length < MIN_REQUIRED) {
+  // 2차: KIS API 폴백 (종목 부족 시)
+  if (items.length < 20) {
     try {
       const existing = new Set(items.map(i => i.ticker));
       const kisItems = await fetchFromKis(env, existing);
@@ -180,15 +212,10 @@ export async function onRequestGet(context) {
     }
   }
 
-  // 최종 순위 재정렬
   items = items.map((item, idx) => ({ ...item, rank: idx + 1 }));
 
-  if (items.length < MIN_REQUIRED) {
-    return jsonResponse({
-      error: `종목을 충분히 확보하지 못했습니다. (${items.length}개 / 최소 ${MIN_REQUIRED}개)`,
-      error_code: 'INSUFFICIENT_ITEMS',
-      items,
-    }, 502);
+  if (items.length === 0) {
+    return jsonResponse({ error: '인기 종목을 전혀 확보하지 못했습니다.', error_code: 'EMPTY_RESULT' }, 502);
   }
 
   return jsonResponse({
