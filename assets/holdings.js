@@ -40,7 +40,6 @@ export async function refreshHoldingsView(holdingsData) {
   let totalCost = 0, totalCurrentValue = 0;
   const currentPriceMap = new Map();
   
-  // ★ 보유 종목 0개: DB 쿼리는 성공했으므로 'OK'(연결 원활)
   if (currentHoldings.length === 0) {
     renderHoldingsList([], currentPriceMap);
     renderHoldingsSummary(holdingsData, 0, 0);
@@ -55,7 +54,7 @@ export async function refreshHoldingsView(holdingsData) {
     totalCost += h.totalCost;
     let price = null;
     try {
-      const res = await fetch(`/api/quote?ticker=${h.ticker}`);
+      const res = await fetch(`/api/quote?ticker=${encodeURIComponent(h.ticker)}`);
       if (res.ok) {
         const q = await res.json();
         anySuccess = true;
@@ -343,6 +342,18 @@ function resetTxForm() {
 
 function showTxError(msg) { const el = $('#tx-error'); el.textContent = msg; el.hidden = false; }
 
+// ★ 편집 저장 시: 이 편집으로 인해 "새로운" 초과 매도가 생기는지 확인 (기존 거래의 초과 매도는 카운트 제외)
+function previewOverSellIncrease(ticker, tradeDate, price, qty) {
+  const beforeOverSell = computeHoldings(state.transactions).overSells.length;
+  const simulated = state.transactions.map(t =>
+    t.id === state.editingTxId
+      ? { ...t, ticker, trade_date: tradeDate, unit_price: price, quantity: qty }
+      : t
+  );
+  const afterOverSell = computeHoldings(simulated).overSells.length;
+  return afterOverSell > beforeOverSell ? (afterOverSell - beforeOverSell) : 0;
+}
+
 async function saveTransaction() {
   $('#tx-error').hidden = true;
   const { data: { session } } = await supabase.auth.getSession();
@@ -372,6 +383,16 @@ async function saveTransaction() {
       if (!ok) throw new Error(`${tradeDate} 시점의 보유 수량을 초과하는 매도입니다.`);
     }
 
+    // ★ BUY 편집 저장 시: 이 편집으로 인한 초과 매도 증가 여부 확인
+    if (type === 'BUY' && state.editingTxId) {
+      const newOverSells = previewOverSellIncrease(qData.ticker, tradeDate, price, qty);
+      if (newOverSells > 0) {
+        if (!confirm(`이 수정으로 인해 초과 매도가 ${newOverSells}건 새로 발생합니다. 계속하시겠습니까?\n\n(저장 후 화면의 경고를 확인해 주세요.)`)) {
+          throw new Error('거래 저장을 취소했습니다.');
+        }
+      }
+    }
+
     const payload = {
       user_id: session.user.id, ticker: qData.ticker,
       stock_name: qData.stock_name || nameOnly,
@@ -388,16 +409,20 @@ async function saveTransaction() {
       ({ error } = await supabase.from('stock_transactions').insert(payload));
     }
     if (error) throw error;
+
+    // ★ 캐시 무효화 (재렌더 이전에 반드시 실행) — 이전 ticker / 신규 ticker 모두 무효화
+    if (state.editingTxId) {
+      const oldTx = state.transactions.find(t => t.id === state.editingTxId);
+      if (oldTx?.ticker) state.analysisCache.delete(oldTx.ticker);
+    }
+    if (qData.ticker) state.analysisCache.delete(qData.ticker);
+
     resetTxForm();
     await loadHoldings();
   } catch (err) { showTxError(err.message || '거래 저장에 실패했습니다.'); }
   finally { btn.disabled = false; btn.textContent = state.editingTxId ? '수정 저장' : '거래 저장'; }
 }
 
-// ★ 리팩터: 의도를 명확화. 동작은 이전과 동일.
-//   - 편집 대상 본인은 제외
-//   - 매도일 이후 날짜 거래 제외
-//   - 매도일과 같은 날이면, 편집 대상 created_at 이후 생성된 거래는 제외
 async function canSell(ticker, quantity, sellDate, excludeId = null) {
   const { data, error } = await supabase
     .from('stock_transactions')
@@ -414,16 +439,14 @@ async function canSell(ticker, quantity, sellDate, excludeId = null) {
 
   let net = 0;
   for (const tx of data || []) {
-    if (excludeId && tx.id === excludeId) continue;            // 편집 대상 제외
-    if (tx.trade_date > sellDate) continue;                    // 매도일 이후 제외
+    if (excludeId && tx.id === excludeId) continue;
+    if (tx.trade_date > sellDate) continue;
     if (tx.trade_date === sellDate && excludeCreatedAt
-        && tx.created_at && tx.created_at >= excludeCreatedAt) continue;  // 같은 날 이후 생성 제외
-
+        && tx.created_at && tx.created_at >= excludeCreatedAt) continue;
     const q = Number(tx.quantity) || 0;
     if (tx.transaction_type === 'BUY') net += q;
     else net -= q;
   }
-
   return quantity <= net + 1e-9;
 }
 
@@ -443,7 +466,15 @@ async function editTransaction(id) {
 async function deleteTransaction(id) {
   if (!confirm('이 거래를 삭제하시겠습니까?')) return;
   const { data: { session } } = await supabase.auth.getSession(); if (!session) return;
+
+  // ★ 캐시 무효화 (삭제 이전에 ticker 확보)
+  const target = state.transactions.find(t => t.id === id);
+  const deletedTicker = target?.ticker || null;
+
   const { error } = await supabase.from('stock_transactions').delete().eq('id', id).eq('user_id', session.user.id);
   if (error) { alert('삭제에 실패했습니다: ' + error.message); return; }
+
+  if (deletedTicker) state.analysisCache.delete(deletedTicker);
+
   await loadHoldings();
 }

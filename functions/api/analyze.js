@@ -39,18 +39,15 @@ export async function onRequestPost(context) {
     return jsonResponse({ error: '인증 처리 중 오류가 발생했습니다.' }, 401);
   }
 
-  // ─── 본문 크기 체크 ───
   const contentLength = Number(request.headers.get('content-length') || 0);
   if (contentLength > MAX_BODY_BYTES) {
     return jsonResponse({ error: '요청 본문이 너무 큽니다.' }, 413);
   }
 
-  // ─── 본문 파싱 ───
   let body;
   try { body = await request.json(); }
   catch { return jsonResponse({ error: '요청 본문이 JSON이 아닙니다.' }, 400); }
 
-  // ─── 입력 검증 ───
   const validation = validateAnalyzeInput(body);
   if (!validation.valid) {
     return jsonResponse({ error: '입력 데이터가 유효하지 않습니다.', details: validation.errors }, 400);
@@ -59,7 +56,6 @@ export async function onRequestPost(context) {
   const { ticker, stock_name, price_data, volume_data, news_items, holdings_data } = body;
   const analysis_type = body.analysis_type === 'sell' ? 'sell' : 'buy';
 
-  // ─── 데이터 품질 ───
   const dataQuality = computeDataQuality(price_data);
   if (dataQuality.status === 'UNKNOWN') {
     return jsonResponse({
@@ -72,14 +68,13 @@ export async function onRequestPost(context) {
     });
   }
 
-  // ─── 이전 판단 / 추세 이력 조회 (병렬) ───
+  // ★ 이전 판단은 같은 analysis_type으로만 조회 (매도관점↔매수관점 문맥 오염 방지)
   const [previousRec, trendHistory] = await Promise.all([
-    loadPreviousRecommendation(supabase, userId, ticker).catch(() => null),
+    loadPreviousRecommendation(supabase, userId, ticker, analysis_type).catch(() => null),
     loadRecentTrendHistory(env, ticker).catch(() => ({ status: 'unavailable', entries: [] })),
   ]);
   const trendSummary = summarizeTrendHistory(trendHistory?.entries || [], trendHistory?.status || 'unavailable');
 
-  // ─── 에이전트 상태 초기화 ───
   const agentStatus = { news: { ok: false }, trend: { ok: false }, judge: { ok: false } };
 
   // [1] 가격/거래량: 코드 생성 (0 뉴런)
@@ -97,7 +92,6 @@ export async function onRequestPost(context) {
   try {
     if (!env.AI) throw new Error('AI_NOT_CONFIGURED');
 
-    // [2] 뉴스
     const newsRaw = await runNewsAgent(env, { ticker, stock_name, news_items });
     if (newsRaw.code === 'AI_QUOTA_EXCEEDED') {
       quotaExceeded = true;
@@ -110,7 +104,6 @@ export async function onRequestPost(context) {
       agentStatus.news = { ok: false, reason: 'INVALID_OUTPUT' };
     }
 
-    // [3] 추세
     if (!quotaExceeded) {
       const trendRaw = await runTrendAgent(env, {
         ticker, stock_name, analysis_type, price_data, volume_data,
@@ -129,7 +122,6 @@ export async function onRequestPost(context) {
       }
     }
 
-    // [4] 심판
     if (!quotaExceeded) {
       const judgeRaw = await runJudgeAgent(env, {
         ticker, stock_name, analysis_type, holdings_data, price_data,
@@ -149,7 +141,6 @@ export async function onRequestPost(context) {
       }
     }
 
-    // ─── 결과 분기 ───
     if (quotaExceeded) {
       isFallback = true;
       fallbackReason = 'AI_QUOTA_EXCEEDED';
@@ -169,13 +160,11 @@ export async function onRequestPost(context) {
         let judgeConfidence = Number(judgeResult.confidence);
         if (!Number.isFinite(judgeConfidence)) judgeConfidence = 0.5;
 
-        // (a) 추세 강도 '약' → 강한 판단(추천)을 고려로 하향
         if (trendResult?.trend_strength === '약') {
           if (finalRec === '매수 추천') finalRec = '매수 고려';
           else if (finalRec === '매도 추천') finalRec = '매도 고려';
         }
 
-        // (b) 판단 일관성 보정
         let consistencyNote = '';
         if (previousRec?.recommendation) {
           const threshold = deriveConsistencyThreshold(previousRec.analyzed_at, trendSummary?.flips_short || 0);
@@ -201,7 +190,6 @@ export async function onRequestPost(context) {
     finalData = buildRuleBasedFallback({ price_data, volume_data, analysis_type, trendResult });
   }
 
-  // ─── DB 저장 (정상 결과만) ───
   let saved = false;
   if (!isFallback && finalData) {
     try {
@@ -217,6 +205,8 @@ export async function onRequestPost(context) {
         market_facts: {
           price_data,
           volume_data,
+          // ★ 분석 시점 holdings 스냅샷 (감사/디버깅용, 트렌드 이력에는 사용 안 됨)
+          holdings_data: holdings_data || null,
           agent_outputs: {
             price_volume: pvResult,
             news: newsResult,
@@ -258,19 +248,23 @@ export async function onRequestPost(context) {
 }
 
 // ─────────────────────────────────────────────────────────────
-// 헬퍼: 이전 판단 조회
+// 헬퍼: 이전 판단 조회 (analysis_type 일치 항목만)
 // ─────────────────────────────────────────────────────────────
-async function loadPreviousRecommendation(supabase, userId, ticker) {
+async function loadPreviousRecommendation(supabase, userId, ticker, analysisType) {
   const since = new Date(Date.now() - 30 * 24 * 60 * 60 * 1000).toISOString();
   const { data, error } = await supabase
     .from('stock_analysis_runs')
     .select('recommendation, analyzed_at')
     .eq('user_id', userId)
     .eq('ticker', ticker)
+    .eq('analysis_type', analysisType)   // ★ 매수/매도 관점 일치 항목만
     .gte('analyzed_at', since)
     .order('analyzed_at', { ascending: false })
     .limit(1)
     .maybeSingle();
-  if (error || !data) return null;
-  return data;
+  if (error) {
+    console.warn('[loadPreviousRec] query failed:', error.message);
+    return null;
+  }
+  return data || null;
 }

@@ -257,11 +257,6 @@ export function updateMarketStatusBadge(statusText) {
   else badge.className = 'badge badge--status-gray';
 }
 
-// ★ 오른쪽 배지: 순수 API 연결 상태만 반영
-//   - ERROR 만 "연결 끊김"
-//   - DELAYED 는 "지연"
-//   - STALE 은 "오래된 데이터"
-//   - 그 외(OK/LATEST/UNKNOWN/MARKET_OPEN/AFTER_HOURS/MARKET_CLOSED 등)는 "연결 원활"
 export function updateDataStatusBadge(status) {
   const badge = $('#data-status-badge');
   if (!status) {
@@ -279,7 +274,6 @@ export function updateDataStatusBadge(status) {
     badge.textContent = '오래된 데이터';
     badge.className = 'badge badge--status-orange';
   } else {
-    // OK, LATEST, UNKNOWN, MARKET_OPEN, AFTER_HOURS, AFTER_MARKET, MARKET_CLOSED 등 정상 응답
     badge.textContent = '연결 원활';
     badge.className = 'badge badge--status-green';
   }
@@ -291,6 +285,8 @@ function switchScreen(target) {
   $('#screen-analysis').classList.toggle('screen--active', target === 'analysis');
   $('#screen-holdings').classList.toggle('screen--active', target === 'holdings');
   if (target === 'analysis') {
+    // ★ 화면 이동 시 이전 결과 UI를 먼저 초기화 (낡은 캐시가 남아 보이는 것을 방지)
+    $('#analysis-result').hidden = true;
     restoreAnalysisResults();
     if (state.isAnalyzingMain) { $('#analyze-btn').disabled = true; $('#analyze-btn').textContent = '분석 중…'; }
   }
