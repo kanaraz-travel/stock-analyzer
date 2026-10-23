@@ -54,6 +54,9 @@ export function formatDateTime(iso) {
   return d.toLocaleString('ko-KR', { year: 'numeric', month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit' });
 }
 
+// ★ 로그아웃 이벤트 중복 등록 방지 플래그
+let isLogoutListenerAttached = false;
+
 async function init() {
   renderLoginButtons();
   setupLogoutButton();
@@ -158,6 +161,10 @@ function mapAuthError(msg) {
 }
 
 function setupLogoutButton() {
+  // ★ 이미 등록되어 있다면 중복 등록하지 않음
+  if (isLogoutListenerAttached) return;
+  isLogoutListenerAttached = true;
+
   $('#logout-btn').addEventListener('click', async () => {
     if (state.isBatching) { alert('이력 쌓기가 진행 중입니다. 완료 후 로그아웃해 주세요.'); return; }
     if (!confirm('로그아웃하시겠습니까?')) return;
@@ -253,7 +260,6 @@ function switchScreen(target) {
 
 function restoreAnalysisResults() {
   if (state.currentQuote && state.analysisCache.has(state.currentQuote.ticker)) {
-    // analysis.js에서 window에 바인딩한 함수를 호출 (순환 참조 방지)
     if (window.renderAnalysisResult) {
       window.renderAnalysisResult(state.analysisCache.get(state.currentQuote.ticker), false);
     }
@@ -299,7 +305,6 @@ export async function refreshQuoteSilently(ticker) {
     if (state.currentQuote?.ticker === ticker) {
       if (data.price > 0) state.priceCache.set(ticker, data.price);
       state.currentQuote = data;
-      // analysis.js에서 window에 바인딩한 함수를 호출
       if (window.renderQuote) window.renderQuote(data);
       updateMarketStatusBadge(data.market_status);
       updateDataStatusBadge(data.data_status);
