@@ -5,12 +5,9 @@ const NAVER_MAIN = 'https://finance.naver.com/';
 const NAVER_BASE = 'https://finance.naver.com/sise/lastsearch2.naver';
 const NAVER_PAGES = 3;
 
-// 다음 금융 조회 급등 데이터 소스 (우선순위 순)
-const DAUM_SOURCES = [
-  { type: 'next_data', url: 'https://finance.daum.net/domestic/rise_stocks' },
-  { type: 'api', url: 'https://finance.daum.net/api/trend/price_performance?perPage=50&page=1' },
-  { type: 'api', url: 'https://finance.daum.net/api/quotes/rise?perPage=50&page=1' },
-];
+// 다음 금융 조회 급등 API (price_performance)
+const DAUM_BASE = 'https://finance.daum.net/api/trend/price_performance';
+const DAUM_PARAMS = 'intervalType=TODAY&perPage=50&page=1';
 
 const EXCLUDE_KEYWORDS = [
   'KODEX', 'TIGER', 'KBSTAR', 'ARIRANG', 'HANARO',
@@ -97,95 +94,63 @@ async function fetchFromNaver() {
   return items;
 }
 
-// 2차: 다음 금융 조회 급등 (다중 전략)
+// 2차: 다음 금융 조회 급등 (trend/price_performance)
 async function fetchFromDaum() {
-  for (const source of DAUM_SOURCES) {
+  const items = [];
+  const seen = new Set();
+
+  // KOSPI와 KOSDAQ 시장을 각각 조회
+  const markets = ['KOSPI', 'KOSDAQ'];
+
+  for (const market of markets) {
+    if (items.length >= 50) break;
+    const url = `${DAUM_BASE}?${DAUM_PARAMS}&market=${market}`;
     try {
-      if (source.type === 'next_data') {
-        const res = await fetch(source.url, { headers: getHeaders('https://finance.daum.net/') });
-        if (!res.ok) continue;
-        const html = await res.text();
-
-        // __NEXT_DATA__ 스크립트 추출
-        const nextDataMatch = html.match(/<script id="__NEXT_DATA__" type="application\/json">([\s\S]*?)<\/script>/);
-        if (!nextDataMatch) {
-          console.warn(`[popular] 다음 금융 __NEXT_DATA__ 없음 (${source.url})`);
-          continue;
-        }
-
-        const nextData = JSON.parse(nextDataMatch[1]);
-        const pageProps = nextData.props?.pageProps || {};
-        // 데이터 경로 탐색 (다음 금융 페이지 구조에 따라 다를 수 있음)
-        const dataList = pageProps.data || pageProps.initialData || pageProps.riseList || 
-                         pageProps.stocks || pageProps.list || [];
-
-        if (!Array.isArray(dataList) || dataList.length === 0) {
-          console.warn(`[popular] 다음 금융 __NEXT_DATA__ 데이터 없음 (${source.url})`);
-          continue;
-        }
-
-        const items = [];
-        const seen = new Set();
-        for (const row of dataList) {
-          const code = row.symbolCode || row.code || row.symbol || '';
-          const ticker = String(code).replace(/^A/, '');
-          if (!isValidTicker(ticker) || seen.has(ticker)) continue;
-
-          const name = row.name || row.stockName || row.symbolName || '';
-          if (!name || isExcluded(name)) continue;
-
-          seen.add(ticker);
-          items.push({ ticker, name });
-          if (items.length >= 50) break;
-        }
-        if (items.length > 0) {
-          console.log(`[popular] 다음 금융 __NEXT_DATA__ 성공: ${items.length}건`);
-          return items;
-        }
-      } else {
-        // API 방식
-        const res = await fetch(source.url, {
-          headers: {
-            ...getHeaders('https://finance.daum.net/'),
-            'Accept': 'application/json, text/plain, */*',
-          },
-        });
-        if (!res.ok) continue;
-
-        const json = await res.json();
-        const list = json.data || json.ranks || json.list || (Array.isArray(json) ? json : []);
-        if (!Array.isArray(list) || list.length === 0) continue;
-
-        const firstItem = list[0];
-        if (!firstItem || (!firstItem.symbolCode && !firstItem.code && !firstItem.symbol)) {
-          console.warn(`[popular] 다음 금융 API 스키마 불일치 (${source.url})`);
-          continue;
-        }
-
-        const items = [];
-        const seen = new Set();
-        for (const row of list) {
-          const code = row.symbolCode || row.code || row.symbol || '';
-          const ticker = String(code).replace(/^A/, '');
-          if (!isValidTicker(ticker) || seen.has(ticker)) continue;
-
-          const name = row.name || row.stockName || row.symbolName || '';
-          if (!name || isExcluded(name)) continue;
-
-          seen.add(ticker);
-          items.push({ ticker, name });
-          if (items.length >= 50) break;
-        }
-        if (items.length > 0) {
-          console.log(`[popular] 다음 금융 API 성공 (${source.url}): ${items.length}건`);
-          return items;
-        }
+      const res = await fetch(url, {
+        headers: {
+          ...getHeaders('https://finance.daum.net/'),
+          'Accept': 'application/json, text/plain, */*',
+        },
+      });
+      if (!res.ok) {
+        console.warn(`[popular] 다음 금융 ${market} HTTP ${res.status}`);
+        continue;
       }
+
+      const json = await res.json();
+      const list = json.data || json.ranks || json.list || (Array.isArray(json) ? json : []);
+      if (!Array.isArray(list) || list.length === 0) {
+        console.warn(`[popular] 다음 금융 ${market} 응답 비어있음`);
+        continue;
+      }
+
+      const firstItem = list[0];
+      if (!firstItem || (!firstItem.symbolCode && !firstItem.code && !firstItem.symbol)) {
+        console.warn(`[popular] 다음 금융 ${market} 응답 스키마 불일치`);
+        continue;
+      }
+
+      let addedInMarket = 0;
+      for (const row of list) {
+        const code = row.symbolCode || row.code || row.symbol || '';
+        const ticker = String(code).replace(/^A/, '');
+        if (!isValidTicker(ticker) || seen.has(ticker)) continue;
+
+        const name = row.name || row.stockName || row.symbolName || '';
+        if (!name || isExcluded(name)) continue;
+
+        seen.add(ticker);
+        items.push({ ticker, name });
+        addedInMarket++;
+        if (items.length >= 50) break;
+      }
+      console.log(`[popular] 다음 금융 ${market}: +${addedInMarket}건 (누적 ${items.length}건)`);
+
     } catch (e) {
-      console.warn(`[popular] 다음 금융 실패 (${source.url}):`, e.message);
+      console.warn(`[popular] 다음 금융 ${market} 실패:`, e.message);
     }
   }
-  return [];
+  return items;
 }
 
 // 3차: KIS API 거래량 순위 (필터 완화)
