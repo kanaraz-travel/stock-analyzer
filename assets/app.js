@@ -10,7 +10,6 @@ export const supabase = createClient(SUPABASE_URL, SUPABASE_ANON_KEY, {
   auth: { persistSession: true, autoRefreshToken: true },
 });
 
-// 전역 상태
 export const state = {
   currentUser: null,
   currentQuote: null,
@@ -54,10 +53,14 @@ export function formatDateTime(iso) {
   return d.toLocaleString('ko-KR', { year: 'numeric', month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit' });
 }
 
-// ★ 로그아웃 이벤트 중복 등록 방지 플래그
 let isLogoutListenerAttached = false;
+let isLoggingOut = false;
+let isAppInitialized = false; // ★ 앱 전체 초기화 중복 방지 플래그
 
 async function init() {
+  if (isAppInitialized) return;
+  isAppInitialized = true;
+
   renderLoginButtons();
   setupLogoutButton();
   setupRefreshButton();
@@ -161,14 +164,21 @@ function mapAuthError(msg) {
 }
 
 function setupLogoutButton() {
-  // ★ 이미 등록되어 있다면 중복 등록하지 않음
   if (isLogoutListenerAttached) return;
   isLogoutListenerAttached = true;
 
   $('#logout-btn').addEventListener('click', async () => {
+    if (isLoggingOut) return; // ★ 중복 실행 완벽 차단
     if (state.isBatching) { alert('이력 쌓기가 진행 중입니다. 완료 후 로그아웃해 주세요.'); return; }
     if (!confirm('로그아웃하시겠습니까?')) return;
-    stopCountdown(); await supabase.auth.signOut();
+
+    isLoggingOut = true;
+    stopCountdown();
+    try {
+      await supabase.auth.signOut();
+    } finally {
+      isLoggingOut = false;
+    }
   });
 }
 

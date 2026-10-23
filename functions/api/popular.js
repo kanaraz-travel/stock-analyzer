@@ -1,8 +1,6 @@
 // functions/api/popular.js
 import { getKisAccessToken } from './_kis_token.js';
 
-const MAX_ITEMS = 100;
-
 const ETF_BRANDS = [
   'KODEX', 'TIGER', 'KBSTAR', 'ARIRANG', 'HANARO',
   'SOL', 'ACE', 'PLUS', 'RISE', 'KOSEF',
@@ -25,19 +23,19 @@ export async function onRequestGet(context) {
   try {
     const accessToken = await getKisAccessToken(env, baseUrl);
 
-    // KIS 거래량 순위 조회 API 파라미터
     const query = new URLSearchParams({
-      FID_COND_MRKT_DIV_CODE: 'J', // 주식
+      FID_COND_MRKT_DIV_CODE: 'J',
       FID_COND_SCR_DIV_CODE: '20171', // 거래량 순위
-      FID_INPUT_ISCD: '0000', // 전체 시장
-      FID_DIV_CLS_CODE: '0', // 전체
-      FID_BLNG_CLS_CODE: '0', // 전체
+      FID_INPUT_ISCD: '0000',
+      FID_DIV_CLS_CODE: '0',
+      FID_BLNG_CLS_CODE: '0',
       FID_TRGT_CLS_CODE: '111111111',
       FID_TRGT_EXLS_CLS_CODE: '000000',
       FID_INPUT_PRICE_1: '',
       FID_INPUT_PRICE_2: '',
       FID_VOL_CNT: '',
       FID_INPUT_DATE_1: '',
+      FID_INPUT_CNT_1: '30', // ★ API는 최대 30개까지만 반환함
     });
 
     const res = await fetch(`${baseUrl}/uapi/domestic-stock/v1/quotations/volume-rank?${query}`, {
@@ -46,7 +44,7 @@ export async function onRequestGet(context) {
         authorization: `Bearer ${accessToken}`,
         appkey: env.KIS_APP_KEY,
         appsecret: env.KIS_APP_SECRET,
-        tr_id: 'FHPST01710000', // 거래량 순위 TR_ID
+        tr_id: 'FHPST01710000',
       },
     });
 
@@ -65,23 +63,23 @@ export async function onRequestGet(context) {
     const output = data.output || [];
 
     for (const row of output) {
-      if (items.length >= MAX_ITEMS) break;
+      const ticker = row.mksc_shrn_iscd;
+      const name = row.hts_kor_isnm;
+      const prdtType = row.prdt_type_cd; // 상품 유형 코드 (300: 주식)
+      const marketName = row.rprs_mrkt_kor_name || row.bstp_kor_isnm || ''; // 시장명
       
-      const ticker = row.mksc_shrn_iscd; // 종목 코드
-      const name = row.hts_kor_isnm; // 종목명
-      
-      // 종목 코드나 이름이 없으면 스킵
       if (!ticker || !name) continue;
       
-      // ETF 제외
+      // 1. 주식(300)만 필터링 (ETF, ETN 등 제외)
+      if (prdtType !== '300') continue;
+      
+      // 2. 코스피(유가증권) / 코스닥 시장만 필터링
+      if (!marketName.includes('유가증권') && !marketName.includes('코스피') && !marketName.includes('코스닥')) continue;
+      
+      // 3. ETF 브랜드명 2차 필터링 (혹시 모를 잔여 ETF 제거)
       if (isEtf(name)) continue;
 
-      // 코스피/코스닥만 포함 (KIS 응답에 시장 구분이 있으면 필터링, 없으면 이름으로 판단 불가하므로 전체 포함)
-      items.push({ 
-        rank: items.length + 1, 
-        ticker, 
-        name 
-      });
+      items.push({ rank: items.length + 1, ticker, name });
     }
 
     if (items.length === 0) {

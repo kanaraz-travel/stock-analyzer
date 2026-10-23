@@ -1,9 +1,12 @@
 // assets/analysis.js
 import { 
   supabase, state, $, formatNumber, formatDateTime,
-  updateMarketStatusBadge, updateDataStatusBadge, startCountdown
+  updateMarketStatusBadge, updateDataStatusBadge
 } from './app.js';
 import { computeHoldings } from './holdings.js';
+
+let batchState = 'idle'; // 'idle' | 'result' | 'failures'
+let failedStocks = [];
 
 export function initAnalysis() {
   $('#search-btn').addEventListener('click', handleSearch);
@@ -11,9 +14,19 @@ export function initAnalysis() {
   $('#analyze-btn').addEventListener('click', () => runAnalysis(state.currentQuote?.ticker, state.currentQuote?.stock_name, state.currentQuote?.price, 'main'));
   
   const batchBtn = $('#batch-build-btn');
-  if (batchBtn) batchBtn.addEventListener('click', runBatchAnalysis);
+  if (batchBtn) {
+    batchBtn.parentNode.style.position = 'relative'; // 말풍선을 위해 relative 설정
+    batchBtn.addEventListener('click', () => {
+      if (batchState === 'idle') {
+        runBatchAnalysis();
+      } else if (batchState === 'result') {
+        showFailures();
+      } else if (batchState === 'failures') {
+        resetBatchButton();
+      }
+    });
+  }
 
-  // ★ app.js / holdings.js에서 호출할 수 있도록 window에 바인딩
   window.runAnalysis = runAnalysis;
   window.renderQuote = renderQuote;
   window.renderAnalysisResult = renderAnalysisResult;
@@ -240,41 +253,35 @@ async function runBatchAnalysis() {
   if (state.isBatching) return;
 
   const btn = $('#batch-build-btn');
-  const originalText = btn.textContent;
-
-  state.isBatching = true;
   btn.disabled = true;
   btn.textContent = '인기 종목 불러오는 중...';
-
-  let targets = [];
+  
+  state.isBatching = true;
+  failedStocks = [];
   let succeeded = 0;
   let failed = 0;
 
   try {
     const res = await fetch('/api/popular');
     const data = await res.json();
-    if (!res.ok) {
-      // ★ popular.js에서 보낸 상세 에러 메시지 확인
-      const detail = Array.isArray(data.debug_errors) ? `\n${data.debug_errors.join('\n')}` : '';
-      throw new Error((data.error || '인기 종목을 불러오지 못했습니다.') + detail);
-    }
+    if (!res.ok) throw new Error(data.error || '인기 종목을 불러오지 못했습니다.');
 
     const items = Array.isArray(data.items) ? data.items : [];
     if (items.length === 0) throw new Error('인기 종목이 없습니다.');
 
+    // 10개 + 10개 랜덤
     const topN = items.slice(0, Math.min(10, items.length));
     const pool = items.slice(10);
     const shuffled = [...pool].sort(() => Math.random() - 0.5);
     const randomN = shuffled.slice(0, Math.min(10, shuffled.length));
 
-    targets = [...topN, ...randomN];
+    const targets = [...topN, ...randomN];
     if (targets.length === 0) throw new Error('분석할 종목이 없습니다.');
 
     const total = targets.length;
 
     for (let i = 0; i < targets.length; i++) {
       await waitWhileHidden(btn, i + 1, total);
-
       const stock = targets[i];
       btn.textContent = `이력 쌓기 ${i + 1}/${total} · ${stock.name}`;
 
@@ -283,6 +290,7 @@ async function runBatchAnalysis() {
         succeeded++;
       } catch (e) {
         console.warn(`[batch] ${stock.name}(${stock.ticker}) 실패:`, e.message);
+        failedStocks.push(stock.name);
         failed++;
       }
 
@@ -293,15 +301,48 @@ async function runBatchAnalysis() {
     }
 
     btn.textContent = `완료 (성공 ${succeeded} / 실패 ${failed})`;
-    await new Promise(r => setTimeout(r, 4000));
+    btn.disabled = false;
+    batchState = 'result'; // 상태 변경
+
   } catch (err) {
     console.error('[batch] error:', err);
     alert(err.message || '이력 쌓기에 실패했습니다.');
+    resetBatchButton();
   } finally {
     state.isBatching = false;
-    btn.disabled = false;
-    btn.textContent = originalText;
   }
+}
+
+function showFailures() {
+  const btn = $('#batch-build-btn');
+  if (failedStocks.length === 0) {
+    alert('모든 종목 분석에 성공했습니다!');
+    resetBatchButton();
+    return;
+  }
+  
+  let tooltip = document.getElementById('batch-tooltip');
+  if (!tooltip) {
+    tooltip = document.createElement('div');
+    tooltip.id = 'batch-tooltip';
+    tooltip.className = 'batch-tooltip';
+    btn.parentNode.appendChild(tooltip);
+  }
+  tooltip.textContent = `실패한 종목 (${failedStocks.length}건):\n${failedStocks.join(', ')}`;
+  tooltip.hidden = false;
+  
+  btn.textContent = '닫기';
+  batchState = 'failures';
+}
+
+function resetBatchButton() {
+  const tooltip = document.getElementById('batch-tooltip');
+  if (tooltip) tooltip.remove();
+  
+  const btn = $('#batch-build-btn');
+  btn.textContent = '이력 쌓기';
+  btn.disabled = false;
+  batchState = 'idle';
 }
 
 function renderAnalysisResult(data, scrollTo = true) {
