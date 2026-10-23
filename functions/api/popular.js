@@ -1,11 +1,8 @@
 // functions/api/popular.js
-// GET /api/popular — 네이버 금융 인기 검색 종목 상위 100위 (코스피/코스닥, ETF 제외)
-
 const NAVER_BASE = 'https://finance.naver.com/sise/lastsearch2.naver';
-const NAVER_PAGES = 4;       // 약 30개 × 4 = 최대 120개 수집 → 100개로 컷
+const NAVER_PAGES = 4;
 const MAX_ITEMS = 100;
 
-// ETF 브랜드 키워드 (종목명 앞에 붙음). 포함 시 ETF로 판정
 const ETF_BRANDS = [
   'KODEX', 'TIGER', 'KBSTAR', 'ARIRANG', 'HANARO',
   'SOL', 'ACE', 'PLUS', 'RISE', 'KOSEF',
@@ -29,17 +26,18 @@ function cleanName(raw) {
 }
 
 function parseRows(html, out, seen) {
-  // <tr> 블록 단위로 파싱. code=숫자 6자리 링크가 있는 행만 유효.
   const rowRegex = /<tr[^>]*>([\s\S]*?)<\/tr>/g;
   let m;
   while ((m = rowRegex.exec(html)) !== null) {
     const rowHtml = m[1];
+    // 종목 코드 추출 정규식 보강 (code=숫자 6자리)
     const codeMatch = rowHtml.match(/code=(\d{6})/);
     if (!codeMatch) continue;
 
     const ticker = codeMatch[1];
     if (seen.has(ticker)) continue;
 
+    // 종목명 추출 정규식 보강 (a 태그 내부 텍스트)
     const nameMatch = rowHtml.match(/<a[^>]*href="[^"]*code=\d{6}"[^>]*>([\s\S]*?)<\/a>/);
     if (!nameMatch) continue;
 
@@ -65,6 +63,7 @@ export async function onRequestGet(context) {
   const seen = new Set();
   let etfExcluded = 0;
   let pagesFetched = 0;
+  let debugErrors = [];
 
   for (let page = 1; page <= NAVER_PAGES; page++) {
     if (items.length >= MAX_ITEMS) break;
@@ -74,6 +73,7 @@ export async function onRequestGet(context) {
       const res = await fetch(url, { headers });
       if (!res.ok) {
         console.warn(`[popular] page ${page} HTTP ${res.status}`);
+        debugErrors.push(`page ${page}: HTTP ${res.status}`);
         continue;
       }
       const buffer = await res.arrayBuffer();
@@ -81,13 +81,11 @@ export async function onRequestGet(context) {
       try {
         html = new TextDecoder('euc-kr').decode(buffer);
       } catch (e) {
-        // EUC-KR 미지원 환경 폴백 (드묾)
         html = new TextDecoder('utf-8').decode(buffer);
       }
 
       const before = items.length;
       parseRows(html, items, seen);
-      // ETF 제외 카운트 (개략): 이번 페이지에서 code 있는데 items에 안 들어간 수
       const foundCodes = (html.match(/code=\d{6}/g) || []).length;
       const added = items.length - before;
       if (foundCodes > 0 && added < foundCodes) {
@@ -96,16 +94,19 @@ export async function onRequestGet(context) {
       pagesFetched++;
     } catch (e) {
       console.warn(`[popular] page ${page} failed:`, e.message);
+      debugErrors.push(`page ${page}: ${e.message}`);
     }
   }
 
   const finalItems = items.slice(0, MAX_ITEMS);
 
+  // ★ 아이템이 0개일 때 502 대신 500과 상세 에러 반환
   if (finalItems.length === 0) {
     return jsonResponse({
-      error: '인기 종목을 불러오지 못했습니다. 잠시 후 다시 시도해 주세요.',
-      error_code: 'POPULAR_FETCH_FAILED',
-    }, 502);
+      error: '인기 종목을 불러오지 못했습니다.',
+      error_code: 'POPULAR_FETCH_EMPTY',
+      debug_errors: debugErrors
+    }, 500);
   }
 
   return jsonResponse({

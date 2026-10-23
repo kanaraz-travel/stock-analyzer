@@ -13,8 +13,10 @@ export function initAnalysis() {
   const batchBtn = $('#batch-build-btn');
   if (batchBtn) batchBtn.addEventListener('click', runBatchAnalysis);
 
-  // holdings.js에서 호출할 수 있도록 window에 바인딩
+  // ★ app.js / holdings.js에서 호출할 수 있도록 window에 바인딩
   window.runAnalysis = runAnalysis;
+  window.renderQuote = renderQuote;
+  window.renderAnalysisResult = renderAnalysisResult;
   window.renderInlineAnalysisResult = renderInlineAnalysisResult;
 }
 
@@ -225,7 +227,7 @@ export async function runAnalysis(ticker, name, price, targetType = 'main', card
 async function waitWhileHidden(btn, currentIdx, total) {
   while (document.hidden) {
     btn.textContent = `일시정지 중 (탭 복귀 시 재개) ${currentIdx}/${total}`;
-    await new Promise(r => setTimeout(r, 1000)); // HIDDEN_POLL_MS 대체
+    await new Promise(r => setTimeout(r, 1000));
   }
 }
 
@@ -251,7 +253,11 @@ async function runBatchAnalysis() {
   try {
     const res = await fetch('/api/popular');
     const data = await res.json();
-    if (!res.ok) throw new Error(data.error || '인기 종목을 불러오지 못했습니다.');
+    if (!res.ok) {
+      // ★ popular.js에서 보낸 상세 에러 메시지 확인
+      const detail = Array.isArray(data.debug_errors) ? `\n${data.debug_errors.join('\n')}` : '';
+      throw new Error((data.error || '인기 종목을 불러오지 못했습니다.') + detail);
+    }
 
     const items = Array.isArray(data.items) ? data.items : [];
     if (items.length === 0) throw new Error('인기 종목이 없습니다.');
@@ -282,7 +288,7 @@ async function runBatchAnalysis() {
 
       if (i < targets.length - 1) {
         await waitWhileHidden(btn, i + 1, total);
-        await new Promise(r => setTimeout(r, 2500)); // BATCH_DELAY_MS 대체
+        await new Promise(r => setTimeout(r, 2500));
       }
     }
 
