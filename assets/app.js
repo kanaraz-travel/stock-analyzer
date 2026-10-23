@@ -20,7 +20,6 @@ let currentScreen = 'holdings';
 let countdown = 5, countdownInterval = null, isRefreshing = false;
 let isAnalyzingMain = false;
 let isBatching = false;
-let lastSessionUserId = null; // 중복 초기화 방지용
 
 const priceCache = new Map();
 const analysisCache = new Map();
@@ -30,7 +29,7 @@ const $$ = (sel) => document.querySelectorAll(sel);
 
 const BORDER_COLORS = ['#ef4444', '#f97316', '#f59e0b', '#84cc16', '#10b981', '#06b6d4', '#3b82f6', '#6366f1', '#8b5cf6', '#d946ef', '#ec4899', '#f43f5e'];
 function getBorderColor(ticker) {
-  if (!ticker || typeof ticker !== 'string') return '#9ca3af'; // 방어 코드
+  if (!ticker || typeof ticker !== 'string') return '#9ca3af';
   let hash = 0;
   for (let i = 0; i < ticker.length; i++) hash = ticker.charCodeAt(i) + ((hash << 5) - hash);
   return BORDER_COLORS[Math.abs(hash) % BORDER_COLORS.length];
@@ -40,19 +39,27 @@ async function init() {
   renderLoginButtons(); setupLogoutButton(); setupRefreshButton(); setupNavigation();
   setupSearch(); setupAnalyze(); setupTransactionForm(); setupVisibility(); setupBatchButton();
 
-  supabase.auth.onAuthStateChange((_event, session) => handleAuthState(session));
-  const { data: { session } } = await supabase.auth.getSession();
-  handleAuthState(session);
+  // ★ 레이스 컨디션 방지: onAuthStateChange 단일 진입점 사용
+  supabase.auth.onAuthStateChange((event, session) => {
+    console.log(`[Auth Event] ${event}`, session?.user?.email);
+    
+    // SIGNED_IN 또는 초기 세션 로드 시
+    if (event === 'SIGNED_IN' || event === 'INITIAL_SESSION') {
+      handleAuthState(session);
+    } else if (event === 'SIGNED_OUT') {
+      handleAuthState(null);
+    }
+  });
 }
 
 async function handleAuthState(session) {
   const newUserId = session?.user?.id || null;
   
-  // 동일 세션으로 중복 호출되는 것 방지 (Race Condition 해결)
-  if (newUserId === lastSessionUserId) {
+  // 이미 동일한 유저로 처리 중이라면 스킵 (중복 렌더링 방지)
+  if (newUserId === currentUser?.id && currentUser !== null) {
     return;
   }
-  lastSessionUserId = newUserId;
+  
   currentUser = session?.user || null;
 
   if (currentUser) {
@@ -66,9 +73,7 @@ async function handleAuthState(session) {
     switchScreen('holdings');
     updateMarketStatusBadge(getMarketStatusClient());
     
-    // 데이터 로드
     await loadHoldings();
-    
     startCountdown();
   } else {
     $('#screen-login').hidden = false; $('#app-shell').hidden = true;
@@ -86,7 +91,6 @@ function resetState() {
   stopCountdown(); currentQuote = null; transactions = []; editingTxId = null;
   priceCache.clear(); analysisCache.clear();
   isAnalyzingMain = false; isBatching = false;
-  lastSessionUserId = null; // 로그아웃 시 초기화
   $('#quote-card').hidden = true; $('#analysis-result').hidden = true;
   $('#ticker-input').value = ''; $('#search-error').hidden = true;
   $('#transaction-form').reset(); $('#tx-id').value = ''; $('#tx-error').hidden = true;
@@ -359,7 +363,6 @@ async function refreshQuoteSilently(ticker) {
 
 async function loadHoldings() {
   if (!currentUser) return;
-  // session에서 user_id를 명시적으로 필터링하여 RLS 의존성 제거
   const { data: { session } } = await supabase.auth.getSession();
   if (!session) return;
 
@@ -375,8 +378,11 @@ async function loadHoldings() {
     return; 
   }
   
-  // ★ [디버깅용] DB에서 실제로 넘어온 데이터를 콘솔에 출력합니다.
+  // ★ [디버깅용] 반드시 Console 창에서 이 데이터를 확인하세요!
   console.log('🔥 [DB에서 가져온 원본 데이터]:', data);
+  if (data && data.length > 0) {
+    console.log('🔥 첫 번째 데이터 샘플:', data[0]);
+  }
   
   transactions = data || [];
   await refreshHoldingsView();
@@ -392,6 +398,7 @@ async function refreshHoldingsView(holdingsData) {
   const currentPriceMap = new Map();
   
   if (currentHoldings.length === 0) {
+    console.log('ℹ️ [refreshHoldingsView] 그룹화된 보유 종목이 0건입니다.');
     renderHoldingsList([], currentPriceMap);
     renderHoldingsSummary(holdingsData, 0, 0);
     return;
@@ -772,9 +779,8 @@ function computeHoldings(txs) {
   });
 
   for (const tx of sorted) {
-    // ticker나 stock_name이 없는 비정상 데이터 방어
     if (!tx.ticker || typeof tx.ticker !== 'string' || !tx.stock_name) {
-      console.warn('[computeHoldings] invalid transaction skipped:', tx);
+      console.warn('[computeHoldings] ⚠️ 유효하지 않은 거래 데이터 필터링됨:', tx);
       continue;
     }
 
@@ -854,9 +860,8 @@ function renderHoldingsList(holdings, priceMap) {
     list.appendChild(p); return;
   }
   holdings.forEach((h) => {
-    // 렌더링 직전 데이터 방어 코드
     if (!h.ticker || !h.stock_name) {
-      console.warn('[renderHoldingsList] invalid holding skipped:', h);
+      console.warn('[renderHoldingsList] ⚠️ 유효하지 않은 보유 종목 렌더링 스킵:', h);
       return;
     }
 
