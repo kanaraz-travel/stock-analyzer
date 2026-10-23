@@ -1,8 +1,8 @@
 // functions/api/popular.js
 import { getKisAccessToken } from './_kis_token.js';
 
-const NAVER_BASE = 'https://finance.naver.com/sise/lastsearch2.naver';
 const NAVER_MAIN = 'https://finance.naver.com/';
+const NAVER_BASE = 'https://finance.naver.com/sise/lastsearch2.naver';
 const NAVER_PAGES = 4;
 
 const EXCLUDE_KEYWORDS = [
@@ -21,32 +21,26 @@ function isValidTicker(ticker) {
   return /^\d{6}$/.test(String(ticker));
 }
 
-// 최신 브라우저 User-Agent 목록 (간헐적 변경용)
-const USER_AGENTS = [
-  'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36',
-  'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36',
-  'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36 Edg/124.0.0.0'
-];
-
-function getRandomUserAgent() {
-  return USER_AGENTS[Math.floor(Math.random() * USER_AGENTS.length)];
-}
-
-// 공통 헤더 생성
+// 실제 크롬 브라우저의 Client Hints 및 보안 헤더 모방
 function getHeaders(cookie = '') {
-  return {
-    'User-Agent': getRandomUserAgent(),
-    'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8',
+  const headers = {
+    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36',
+    'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8,application/signed-exchange;v=b3;q=0.7',
     'Accept-Language': 'ko-KR,ko;q=0.9,en-US;q=0.8,en;q=0.7',
     'Referer': NAVER_MAIN,
+    'Sec-CH-UA': '"Chromium";v="125", "Google Chrome";v="125", "Not-A.Brand";v="99"',
+    'Sec-CH-UA-Mobile': '?0',
+    'Sec-CH-UA-Platform': '"Windows"',
     'Sec-Fetch-Dest': 'document',
     'Sec-Fetch-Mode': 'navigate',
     'Sec-Fetch-Site': 'same-origin',
     'Sec-Fetch-User': '?1',
-    'Cache-Control': 'no-cache',
-    'Pragma': 'no-cache',
-    ...(cookie ? { 'Cookie': cookie } : {})
+    'Upgrade-Insecure-Requests': '1',
+    'Cache-Control': 'max-age=0',
+    'Connection': 'keep-alive',
   };
+  if (cookie) headers['Cookie'] = cookie;
+  return headers;
 }
 
 // 네이버 메인 방문 후 쿠키 획득
@@ -55,8 +49,8 @@ async function getNaverCookies() {
     const res = await fetch(NAVER_MAIN, { headers: getHeaders() });
     const setCookie = res.headers.get('set-cookie');
     if (!setCookie) return '';
-    // set-cookie 헤더에서 핵심 쿠키만 추출 (간단히 전체를 사용)
-    return setCookie.split(',').map(c => c.split(';')[0]).join('; ');
+    // set-cookie 헤더에서 이름=값 형태만 추출
+    return setCookie.split(',').map(c => c.split(';')[0].trim()).join('; ');
   } catch (e) {
     console.warn('[popular] 네이버 쿠키 획득 실패:', e.message);
     return '';
@@ -114,8 +108,8 @@ async function fetchFromNaver(cookie) {
         if (items.length >= 100) break;
       }
 
-      // 페이지 간 지연 (Rate Limit 회피)
-      await new Promise(r => setTimeout(r, 1000 + Math.random() * 1000));
+      // 봇 탐지 회피를 위한 페이지 간 랜덤 지연 (1~3초)
+      await new Promise(r => setTimeout(r, 1000 + Math.random() * 2000));
     } catch (e) {
       console.warn(`[popular] 네이버 page ${page} 실패:`, e.message);
     }
@@ -188,7 +182,7 @@ export async function onRequestGet(context) {
   let items = [];
   let source = 'naver_popular';
 
-  // 1차: 네이버 크롤링 (쿠키 획득 후)
+  // 1차: 네이버 크롤링 시도 (쿠키 획득 후)
   try {
     const cookie = await getNaverCookies();
     items = await fetchFromNaver(cookie);
@@ -214,8 +208,12 @@ export async function onRequestGet(context) {
 
   items = items.map((item, idx) => ({ ...item, rank: idx + 1 }));
 
+  // 최종 확보된 종목이 없을 때만 에러 반환
   if (items.length === 0) {
-    return jsonResponse({ error: '인기 종목을 전혀 확보하지 못했습니다.', error_code: 'EMPTY_RESULT' }, 502);
+    return jsonResponse({
+      error: '인기 종목을 전혀 확보하지 못했습니다.',
+      error_code: 'EMPTY_RESULT',
+    }, 502);
   }
 
   return jsonResponse({
