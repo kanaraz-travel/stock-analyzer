@@ -86,6 +86,7 @@ function resetState() {
   stopCountdown(); currentQuote = null; transactions = []; editingTxId = null;
   priceCache.clear(); analysisCache.clear();
   isAnalyzingMain = false; isBatching = false;
+  lastSessionUserId = null; // 로그아웃 시 초기화
   $('#quote-card').hidden = true; $('#analysis-result').hidden = true;
   $('#ticker-input').value = ''; $('#search-error').hidden = true;
   $('#transaction-form').reset(); $('#tx-id').value = ''; $('#tx-error').hidden = true;
