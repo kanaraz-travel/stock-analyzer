@@ -5,10 +5,11 @@ const NAVER_MAIN = 'https://finance.naver.com/';
 const NAVER_BASE = 'https://finance.naver.com/sise/lastsearch2.naver';
 const NAVER_PAGES = 3;
 
-// 다음 금융 내부 API (실제 동작하는 경로)
-const DAUM_API_LIST = [
-  'https://finance.daum.net/api/search/ranks?limit=100',
-  'https://finance.daum.net/api/quotes/rise?limit=100', // 조회 급등 대안
+// 다음 금융 조회 급등 API 후보 경로들
+const DAUM_APIS = [
+  'https://finance.daum.net/api/quotes/rise?page=1&perPage=100',
+  'https://finance.daum.net/api/quotes/rise?limit=100',
+  'https://finance.daum.net/api/search/ranks?limit=100'
 ];
 
 const EXCLUDE_KEYWORDS = [
@@ -54,16 +55,12 @@ async function fetchFromNaver() {
     const url = page === 1 ? NAVER_BASE : `${NAVER_BASE}?&page=${page}`;
     try {
       const res = await fetch(url, { headers: getHeaders(NAVER_MAIN) });
-      if (!res.ok) {
-        console.warn(`[popular] 네이버 page ${page} HTTP ${res.status}`);
-        continue;
-      }
+      if (!res.ok) continue;
       const buffer = await res.arrayBuffer();
       let html;
       try { html = new TextDecoder('euc-kr').decode(buffer); }
       catch { html = new TextDecoder('utf-8').decode(buffer); }
 
-      let pageAdded = 0;
       const rowRegex = /<tr[^>]*>([\s\S]*?)<\/tr>/g;
       let m;
       while ((m = rowRegex.exec(html)) !== null) {
@@ -82,10 +79,8 @@ async function fetchFromNaver() {
 
         seen.add(ticker);
         items.push({ ticker, name });
-        pageAdded++;
         if (items.length >= 80) break;
       }
-      console.log(`[popular] 네이버 page ${page}: +${pageAdded}건 (누적 ${items.length}건)`);
       await new Promise(r => setTimeout(r, 1000 + Math.random() * 1000));
     } catch (e) {
       console.warn(`[popular] 네이버 page ${page} 실패:`, e.message);
@@ -94,9 +89,9 @@ async function fetchFromNaver() {
   return items;
 }
 
-// 2차: 다음 금융 조회 급등 (여러 엔드포인트 시도)
+// 2차: 다음 금융 조회 급등 (다중 경로 시도)
 async function fetchFromDaum() {
-  for (const url of DAUM_API_LIST) {
+  for (const url of DAUM_APIS) {
     try {
       const res = await fetch(url, {
         headers: {
@@ -104,15 +99,12 @@ async function fetchFromDaum() {
           'Accept': 'application/json, text/plain, */*',
         },
       });
-      console.log(`[popular] 다음 금융 시도: ${url} → HTTP ${res.status}`);
       if (!res.ok) continue;
 
       const json = await res.json();
-      const list = json.data || json.ranks || json.list || [];
-      if (!Array.isArray(list) || list.length === 0) {
-        console.warn(`[popular] 다음 금융 응답이 비어있음 (${url})`);
-        continue;
-      }
+      // 다음 금융 응답 구조에 맞춰 유연하게 배열 추출
+      const list = json.data || json.ranks || json.list || (Array.isArray(json) ? json : []);
+      if (!Array.isArray(list) || list.length === 0) continue;
 
       const items = [];
       const seen = new Set();
@@ -128,8 +120,10 @@ async function fetchFromDaum() {
         items.push({ ticker, name });
         if (items.length >= 100) break;
       }
-      console.log(`[popular] 다음 금융 성공 (${url}): ${items.length}건`);
-      if (items.length > 0) return items;
+      if (items.length > 0) {
+        console.log(`[popular] 다음 금융 성공 (${url}): ${items.length}건`);
+        return items;
+      }
     } catch (e) {
       console.warn(`[popular] 다음 금융 실패 (${url}):`, e.message);
     }
@@ -137,7 +131,7 @@ async function fetchFromDaum() {
   return [];
 }
 
-// 3차: KIS API 폴백
+// 3차: KIS API 거래량 순위 (필터 완화)
 async function fetchFromKis(env, existingTickers) {
   const baseUrl = env.KIS_BASE_URL || 'https://openapi.koreainvestment.com:9443';
   if (!env.KIS_APP_KEY || !env.KIS_APP_SECRET) return [];
@@ -167,23 +161,20 @@ async function fetchFromKis(env, existingTickers) {
       tr_id: 'FHPST01710000',
     },
   });
-  if (!res.ok) {
-    console.warn(`[popular] KIS API HTTP ${res.status}`);
-    return [];
-  }
+  if (!res.ok) return [];
 
   const data = await res.json();
-  if (data.rt_cd && data.rt_cd !== '0') {
-    console.warn(`[popular] KIS API 에러: ${data.msg1}`);
-    return [];
-  }
+  if (data.rt_cd && data.rt_cd !== '0') return [];
 
   const items = [];
   for (const row of data.output || []) {
     const ticker = row.mksc_shrn_iscd;
     const name = row.hts_kor_isnm;
     if (!ticker || !name) continue;
+    
+    // ★ 필터 완화: 6자리 숫자 코드이고, ETF/ETN 키워드가 없으면 통과
     if (!isValidTicker(ticker) || existingTickers.has(ticker) || isExcluded(name)) continue;
+
     existingTickers.add(ticker);
     items.push({ ticker, name });
   }
@@ -250,7 +241,7 @@ export async function onRequestGet(context) {
     items,
     total: items.length,
     source,
-    source_stats: sourceStats, // ★ 진단용: 각 소스별 확보 개수
+    source_stats: sourceStats,
     fetched_at: new Date().toISOString(),
   });
 }
