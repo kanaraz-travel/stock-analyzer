@@ -3,9 +3,13 @@ import { getKisAccessToken } from './_kis_token.js';
 
 const NAVER_MAIN = 'https://finance.naver.com/';
 const NAVER_BASE = 'https://finance.naver.com/sise/lastsearch2.naver';
-const NAVER_PAGES = 3; // 차단 위험을 줄이기 위해 3페이지로 축소
+const NAVER_PAGES = 3;
 
-const DAUM_RANKS_API = 'https://finance.daum.net/api/search/ranks?limit=100';
+// 다음 금융 내부 API (실제 동작하는 경로)
+const DAUM_API_LIST = [
+  'https://finance.daum.net/api/search/ranks?limit=100',
+  'https://finance.daum.net/api/quotes/rise?limit=100', // 조회 급등 대안
+];
 
 const EXCLUDE_KEYWORDS = [
   'KODEX', 'TIGER', 'KBSTAR', 'ARIRANG', 'HANARO',
@@ -23,7 +27,6 @@ function isValidTicker(ticker) {
   return /^\d{6}$/.test(String(ticker));
 }
 
-// 공통 헤더
 function getHeaders(referer = '') {
   return {
     'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36',
@@ -41,9 +44,7 @@ function getHeaders(referer = '') {
   };
 }
 
-// ─────────────────────────────────────────────────────────────
-// 1차: 네이버 금융 크롤링
-// ─────────────────────────────────────────────────────────────
+// 1차: 네이버 크롤링
 async function fetchFromNaver() {
   const items = [];
   const seen = new Set();
@@ -53,12 +54,16 @@ async function fetchFromNaver() {
     const url = page === 1 ? NAVER_BASE : `${NAVER_BASE}?&page=${page}`;
     try {
       const res = await fetch(url, { headers: getHeaders(NAVER_MAIN) });
-      if (!res.ok) continue;
+      if (!res.ok) {
+        console.warn(`[popular] 네이버 page ${page} HTTP ${res.status}`);
+        continue;
+      }
       const buffer = await res.arrayBuffer();
       let html;
       try { html = new TextDecoder('euc-kr').decode(buffer); }
       catch { html = new TextDecoder('utf-8').decode(buffer); }
 
+      let pageAdded = 0;
       const rowRegex = /<tr[^>]*>([\s\S]*?)<\/tr>/g;
       let m;
       while ((m = rowRegex.exec(html)) !== null) {
@@ -77,8 +82,10 @@ async function fetchFromNaver() {
 
         seen.add(ticker);
         items.push({ ticker, name });
+        pageAdded++;
         if (items.length >= 80) break;
       }
+      console.log(`[popular] 네이버 page ${page}: +${pageAdded}건 (누적 ${items.length}건)`);
       await new Promise(r => setTimeout(r, 1000 + Math.random() * 1000));
     } catch (e) {
       console.warn(`[popular] 네이버 page ${page} 실패:`, e.message);
@@ -87,46 +94,50 @@ async function fetchFromNaver() {
   return items;
 }
 
-// ─────────────────────────────────────────────────────────────
-// 2차: 다음 금융 조회 급등 API
-// ─────────────────────────────────────────────────────────────
+// 2차: 다음 금융 조회 급등 (여러 엔드포인트 시도)
 async function fetchFromDaum() {
-  const items = [];
-  const seen = new Set();
+  for (const url of DAUM_API_LIST) {
+    try {
+      const res = await fetch(url, {
+        headers: {
+          ...getHeaders('https://finance.daum.net/'),
+          'Accept': 'application/json, text/plain, */*',
+        },
+      });
+      console.log(`[popular] 다음 금융 시도: ${url} → HTTP ${res.status}`);
+      if (!res.ok) continue;
 
-  try {
-    const res = await fetch(DAUM_RANKS_API, {
-      headers: {
-        ...getHeaders('https://finance.daum.net/'),
-        'Accept': 'application/json, text/plain, */*',
-      },
-    });
-    if (!res.ok) throw new Error(`Daum HTTP ${res.status}`);
+      const json = await res.json();
+      const list = json.data || json.ranks || json.list || [];
+      if (!Array.isArray(list) || list.length === 0) {
+        console.warn(`[popular] 다음 금융 응답이 비어있음 (${url})`);
+        continue;
+      }
 
-    const json = await res.json();
-    const list = json.data || json.ranks || [];
+      const items = [];
+      const seen = new Set();
+      for (const row of list) {
+        const code = row.symbolCode || row.code || row.symbol || '';
+        const ticker = String(code).replace(/^A/, '');
+        if (!isValidTicker(ticker) || seen.has(ticker)) continue;
 
-    for (const row of list) {
-      const code = row.symbolCode || row.code || '';
-      const ticker = code.replace(/^A/, '');
-      if (!isValidTicker(ticker) || seen.has(ticker)) continue;
+        const name = row.name || row.stockName || row.symbolName || '';
+        if (!name || isExcluded(name)) continue;
 
-      const name = row.name || row.stockName || '';
-      if (!name || isExcluded(name)) continue;
-
-      seen.add(ticker);
-      items.push({ ticker, name });
-      if (items.length >= 100) break;
+        seen.add(ticker);
+        items.push({ ticker, name });
+        if (items.length >= 100) break;
+      }
+      console.log(`[popular] 다음 금융 성공 (${url}): ${items.length}건`);
+      if (items.length > 0) return items;
+    } catch (e) {
+      console.warn(`[popular] 다음 금융 실패 (${url}):`, e.message);
     }
-  } catch (e) {
-    console.warn('[popular] 다음 금융 조회 급등 실패:', e.message);
   }
-  return items;
+  return [];
 }
 
-// ─────────────────────────────────────────────────────────────
-// 3차: KIS API 거래량 순위 폴백
-// ─────────────────────────────────────────────────────────────
+// 3차: KIS API 폴백
 async function fetchFromKis(env, existingTickers) {
   const baseUrl = env.KIS_BASE_URL || 'https://openapi.koreainvestment.com:9443';
   if (!env.KIS_APP_KEY || !env.KIS_APP_SECRET) return [];
@@ -156,10 +167,16 @@ async function fetchFromKis(env, existingTickers) {
       tr_id: 'FHPST01710000',
     },
   });
-  if (!res.ok) return [];
+  if (!res.ok) {
+    console.warn(`[popular] KIS API HTTP ${res.status}`);
+    return [];
+  }
 
   const data = await res.json();
-  if (data.rt_cd && data.rt_cd !== '0') return [];
+  if (data.rt_cd && data.rt_cd !== '0') {
+    console.warn(`[popular] KIS API 에러: ${data.msg1}`);
+    return [];
+  }
 
   const items = [];
   for (const row of data.output || []) {
@@ -167,35 +184,36 @@ async function fetchFromKis(env, existingTickers) {
     const name = row.hts_kor_isnm;
     if (!ticker || !name) continue;
     if (!isValidTicker(ticker) || existingTickers.has(ticker) || isExcluded(name)) continue;
-
     existingTickers.add(ticker);
     items.push({ ticker, name });
   }
+  console.log(`[popular] KIS API: ${data.output?.length || 0}건 중 필터 통과 ${items.length}건`);
   return items;
 }
 
-// ─────────────────────────────────────────────────────────────
-// 메인 핸들러: 3단계 폴백 + 중복 제거
-// ─────────────────────────────────────────────────────────────
+// 메인 핸들러
 export async function onRequestGet(context) {
   const { env } = context;
   let items = [];
   let source = 'none';
+  const sourceStats = { naver: 0, daum: 0, kis: 0 };
 
   // 1차: 네이버
   try {
     items = await fetchFromNaver();
+    sourceStats.naver = items.length;
     if (items.length > 0) source = 'naver_popular';
   } catch (e) {
     console.warn('[popular] 네이버 실패:', e.message);
   }
 
-  // 2차: 다음 금융 (네이버가 20개 미만일 때, 중복 제외)
+  // 2차: 다음 금융 (네이버가 20개 미만일 때)
   if (items.length < 20) {
     try {
       const existing = new Set(items.map(i => i.ticker));
       const daumItems = await fetchFromDaum();
       const newItems = daumItems.filter(i => !existing.has(i.ticker));
+      sourceStats.daum = newItems.length;
       if (newItems.length > 0) {
         items = [...items, ...newItems];
         source = source === 'naver_popular' ? 'naver_plus_daum' : 'daum_popular';
@@ -205,11 +223,12 @@ export async function onRequestGet(context) {
     }
   }
 
-  // 3차: KIS API (아직 20개 미만일 때, 중복 제외)
+  // 3차: KIS API (아직 20개 미만일 때)
   if (items.length < 20) {
     try {
       const existing = new Set(items.map(i => i.ticker));
       const kisItems = await fetchFromKis(env, existing);
+      sourceStats.kis = kisItems.length;
       if (kisItems.length > 0) {
         items = [...items, ...kisItems];
         source = source === 'none' ? 'kis_volume_rank' : `${source}_plus_kis`;
@@ -221,6 +240,8 @@ export async function onRequestGet(context) {
 
   items = items.map((item, idx) => ({ ...item, rank: idx + 1 }));
 
+  console.log(`[popular] 최종 소스별 확보: 네이버=${sourceStats.naver}, 다음=${sourceStats.daum}, KIS=${sourceStats.kis}, 총=${items.length}`);
+
   if (items.length === 0) {
     return jsonResponse({ error: '모든 소스에서 종목을 확보하지 못했습니다.', error_code: 'EMPTY_RESULT' }, 502);
   }
@@ -229,6 +250,7 @@ export async function onRequestGet(context) {
     items,
     total: items.length,
     source,
+    source_stats: sourceStats, // ★ 진단용: 각 소스별 확보 개수
     fetched_at: new Date().toISOString(),
   });
 }
