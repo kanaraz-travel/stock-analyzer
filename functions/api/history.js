@@ -13,8 +13,6 @@ export async function onRequestGet(context) {
 
   try {
     const accessToken = await getKisAccessToken(env, baseUrl);
-
-    // KST 기준 날짜, 긴 연휴를 감안해 조회 범위 60일
     const now = new Date();
     const endDate = toKstDateStr(now);
     const startDate = toKstDateStr(new Date(now.getTime() - 60 * 24 * 60 * 60 * 1000));
@@ -37,22 +35,38 @@ export async function onRequestGet(context) {
       },
     });
 
+    // ★ KIS API 에러 시 502 대신 200(데이터 없음)으로 응답
     if (!res.ok) {
       const errText = await res.text();
       console.error('KIS History API Error:', res.status, errText.slice(0, 300));
-      return jsonResponse({ error: '과거 시세를 가져오지 못했습니다.' }, 502);
+      return jsonResponse({ 
+        error: '과거 시세를 가져오지 못했습니다.', 
+        data_available: false,
+        return_1m: null,
+        ma20_disparity: null,
+        current_volume: null,
+        avg_volume_20: null,
+      });
     }
 
     const data = await res.json();
     
     if (data.rt_cd && data.rt_cd !== '0') {
-      return jsonResponse({ error: `과거 시세 조회 실패: ${data.msg1}` }, 502);
+      console.error('KIS History Data Error:', data.msg1);
+      return jsonResponse({ 
+        error: '과거 시세를 가져오지 못했습니다.', 
+        data_available: false,
+        return_1m: null,
+        ma20_disparity: null,
+        current_volume: null,
+        avg_volume_20: null,
+      });
     }
 
-    // 빈 행/0원 행 제거 + 날짜 내림차순 정렬 보장
     const output2 = (data.output2 || [])
       .filter((r) => r && r.stck_bsop_date && Number(r.stck_clpr) > 0)
       .sort((a, b) => String(b.stck_bsop_date).localeCompare(String(a.stck_bsop_date)));
+
     if (output2.length < 20) {
       return jsonResponse({ 
         error: '과거 데이터가 부족합니다.', 
@@ -61,7 +75,7 @@ export async function onRequestGet(context) {
         ma20_disparity: null,
         current_volume: null,
         avg_volume_20: null,
-      }, 404);
+      });
     }
 
     const currentPrice = Number(output2[0].stck_clpr);
@@ -74,7 +88,6 @@ export async function onRequestGet(context) {
     const ma20 = sum20Price / 20;
     const ma20Disparity = ((currentPrice - ma20) / ma20) * 100;
 
-    // 장중에는 오늘 행의 거래량이 '일부'이므로 20일 평균에서 제외 (직전 완결 거래일 20개 기준)
     const todayPartial = output2[0].stck_bsop_date === toKstDateStr(now) && isRegularSessionKst(now);
     const volRows = (todayPartial ? output2.slice(1) : output2).slice(0, 20);
     let sum20Volume = 0;
@@ -97,7 +110,7 @@ export async function onRequestGet(context) {
     });
   } catch (err) {
     console.error('history.js Error:', err.message);
-    return jsonResponse({ error: '과거 시세를 가져오는 중 오류가 발생했습니다.' }, 502);
+    return jsonResponse({ error: '과거 시세를 가져오는 중 오류가 발생했습니다.', data_available: false }, 500);
   }
 }
 

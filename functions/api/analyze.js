@@ -1,6 +1,4 @@
 // functions/api/analyze.js
-// POST /api/analyze — HTTP 핸들러 + 오케스트레이션 + 응답 조립
-
 import { createClient } from '@supabase/supabase-js';
 import {
   VALID_RECS_BUY,
@@ -30,9 +28,8 @@ import {
   runJudgeAgent,
 } from './_agents.js';
 
-const RULESET_VERSION = 'RULESET_AI_V25_9_HISTORY_GUARD';
+const RULESET_VERSION = 'RULESET_AI_V25_10_RESILIENT';
 const MAX_BODY_BYTES = 100 * 1024;
-
 const DUPLICATE_WINDOW_MS = 5 * 60 * 1000;
 const DUPLICATE_PRICE_TOLERANCE_PCT = 0.5;
 const CLEANUP_PROBABILITY = 0.2;
@@ -80,25 +77,7 @@ export async function onRequestPost(context) {
   const dataQuality = computeDataQuality(price_data);
   const isStale = price_data?.price_source === 'STALE';
 
-  // ★ 신규: 과거 시세 데이터 누락 감지 (KIS API 점검 시간 등)
-  // history.js가 실패하거나 데이터가 부족하면 return_1m, ma20_disparity가 모두 null이 됨
-  const hasHistoryData = price_data?.return_1m != null || price_data?.ma20_disparity != null;
-  if (!hasHistoryData) {
-    console.warn('[analyze] history data missing → reject analysis');
-    return jsonResponse({
-      score: null,
-      recommendation: '판단 보류',
-      overall_summary: '과거 시세 데이터를 불러오지 못해 분석을 진행할 수 없습니다. 증권사 API 점검 시간일 수 있으니 잠시 후 다시 시도해 주세요.',
-      data_quality: { status: 'INSUFFICIENT', label: '과거 데이터 누락', quote_time_verified: false },
-      fallback: true,
-      fallback_reason: 'HISTORY_DATA_MISSING',
-      ruleset_version: RULESET_VERSION,
-      saved: false,
-      save_skip_reason: 'DATA_INSUFFICIENT',
-    });
-  }
-
-  // ★ 데이터 기준 시각 확인 불가 또는 부족 시 차단
+  // ★ 과거 데이터 차단 로직 제거됨 (데이터 없어도 AI 분석 진행)
   if (dataQuality.status === 'UNKNOWN' || dataQuality.status === 'INSUFFICIENT') {
     return jsonResponse({
       score: null,
@@ -179,7 +158,7 @@ export async function onRequestPost(context) {
     const trendHistoryResult = await loadRecentTrendHistory(env, ticker);
     trendSummary = summarizeTrendHistory(trendHistoryResult.entries, trendHistoryResult.status);
 
-    // (D) [1] + [2] 병렬 (예외를 sentinel로 구분)
+    // (D) [1] + [2] 병렬
     const pvRaw = await runPriceVolumeAgent(env, { ticker, stock_name, price_data, volume_data, analysis_type })
       .catch(e => { console.error('[analyze] pv agent exception:', e.message); return { __exception: true }; });
     const newsRaw = await runNewsAgent(env, { ticker, stock_name, news_items })
@@ -234,7 +213,6 @@ export async function onRequestPost(context) {
       return null;
     });
 
-    // ★ 필수 필드 검증 (미완성 시 throw → catch 블록이 실패 처리)
     if (!judgeRaw || typeof judgeRaw !== 'object') {
       if (agentStatus.judge.status === 'skipped') agentStatus.judge = { ok: false, status: 'empty', reason: 'EMPTY_RESPONSE' };
       const err = new Error('JUDGE_EMPTY');
@@ -253,7 +231,6 @@ export async function onRequestPost(context) {
       throw err;
     }
 
-    // ★ 추천 정규화
     const normalizedRec = normalizeRecommendation(judgeRaw.recommendation, analysis_type);
     if (!normalizedRec) {
       agentStatus.judge = { ok: false, status: 'invalid', reason: 'BAD_RECOMMENDATION' };
@@ -265,7 +242,6 @@ export async function onRequestPost(context) {
     agentStatus.judge = { ok: true, status: 'success', reason: null };
     originalJudgeRec = normalizedRec;
 
-    // ★ confidence: 범위 밖이면 무효 (클램핑 금지)
     let confidence = judgeRaw.confidence;
     if (typeof confidence !== 'number' || !Number.isFinite(confidence)
         || confidence < 0 || confidence > 1) {
@@ -343,6 +319,12 @@ export async function onRequestPost(context) {
         finalSummary = `[시세 시각 미확인으로 강도 하향] ${finalSummary}`;
         dataQualityNote = 'OK_UNVERIFIED';
       }
+    }
+
+    // ★ 과거 데이터 누락 시 요약본에 안내 문구 추가
+    if (price_data?.return_1m == null && price_data?.ma20_disparity == null) {
+      dataQualityNote = dataQualityNote ? `${dataQualityNote}|HISTORY_MISSING` : 'HISTORY_MISSING';
+      finalSummary = `[과거 시세 데이터 누락으로 정확도 저하] ${finalSummary}`;
     }
 
     finalData = { recommendation: finalRecommendation, overall_summary: finalSummary };

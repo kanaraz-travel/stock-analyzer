@@ -253,14 +253,19 @@ function switchScreen(target) {
 
 function restoreAnalysisResults() {
   if (state.currentQuote && state.analysisCache.has(state.currentQuote.ticker)) {
-    renderAnalysisResult(state.analysisCache.get(state.currentQuote.ticker), false);
+    // analysis.js에서 window에 바인딩한 함수를 호출 (순환 참조 방지)
+    if (window.renderAnalysisResult) {
+      window.renderAnalysisResult(state.analysisCache.get(state.currentQuote.ticker), false);
+    }
   }
   state.transactions.forEach(tx => {
     if (state.analysisCache.has(tx.ticker)) {
       const card = document.querySelector(`.holding-card[data-ticker="${tx.ticker}"]`);
       if (card) {
         const inlineResult = card.querySelector('.holding-inline-result');
-        if (inlineResult) renderInlineAnalysisResult(state.analysisCache.get(tx.ticker), card, false);
+        if (inlineResult && window.renderInlineAnalysisResult) {
+          window.renderInlineAnalysisResult(state.analysisCache.get(tx.ticker), card, false);
+        }
       }
     }
   });
@@ -294,7 +299,8 @@ export async function refreshQuoteSilently(ticker) {
     if (state.currentQuote?.ticker === ticker) {
       if (data.price > 0) state.priceCache.set(ticker, data.price);
       state.currentQuote = data;
-      renderQuote(data);
+      // analysis.js에서 window에 바인딩한 함수를 호출
+      if (window.renderQuote) window.renderQuote(data);
       updateMarketStatusBadge(data.market_status);
       updateDataStatusBadge(data.data_status);
     }
