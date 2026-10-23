@@ -77,7 +77,9 @@ export async function onRequestPost(context) {
   const dataQuality = computeDataQuality(price_data);
   const isStale = price_data?.price_source === 'STALE';
 
-  // ★ 과거 데이터 차단 로직 제거됨 (데이터 없어도 AI 분석 진행)
+  // ★ 과거 데이터 누락 여부 확인 (분석은 진행하되, 요약에 경고 추가)
+  const hasHistoryData = price_data?.return_1m != null || price_data?.ma20_disparity != null;
+
   if (dataQuality.status === 'UNKNOWN' || dataQuality.status === 'INSUFFICIENT') {
     return jsonResponse({
       score: null,
@@ -321,8 +323,8 @@ export async function onRequestPost(context) {
       }
     }
 
-    // ★ 과거 데이터 누락 시 요약본에 안내 문구 추가
-    if (price_data?.return_1m == null && price_data?.ma20_disparity == null) {
+    // ★ 과거 데이터 누락 시 요약본에 안내 문구 추가 (분석은 계속 진행됨)
+    if (!hasHistoryData) {
       dataQualityNote = dataQualityNote ? `${dataQualityNote}|HISTORY_MISSING` : 'HISTORY_MISSING';
       finalSummary = `[과거 시세 데이터 누락으로 정확도 저하] ${finalSummary}`;
     }

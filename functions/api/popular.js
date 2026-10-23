@@ -5,9 +5,6 @@ const NAVER_MAIN = 'https://finance.naver.com/';
 const NAVER_BASE = 'https://finance.naver.com/sise/lastsearch2.naver';
 const NAVER_PAGES = 3;
 
-const DAUM_BASE = 'https://finance.daum.net/api/trend/price_performance';
-const DAUM_PARAMS = 'intervalType=TODAY&perPage=50&page=1';
-
 const EXCLUDE_KEYWORDS = [
   'KODEX', 'TIGER', 'KBSTAR', 'ARIRANG', 'HANARO',
   'SOL', 'ACE', 'PLUS', 'RISE', 'KOSEF',
@@ -92,69 +89,78 @@ async function fetchFromNaver() {
   return { items, logs };
 }
 
-// 2차: 다음 금융 조회 급등 (에러 로그 수집)
+// 2차: 다음 금융 조회 급등 (다중 엔드포인트 시도)
 async function fetchFromDaum() {
   const items = [];
   const seen = new Set();
   const logs = [];
-
   const markets = ['KOSPI', 'KOSDAQ'];
 
-  for (const market of markets) {
+  // 다음 금융 API 후보 경로들
+  const DAUM_ENDPOINTS = [
+    `https://finance.daum.net/api/trend/price_performance?intervalType=TODAY&perPage=50&page=1`,
+    `https://finance.daum.net/api/quotes/rise?perPage=50&page=1`,
+    `https://finance.daum.net/api/quotes/rise`
+  ];
+
+  for (const endpoint of DAUM_ENDPOINTS) {
     if (items.length >= 50) break;
-    const url = `${DAUM_BASE}?${DAUM_PARAMS}&market=${market}`;
-    
-    try {
-      const res = await fetch(url, {
-        headers: {
-          ...getHeaders('https://finance.daum.net/'),
-          'Accept': 'application/json, text/plain, */*',
-        },
-      });
 
-      if (!res.ok) {
-        logs.push(`다음 ${market}: HTTP ${res.status} (차단/에러)`);
-        continue;
+    for (const market of markets) {
+      if (items.length >= 50) break;
+      const url = `${endpoint}&market=${market}`;
+
+      try {
+        const res = await fetch(url, {
+          headers: {
+            ...getHeaders('https://finance.daum.net/'),
+            'Accept': 'application/json, text/plain, */*',
+          },
+        });
+
+        if (!res.ok) {
+          logs.push(`다음(${endpoint.split('?')[0].split('/').pop()}) ${market}: HTTP ${res.status}`);
+          continue;
+        }
+
+        const contentType = res.headers.get('content-type') || '';
+        if (!contentType.includes('application/json')) {
+          logs.push(`다음 ${market}: JSON 아님`);
+          continue;
+        }
+
+        const json = await res.json();
+        const list = json.data || json.ranks || json.list || (Array.isArray(json) ? json : []);
+        
+        if (!Array.isArray(list) || list.length === 0) {
+          logs.push(`다음 ${market}: 빈 배열`);
+          continue;
+        }
+
+        const firstItem = list[0];
+        if (!firstItem || (!firstItem.symbolCode && !firstItem.code && !firstItem.symbol)) {
+          logs.push(`다음 ${market}: 스키마 불일치`);
+          continue;
+        }
+
+        let added = 0;
+        for (const row of list) {
+          const code = row.symbolCode || row.code || row.symbol || '';
+          const ticker = String(code).replace(/^A/, '');
+          if (!isValidTicker(ticker) || seen.has(ticker)) continue;
+
+          const name = row.name || row.stockName || row.symbolName || '';
+          if (!name || isExcluded(name)) continue;
+
+          seen.add(ticker);
+          items.push({ ticker, name });
+          added++;
+          if (items.length >= 50) break;
+        }
+        logs.push(`다음(${endpoint.split('?')[0].split('/').pop()}) ${market}: +${added}건`);
+      } catch (e) {
+        logs.push(`다음 ${market} 예외: ${e.message}`);
       }
-
-      const contentType = res.headers.get('content-type') || '';
-      if (!contentType.includes('application/json')) {
-        const text = await res.text();
-        logs.push(`다음 ${market}: JSON 아님 (Content-Type: ${contentType}) / Body: ${text.slice(0, 50)}...`);
-        continue;
-      }
-
-      const json = await res.json();
-      const list = json.data || json.ranks || json.list || (Array.isArray(json) ? json : []);
-      
-      if (!Array.isArray(list) || list.length === 0) {
-        logs.push(`다음 ${market}: 배열 데이터 없음 또는 빈 배열`);
-        continue;
-      }
-
-      const firstItem = list[0];
-      if (!firstItem || (!firstItem.symbolCode && !firstItem.code && !firstItem.symbol)) {
-        logs.push(`다음 ${market}: 스키마 불일치 (첫번째 항목: ${JSON.stringify(firstItem).slice(0, 50)})`);
-        continue;
-      }
-
-      let addedInMarket = 0;
-      for (const row of list) {
-        const code = row.symbolCode || row.code || row.symbol || '';
-        const ticker = String(code).replace(/^A/, '');
-        if (!isValidTicker(ticker) || seen.has(ticker)) continue;
-
-        const name = row.name || row.stockName || row.symbolName || '';
-        if (!name || isExcluded(name)) continue;
-
-        seen.add(ticker);
-        items.push({ ticker, name });
-        addedInMarket++;
-        if (items.length >= 50) break;
-      }
-      logs.push(`다음 ${market}: 성공 +${addedInMarket}건`);
-    } catch (e) {
-      logs.push(`다음 ${market}: 예외 발생 ${e.message}`);
     }
   }
   return { items, logs };
@@ -230,7 +236,7 @@ export async function onRequestGet(context) {
   let items = [];
   let source = 'none';
   const sourceStats = { naver: 0, daum: 0, kis: 0 };
-  const debugLogs = []; // ★ 디버그 로그를 담을 배열
+  const debugLogs = [];
 
   // 1차: 네이버
   try {
@@ -287,7 +293,7 @@ export async function onRequestGet(context) {
     total: items.length,
     source,
     source_stats: sourceStats,
-    debug_logs: debugLogs, // ★ 응답에 로그 포함
+    debug_logs: debugLogs,
     fetched_at: new Date().toISOString(),
   };
 
