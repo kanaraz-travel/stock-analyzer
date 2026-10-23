@@ -23,6 +23,7 @@ export const state = {
   isBatching: false,
   priceCache: new Map(),
   analysisCache: new Map(),
+  isInitDone: false, // ★ 초기화 완료 플래그
 };
 
 export const ALLOWED_NAMES = ['박필립', '윤혜영'];
@@ -54,12 +55,8 @@ export function formatDateTime(iso) {
 }
 
 let isLoggingOut = false;
-let isAppInitialized = false;
 
 async function init() {
-  if (isAppInitialized) return;
-  isAppInitialized = true;
-
   renderLoginButtons();
   setupLogoutButton();
   setupRefreshButton();
@@ -68,21 +65,33 @@ async function init() {
   initAnalysis();
   setupVisibility();
 
-  supabase.auth.onAuthStateChange((event, session) => {
+  // ★ 1. onAuthStateChange 등록
+  supabase.auth.onAuthStateChange(async (event, session) => {
     console.log(`[Auth Event] ${event}`, session?.user?.email);
     if (event === 'SIGNED_IN' || event === 'INITIAL_SESSION') {
-      handleAuthState(session);
+      await handleAuthState(session);
     } else if (event === 'SIGNED_OUT') {
-      handleAuthState(null);
+      await handleAuthState(null);
     }
   });
+
+  // ★ 2. 초기 세션 강제 확인 (Race Condition 방지)
+  const { data: { session } } = await supabase.auth.getSession();
+  if (session && !state.currentUser) {
+    await handleAuthState(session);
+  }
 }
 
 async function handleAuthState(session) {
   const newUserId = session?.user?.id || null;
-  if (newUserId === state.currentUser?.id && state.currentUser !== null) return;
+  
+  // ★ 동일 유저에 대해 이미 처리 중이거나, 초기화가 끝난 상태라면 중복 실행 방지
+  if (newUserId === state.currentUser?.id && state.isInitDone) {
+    return;
+  }
   
   state.currentUser = session?.user || null;
+  state.isInitDone = false;
 
   if (state.currentUser) {
     $('#screen-login').hidden = true; $('#app-shell').hidden = false;
@@ -95,11 +104,19 @@ async function handleAuthState(session) {
     switchScreen('holdings');
     updateMarketStatusBadge(getMarketStatusClient());
     
-    await loadHoldings();
-    startCountdown();
+    // ★ 세션이 완벽히 맺어진 후 데이터를 로드하도록 보장
+    try {
+      await loadHoldings();
+    } catch (e) {
+      console.error('초기 데이터 로드 실패:', e);
+    } finally {
+      state.isInitDone = true;
+      startCountdown();
+    }
   } else {
     $('#screen-login').hidden = false; $('#app-shell').hidden = true;
     resetState(); stopCountdown();
+    state.isInitDone = true;
   }
 }
 
@@ -122,9 +139,12 @@ function resetState() {
   ['#total-cost', '#total-value', '#total-pnl', '#realized-pnl'].forEach((id) => { $(id).textContent = '-'; });
   $$('.login-name-btn').forEach((b) => (b.disabled = false));
   $('#login-error').hidden = true; $('#login-loading').hidden = true;
+  
+  // ★ 데이터 상태 배지 초기화
   const dataBadge = $('#data-status-badge');
   dataBadge.textContent = '데이터 상태 확인 중';
   dataBadge.className = 'badge badge--muted';
+  
   const batchBtn = $('#batch-build-btn');
   if (batchBtn) { batchBtn.hidden = true; batchBtn.disabled = false; batchBtn.textContent = '이력 쌓기'; }
 }
@@ -166,7 +186,6 @@ function setupLogoutButton() {
   const oldBtn = $('#logout-btn');
   if (!oldBtn) return;
 
-  // ★ 버튼을 복제하여 기존에 달려있던 모든 이벤트 리스너를 완벽히 제거
   const newBtn = oldBtn.cloneNode(true);
   oldBtn.parentNode.replaceChild(newBtn, oldBtn);
 
@@ -179,7 +198,6 @@ function setupLogoutButton() {
     stopCountdown();
     try {
       const { error } = await supabase.auth.signOut();
-      // ★ 이미 세션이 없는 경우(session_not_found) 에러는 무시
       if (error && error.message !== 'session_not_found') {
         console.error('Logout error:', error);
       }

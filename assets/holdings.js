@@ -23,6 +23,7 @@ export async function loadHoldings() {
 
   if (error) { 
     console.error('loadHoldings error:', error.message); 
+    updateDataStatusBadge('ERROR'); // ★ 에러 발생 시 배지 업데이트
     return; 
   }
   
@@ -45,9 +46,11 @@ export async function refreshHoldingsView(holdingsData) {
   let totalCost = 0, totalCurrentValue = 0;
   const currentPriceMap = new Map();
   
+  // ★ 보유 종목이 0개이더라도 상태 배지는 업데이트하도록 수정
   if (currentHoldings.length === 0) {
     renderHoldingsList([], currentPriceMap);
     renderHoldingsSummary(holdingsData, 0, 0);
+    updateDataStatusBadge('MARKET_CLOSED'); // 데이터가 없음을 표시 (또는 'OK')
     return;
   }
 
@@ -79,7 +82,12 @@ export async function refreshHoldingsView(holdingsData) {
     await new Promise(r => setTimeout(r, 500));
   }
 
-  if (anySuccess && lastSuccessfulStatus) updateDataStatusBadge(lastSuccessfulStatus);
+  // ★ 시세 조회가 실패했더라도 배지는 '연결 끊김' 등으로 업데이트
+  if (anySuccess && lastSuccessfulStatus) {
+    updateDataStatusBadge(lastSuccessfulStatus);
+  } else {
+    updateDataStatusBadge('ERROR');
+  }
 
   renderHoldingsList(currentHoldings, currentPriceMap);
   renderHoldingsSummary(holdingsData, totalCost, totalCurrentValue);
@@ -104,7 +112,7 @@ export function computeHoldings(txs) {
       continue;
     }
     
-    // 대소문자 방어 코드 추가 (buy, Buy, BUY 모두 처리)
+    // ★ 대소문자 방어 코드 (buy, Buy, BUY 모두 처리)
     const txType = String(tx.transaction_type || '').toUpperCase();
 
     if (!map.has(tx.ticker)) {
