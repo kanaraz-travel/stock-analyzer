@@ -56,13 +56,16 @@ async function fetchFromNaver() {
     try {
       const res = await fetch(url, { headers: getHeaders(NAVER_MAIN) });
       if (!res.ok) continue;
+
       const buffer = await res.arrayBuffer();
       let html;
       try { html = new TextDecoder('euc-kr').decode(buffer); }
       catch { html = new TextDecoder('utf-8').decode(buffer); }
 
+      // ★ 차단 감지: 실제 종목 행이 있는지 확인
       const rowRegex = /<tr[^>]*>([\s\S]*?)<\/tr>/g;
       let m;
+      let pageAdded = 0;
       while ((m = rowRegex.exec(html)) !== null) {
         const rowHtml = m[1];
         const codeMatch = rowHtml.match(/code=(\d{6})/);
@@ -79,8 +82,16 @@ async function fetchFromNaver() {
 
         seen.add(ticker);
         items.push({ ticker, name });
+        pageAdded++;
         if (items.length >= 80) break;
       }
+
+      // ★ 해당 페이지에서 추출된 종목이 0개면 차단된 것으로 간주하고 중단
+      if (pageAdded === 0 && page === 1) {
+        console.warn('[popular] 네이버 첫 페이지에서 종목을 추출하지 못했습니다. 차단 가능성.');
+        break;
+      }
+
       await new Promise(r => setTimeout(r, 1000 + Math.random() * 1000));
     } catch (e) {
       console.warn(`[popular] 네이버 page ${page} 실패:`, e.message);
@@ -89,7 +100,7 @@ async function fetchFromNaver() {
   return items;
 }
 
-// 2차: 다음 금융 조회 급등 (다중 경로 시도)
+// 2차: 다음 금융 조회 급등 (응답 스키마 검증)
 async function fetchFromDaum() {
   for (const url of DAUM_APIS) {
     try {
@@ -102,9 +113,15 @@ async function fetchFromDaum() {
       if (!res.ok) continue;
 
       const json = await res.json();
-      // 다음 금융 응답 구조에 맞춰 유연하게 배열 추출
+      // ★ 응답 스키마 검증: data 배열이 있고, 각 항목에 symbolCode와 name이 있는지 확인
       const list = json.data || json.ranks || json.list || (Array.isArray(json) ? json : []);
       if (!Array.isArray(list) || list.length === 0) continue;
+
+      const firstItem = list[0];
+      if (!firstItem || (!firstItem.symbolCode && !firstItem.code && !firstItem.symbol)) {
+        console.warn(`[popular] 다음 금융 응답 스키마가 예상과 다릅니다. (${url})`);
+        continue;
+      }
 
       const items = [];
       const seen = new Set();
@@ -171,7 +188,7 @@ async function fetchFromKis(env, existingTickers) {
     const ticker = row.mksc_shrn_iscd;
     const name = row.hts_kor_isnm;
     if (!ticker || !name) continue;
-    
+
     // ★ 필터 완화: 6자리 숫자 코드이고, ETF/ETN 키워드가 없으면 통과
     if (!isValidTicker(ticker) || existingTickers.has(ticker) || isExcluded(name)) continue;
 
@@ -182,9 +199,20 @@ async function fetchFromKis(env, existingTickers) {
   return items;
 }
 
-// 메인 핸들러
+// 메인 핸들러 (캐싱 적용)
 export async function onRequestGet(context) {
-  const { env } = context;
+  const { env, request } = context;
+  const cache = caches.default;
+  const cacheKey = new Request(request.url, request);
+  const cachedResponse = await cache.match(cacheKey);
+
+  // ★ 캐시된 응답이 있으면 반환 (5분간 유효)
+  if (cachedResponse) {
+    const cachedData = await cachedResponse.json();
+    // source_stats에 캐시 여부 추가
+    return jsonResponse({ ...cachedData, source: `${cachedData.source} (cached)` });
+  }
+
   let items = [];
   let source = 'none';
   const sourceStats = { naver: 0, daum: 0, kis: 0 };
@@ -207,7 +235,7 @@ export async function onRequestGet(context) {
       sourceStats.daum = newItems.length;
       if (newItems.length > 0) {
         items = [...items, ...newItems];
-        source = source === 'naver_popular' ? 'naver_plus_daum' : 'daum_popular';
+        source = source === 'naver_popular' ? 'naver_plus_daum' : 'daum_rise';
       }
     } catch (e) {
       console.warn('[popular] 다음 금융 실패:', e.message);
@@ -237,13 +265,25 @@ export async function onRequestGet(context) {
     return jsonResponse({ error: '모든 소스에서 종목을 확보하지 못했습니다.', error_code: 'EMPTY_RESULT' }, 502);
   }
 
-  return jsonResponse({
+  const responseBody = {
     items,
     total: items.length,
     source,
     source_stats: sourceStats,
     fetched_at: new Date().toISOString(),
+  };
+
+  // ★ 캐시에 저장 (5분 = 300초)
+  const response = jsonResponse(responseBody);
+  const cacheResponse = new Response(JSON.stringify(responseBody), {
+    headers: {
+      'content-type': 'application/json; charset=utf-8',
+      'cache-control': 'public, max-age=300', // 5분 캐싱
+    },
   });
+  context.waitUntil(cache.put(cacheKey, cacheResponse));
+
+  return response;
 }
 
 function jsonResponse(body, status = 200) {
