@@ -30,16 +30,32 @@ export function initAnalysis() {
 }
 
 async function handleSearch() {
-  const query = $('#ticker-input').value.trim(), errorEl = $('#search-error'); errorEl.hidden = true;
+  const query = $('#ticker-input').value.trim();
+  const errorEl = $('#search-error'); errorEl.hidden = true;
+  const candidatesEl = document.getElementById('search-candidates');
+  if (candidatesEl) candidatesEl.hidden = true;
+
   if (!query) { errorEl.textContent = '종목명을 입력해 주세요.'; errorEl.hidden = false; return; }
+  
   const btn = $('#search-btn'); btn.disabled = true; btn.textContent = '조회 중';
   try {
     const res = await fetch(`/api/quote?ticker=${encodeURIComponent(query)}`);
     const data = await res.json();
+    
+    // 여러 종목이 검색된 경우 후보 목록 렌더링
+    if (res.status === 409 && data.candidates) {
+      $('#quote-card').hidden = true;
+      $('#analysis-result').hidden = true;
+      renderSearchCandidates(data.candidates);
+      return;
+    }
+
     if (!res.ok) throw new Error(data.error || '시세를 가져오지 못했습니다.');
     if (data.price == null) throw new Error('종목의 시세 정보가 없습니다.');
+    
     state.currentQuote = data;
     if (data.price > 0) state.priceCache.set(data.ticker, data.price);
+    
     renderQuote(data);
     updateMarketStatusBadge(data.market_status);
     updateDataStatusBadge(data.data_status);
@@ -47,7 +63,67 @@ async function handleSearch() {
     errorEl.textContent = err.message || '시세를 가져오지 못했습니다.'; errorEl.hidden = false;
     $('#quote-card').hidden = true; $('#analysis-result').hidden = true;
     updateDataStatusBadge('ERROR');
-  } finally { btn.disabled = false; btn.textContent = '조회'; }
+  } finally { 
+    btn.disabled = false; 
+    btn.textContent = '조회'; 
+  }
+}
+
+// ★ 모호한 검색어 입력 시 후보 종목들을 버튼 리스트로 렌더링
+function renderSearchCandidates(candidates) {
+  let container = document.getElementById('search-candidates');
+  if (!container) {
+    container = document.createElement('div');
+    container.id = 'search-candidates';
+    container.style.marginTop = '12px';
+    container.style.padding = '12px';
+    container.style.background = '#f8fafc';
+    container.style.borderRadius = '8px';
+    
+    const errorEl = document.getElementById('search-error');
+    errorEl.parentNode.insertBefore(container, errorEl.nextSibling);
+  }
+  container.innerHTML = '';
+  container.hidden = false;
+
+  const title = document.createElement('div');
+  title.style.fontSize = '13px';
+  title.style.color = '#475569';
+  title.style.marginBottom = '8px';
+  title.textContent = '검색 결과가 여러 개입니다. 종목을 선택해 주세요:';
+  container.appendChild(title);
+
+  candidates.forEach(c => {
+    // c는 "삼성중공업(010140)" 형태
+    const match = c.match(/^(.+)\((\d{6})\)$/);
+    const name = match ? match[1] : c;
+
+    const btn = document.createElement('button');
+    btn.type = 'button';
+    btn.style.display = 'block';
+    btn.style.width = '100%';
+    btn.style.textAlign = 'left';
+    btn.style.padding = '10px 12px';
+    btn.style.marginBottom = '4px';
+    btn.style.background = '#ffffff';
+    // 보유 종목 카드의 컬러 테두리와 헷갈리지 않도록 얇은 회색 테두리만 적용
+    btn.style.border = '1px solid #e2e8f0'; 
+    btn.style.borderRadius = '6px';
+    btn.style.fontSize = '14px';
+    btn.style.cursor = 'pointer';
+    btn.style.color = '#1e293b';
+    btn.textContent = c;
+    
+    btn.addEventListener('mouseenter', () => btn.style.background = '#f1f5f9');
+    btn.addEventListener('mouseleave', () => btn.style.background = '#ffffff');
+    
+    btn.addEventListener('click', () => {
+      $('#ticker-input').value = name;
+      container.hidden = true;
+      handleSearch();
+    });
+    container.appendChild(btn);
+  });
 }
 
 function renderQuote(q) {
@@ -94,14 +170,26 @@ export async function runAnalysis(ticker, name, price, targetType = 'main', card
   if (!ticker) return;
   const isSilent = targetType === 'batch';
 
+  // ★ 중복 클릭 방지 (메인 버튼)
+  if (!isSilent && targetType === 'main' && state.isAnalyzingMain) return;
+
   let btn = null;
   let originalText = '';
   if (!isSilent) {
     btn = targetType === 'main' ? $('#analyze-btn') : cardElement.querySelector('.btn-ai-analyze');
-    originalText = btn.textContent;
-    btn.disabled = true; btn.textContent = '분석 중…';
-    if (targetType === 'main') { state.isAnalyzingMain = true; $('#analysis-result').hidden = true; }
-    else {
+    if (btn) {
+      originalText = btn.textContent.trim();
+      // "분석 중…" 상태에서 다시 실행되는 꼬임 방지
+      if (originalText.includes('분석 중')) {
+        originalText = targetType === 'main' ? '분석' : 'AI 분석하기';
+      }
+      btn.disabled = true; 
+      btn.textContent = '분석 중…';
+    }
+    if (targetType === 'main') { 
+      state.isAnalyzingMain = true; 
+      $('#analysis-result').hidden = true; 
+    } else {
       const inlineResult = cardElement.querySelector('.holding-inline-result');
       if (inlineResult) { inlineResult.hidden = true; inlineResult.innerHTML = ''; }
     }
@@ -227,7 +315,9 @@ export async function runAnalysis(ticker, name, price, targetType = 'main', card
     throw err;
   } finally {
     if (!isSilent && btn) {
-      btn.disabled = false; btn.textContent = originalText;
+      btn.disabled = false; 
+      // ★ 안전하게 원래 텍스트로 복원 (꼬임 방지)
+      btn.textContent = originalText || (targetType === 'main' ? '분석' : 'AI 분석하기');
       if (targetType === 'main') state.isAnalyzingMain = false;
     }
   }
@@ -268,13 +358,11 @@ async function runBatchAnalysis() {
     const items = Array.isArray(data.items) ? data.items : [];
     if (items.length === 0) throw new Error('인기 종목이 없습니다.');
 
-    // ★ popular.js가 이미 "1~10위 10개 + 11~100위 랜덤 10개 = 20개" 확정해서 반환함
-    //   (소스별 확정. 부족 시 다음 소스로 넘어가며 중복 제거된 상태)
-    //   analysis.js에서는 별도 추림 없이 그대로 순차 분석.
     const targets = items;
     const total = targets.length;
 
     console.log(`[batch] 총 ${total}건 (source: ${data.source}, stats: ${JSON.stringify(data.source_stats || {})})`);
+    if (data.resolved_trading_day) console.log(`[batch] KIS 기준 영업일: ${data.resolved_trading_day}`);
     if (data.source_stats) {
       const s = data.source_stats;
       console.log(`[batch] 소스별 확보: 네이버=${s.naver || 0}, 다음=${s.daum || 0}, 이슈=${s.issue || 0}, KIS=${s.kis || 0}`);
@@ -288,7 +376,6 @@ async function runBatchAnalysis() {
       try {
         const result = await runAnalysis(stock.ticker, stock.name, null, 'batch');
         
-        // ★ fallback 결과면 실패로 카운트하고, 한도 초과면 루프 중단
         if (result && result.fallback) {
           failedStocks.push(`${stock.name}(${result.fallback_reason})`);
           failed++;
@@ -365,7 +452,6 @@ function renderAnalysisResult(data, scrollTo = true) {
   badge.className = 'recommendation-badge';
   const rec = data.recommendation || '';
   
-  // fallback이면 회색 배지
   if (data.fallback) {
     badge.classList.add('recommendation-badge--pending');
     badge.textContent = `임시 판단: ${rec}`;
