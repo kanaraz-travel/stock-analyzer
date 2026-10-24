@@ -4,7 +4,7 @@ import {
   formatDateTime, computeHoldings
 } from './core.js';
 
-let batchState = 'idle'; // 'idle' | 'result' | 'failures'
+let batchState = 'idle';
 let failedStocks = [];
 
 export function initAnalysis() {
@@ -90,8 +90,7 @@ export async function runAnalysis(ticker, name, price, targetType = 'main', card
         const buys = txForTicker.filter(t => t.transaction_type === 'BUY');
         const sells = txForTicker.filter(t => t.transaction_type === 'SELL');
         holdingsData = {
-          quantity: result.qty,
-          avg_cost: result.avgCost,
+          quantity: result.qty, avg_cost: result.avgCost,
           return_rate: ((actualPrice - result.avgCost) / result.avgCost) * 100,
           total_cost: result.totalCost,
           first_buy_date: buys.length > 0 ? buys[0].trade_date : null,
@@ -115,8 +114,7 @@ export async function runAnalysis(ticker, name, price, targetType = 'main', card
     const currentVolume = freshQuote?.volume ?? historyData?.current_volume ?? null;
     const avgVolume20 = historyData?.avg_volume_20 ?? null;
     const volumeData = {
-      current_volume: currentVolume,
-      avg_volume_20: avgVolume20,
+      current_volume: currentVolume, avg_volume_20: avgVolume20,
       ratio_5d: (currentVolume && avgVolume20 && avgVolume20 > 0) ? (currentVolume / avgVolume20) : null,
     };
 
@@ -205,6 +203,8 @@ async function runBatchAnalysis() {
   state.isBatching = true;
   failedStocks = [];
   let succeeded = 0, failed = 0;
+  let consecutiveFallbacks = 0;
+  let lastFallbackReason = null;
 
   try {
     const res = await fetch('/api/popular');
@@ -214,37 +214,46 @@ async function runBatchAnalysis() {
     const items = Array.isArray(data.items) ? data.items : [];
     if (items.length === 0) throw new Error('인기 종목이 없습니다.');
 
-    const targets = items;
-    const total = targets.length;
+    const total = items.length;
 
-    console.log(`[batch] 총 ${total}건 (source: ${data.source}, stats: ${JSON.stringify(data.source_stats || {})})`);
-    if (data.resolved_trading_day) console.log(`[batch] KIS 기준 영업일: ${data.resolved_trading_day}`);
-
-    for (let i = 0; i < targets.length; i++) {
+    for (let i = 0; i < items.length; i++) {
       await waitWhileHidden(btn, i + 1, total);
-      const stock = targets[i];
+      const stock = items[i];
       btn.textContent = `이력 쌓기 ${i + 1}/${total} · ${stock.name}`;
 
       try {
         const result = await runAnalysis(stock.ticker, stock.name, null, 'batch');
+
+        // ★ P0-4: 저장 실패 또는 폴백은 실패로 집계
         if (result && result.fallback) {
           failedStocks.push(`${stock.name}(${result.fallback_reason})`);
           failed++;
-          if (result.fallback_reason === 'AI_QUOTA_EXCEEDED') {
-            btn.textContent = `한도 초과로 중단 (${i + 1}/${total})`;
-            alert('오늘 AI 무료 한도를 모두 사용했습니다. 한국시간 오전 9시 이후 다시 시도해 주세요.');
+          consecutiveFallbacks++;
+          lastFallbackReason = result.fallback_reason;
+
+          // ★ 폴백 3회 연속 시 중단 (설정 오류가 20종목 반복되는 것 방지)
+          if (consecutiveFallbacks >= 3) {
+            btn.textContent = `연속 폴백 ${consecutiveFallbacks}회로 중단 (${i + 1}/${total})`;
+            alert(`연속으로 분석이 실패하여 중단합니다.\n최근 사유: ${result.fallback_message || result.fallback_reason}`);
             break;
           }
+        } else if (result && result.saved === false) {
+          // ★ 저장 실패를 성공으로 집계하지 않음
+          failedStocks.push(`${stock.name}(저장 실패)`);
+          failed++;
+          consecutiveFallbacks = 0; // 저장 실패는 폴백 연속 카운트에서 제외
         } else {
           succeeded++;
+          consecutiveFallbacks = 0;
         }
       } catch (e) {
         console.warn(`[batch] ${stock.name}(${stock.ticker}) 실패:`, e.message);
-        failedStocks.push(stock.name);
+        failedStocks.push(`${stock.name}(${e.message.slice(0, 40)})`);
         failed++;
+        consecutiveFallbacks = 0;
       }
 
-      if (i < targets.length - 1) {
+      if (i < items.length - 1) {
         await waitWhileHidden(btn, i + 1, total);
         await new Promise(r => setTimeout(r, 2500));
       }
@@ -253,6 +262,7 @@ async function runBatchAnalysis() {
     btn.textContent = `완료 (성공 ${succeeded} / 실패 ${failed})`;
     btn.disabled = false;
     batchState = 'result';
+
   } catch (err) {
     console.error('[batch] error:', err);
     alert(err.message || '이력 쌓기에 실패했습니다.');
@@ -289,22 +299,13 @@ function resetBatchButton() {
   batchState = 'idle';
 }
 
-// ★ 폴백 사유 메시지를 DOM에 추가하는 헬퍼
-function getFallbackMessage(reason) {
-  if (reason === 'AI_QUOTA_EXCEEDED') return '⚠️ 오늘 AI 무료 한도를 모두 사용했습니다. 한국시간 오전 9시 이후 다시 시도해 주세요.';
-  if (reason === 'JUDGE_FAILED') return '⚠️ AI 판단 응답을 해석하지 못했습니다. 잠시 후 다시 시도해 주세요.';
-  if (reason === 'AI_ERROR' || reason === 'AI_NOT_CONFIGURED') return '⚠️ AI 서비스에 일시적 오류가 발생했습니다.';
-  if (reason === 'DATA_INSUFFICIENT') return '⚠️ 시세 기준 시각을 확인할 수 없습니다.';
-  return '⚠️ AI 분석 대신 수치 지표로 임시 판단을 제공합니다.';
-}
-
 export function renderAnalysisResult(data, scrollTo = true) {
   $('#analysis-result').hidden = false;
   const badge = $('#recommendation-badge');
   badge.textContent = data.recommendation || '판단 보류';
   badge.className = 'recommendation-badge';
   const rec = data.recommendation || '';
-  
+
   let warningEl = document.getElementById('fallback-warning');
   if (!warningEl) {
     warningEl = document.createElement('div');
@@ -318,7 +319,8 @@ export function renderAnalysisResult(data, scrollTo = true) {
     badge.classList.add('recommendation-badge--pending');
     badge.textContent = `임시 판단: ${rec}`;
     if (warningEl) {
-      warningEl.textContent = getFallbackMessage(data.fallback_reason);
+      // ★ 서버가 내려준 fallback_message 단일 출처 사용
+      warningEl.textContent = data.fallback_message || '⚠️ 임시 판단입니다.';
       warningEl.style.display = 'block';
     }
   } else {
@@ -359,7 +361,8 @@ export function renderInlineAnalysisResult(data, cardElement, scrollTo = true) {
   if (data.fallback) {
     const warn = document.createElement('div');
     warn.style.cssText = 'margin-top:8px; padding:8px; background:#fef3c7; color:#92400e; border:1px solid #f59e0b; border-radius:6px; font-size:11px; line-height:1.4;';
-    warn.textContent = getFallbackMessage(data.fallback_reason);
+    // ★ 서버 fallback_message 사용
+    warn.textContent = data.fallback_message || '⚠️ 임시 판단입니다.';
     container.appendChild(warn);
   }
 

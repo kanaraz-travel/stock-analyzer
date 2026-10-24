@@ -7,6 +7,12 @@ function isQuotaError(e) {
   return msg.includes('4006') || msg.includes('daily free allocation');
 }
 
+// ★ 폐기된 모델(5028) 또는 deprecated 문구 감지
+function isDeprecatedModelError(e) {
+  const msg = String(e?.message || e);
+  return msg.includes('5028') || msg.toLowerCase().includes('deprecated');
+}
+
 async function callAiWithRetry(env, modelKey, messages, maxTokens, temperature) {
   const modelId = MODELS[modelKey] || MODELS.judge;
   let lastError = null;
@@ -20,6 +26,12 @@ async function callAiWithRetry(env, modelKey, messages, maxTokens, temperature) 
       if (isQuotaError(e)) {
         const err = new Error('AI_QUOTA_EXCEEDED');
         err.code = 'AI_QUOTA_EXCEEDED';
+        throw err;
+      }
+      // ★ 폐기 모델 오류는 재시도해도 동일하게 실패하므로 즉시 중단
+      if (isDeprecatedModelError(e)) {
+        const err = new Error('AI_MODEL_DEPRECATED');
+        err.code = 'AI_MODEL_DEPRECATED';
         throw err;
       }
       if (attempt < 1) await new Promise(r => setTimeout(r, 1000));
@@ -93,8 +105,6 @@ export async function runJudgeAgent(env, payload) {
 // ─────────────────────────────────────────────────────────────
 // 헬퍼
 // ─────────────────────────────────────────────────────────────
-
-// ★ 문자열 인식 balanced brace scanner로 greedy 매칭 문제 해결
 function extractJSON(text) {
   if (!text || typeof text !== 'string') return {};
   const trimmed = text.trim();

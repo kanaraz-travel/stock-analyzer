@@ -40,10 +40,13 @@ export function interpretConfidence(confidence) {
   return { level: 'very_low', label: `매우 낮은 확신 (${pct}%)` };
 }
 
-// ★ 폴백 사유에 따른 사용자 안내 메시지
+// ★ 폴백 사유에 따른 사용자 안내 메시지 (단일 출처)
 export function getFallbackMessage(reason) {
   if (reason === 'AI_QUOTA_EXCEEDED') return '⚠️ 오늘 AI 무료 한도를 모두 사용했습니다. 한국시간 오전 9시 이후 다시 시도해 주세요.';
+  if (reason === 'AI_MODEL_DEPRECATED') return '⚠️ AI 모델 설정에 문제가 있어 임시 판단을 제공합니다. 관리자에게 알려 주세요.';
+  if (reason === 'CRITICAL_AGENT_FAILURE') return '⚠️ 핵심 분석 에이전트가 실패하여 임시 판단을 제공합니다. 잠시 후 다시 시도해 주세요.';
   if (reason === 'JUDGE_FAILED') return '⚠️ AI 판단 응답을 해석하지 못했습니다. 잠시 후 다시 시도해 주세요.';
+  if (reason === 'JUDGE_INVALID_REC') return '⚠️ AI가 유효하지 않은 판단 등급을 반환했습니다. 잠시 후 다시 시도해 주세요.';
   if (reason === 'AI_ERROR' || reason === 'AI_NOT_CONFIGURED') return '⚠️ AI 서비스에 일시적 오류가 발생했습니다.';
   if (reason === 'DATA_INSUFFICIENT') return '⚠️ 시세 기준 시각을 확인할 수 없습니다.';
   return '⚠️ AI 분석 대신 수치 지표로 임시 판단을 제공합니다.';
