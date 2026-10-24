@@ -68,9 +68,10 @@ export async function onRequestPost(context) {
     });
   }
 
-  // ★ 이전 판단은 같은 analysis_type으로만 조회 (매도관점↔매수관점 문맥 오염 방지)
+  // ★ 기획 반영: 이전 판단(previousRec)은 "모든 유저"의 해당 종목 최신 분석 결과를 조회
+  // ★ 추세 이력(trendHistory)도 "모든 유저"의 데이터를 조회 (loadRecentTrendHistory 내부에 이미 user_id 필터 없음)
   const [previousRec, trendHistory] = await Promise.all([
-    loadPreviousRecommendation(supabase, userId, ticker, analysis_type).catch(() => null),
+    loadPreviousRecommendation(supabase, ticker, analysis_type).catch(() => null),
     loadRecentTrendHistory(env, ticker).catch(() => ({ status: 'unavailable', entries: [] })),
   ]);
   const trendSummary = summarizeTrendHistory(trendHistory?.entries || [], trendHistory?.status || 'unavailable');
@@ -92,6 +93,7 @@ export async function onRequestPost(context) {
   try {
     if (!env.AI) throw new Error('AI_NOT_CONFIGURED');
 
+    // [2] 뉴스
     const newsRaw = await runNewsAgent(env, { ticker, stock_name, news_items });
     if (newsRaw.code === 'AI_QUOTA_EXCEEDED') {
       quotaExceeded = true;
@@ -104,6 +106,7 @@ export async function onRequestPost(context) {
       agentStatus.news = { ok: false, reason: 'INVALID_OUTPUT' };
     }
 
+    // [3] 추세
     if (!quotaExceeded) {
       const trendRaw = await runTrendAgent(env, {
         ticker, stock_name, analysis_type, price_data, volume_data,
@@ -122,6 +125,7 @@ export async function onRequestPost(context) {
       }
     }
 
+    // [4] 심판
     if (!quotaExceeded) {
       const judgeRaw = await runJudgeAgent(env, {
         ticker, stock_name, analysis_type, holdings_data, price_data,
@@ -205,7 +209,6 @@ export async function onRequestPost(context) {
         market_facts: {
           price_data,
           volume_data,
-          // ★ 분석 시점 holdings 스냅샷 (감사/디버깅용, 트렌드 이력에는 사용 안 됨)
           holdings_data: holdings_data || null,
           agent_outputs: {
             price_volume: pvResult,
@@ -248,20 +251,20 @@ export async function onRequestPost(context) {
 }
 
 // ─────────────────────────────────────────────────────────────
-// 헬퍼: 이전 판단 조회 (analysis_type 일치 항목만)
+// 헬퍼: 이전 판단 조회 (모든 유저의 해당 종목 분석 결과 포함)
 // ─────────────────────────────────────────────────────────────
-async function loadPreviousRecommendation(supabase, userId, ticker, analysisType) {
+async function loadPreviousRecommendation(supabase, ticker, analysisType) {
   const since = new Date(Date.now() - 30 * 24 * 60 * 60 * 1000).toISOString();
   const { data, error } = await supabase
     .from('stock_analysis_runs')
     .select('recommendation, analyzed_at')
-    .eq('user_id', userId)
     .eq('ticker', ticker)
-    .eq('analysis_type', analysisType)   // ★ 매수/매도 관점 일치 항목만
+    .eq('analysis_type', analysisType)   // 매수/매도 관점 일치 항목만
     .gte('analyzed_at', since)
     .order('analyzed_at', { ascending: false })
     .limit(1)
     .maybeSingle();
+    
   if (error) {
     console.warn('[loadPreviousRec] query failed:', error.message);
     return null;

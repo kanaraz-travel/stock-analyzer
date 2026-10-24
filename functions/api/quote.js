@@ -8,6 +8,16 @@ const CACHE_TTL = 24 * 60 * 60 * 1000;
 const PARTIAL_RETRY_TTL = 5 * 60 * 1000;
 const FAIL_RETRY_MS = 30 * 1000;
 
+// ★ ETF/ETN/ELW 제외 필터 추가 (popular.js와 동일한 기준)
+const EXCLUDE_KEYWORDS = [
+  'KODEX', 'TIGER', 'KBSTAR', 'ARIRANG', 'HANARO', 'SOL', 'ACE', 'PLUS', 'RISE', 'KOSEF',
+  'TIMEFOLIO', '히어로즈', '마이다스', '파워', '인버스', '레버리지', '선물', '합성', 'ETN', 'ELW'
+];
+function isExcluded(name) {
+  const upper = String(name).toUpperCase();
+  return EXCLUDE_KEYWORDS.some(k => upper.includes(k.toUpperCase()));
+}
+
 export async function onRequestGet(context) {
   const { request, env } = context;
   const url = new URL(request.url);
@@ -183,6 +193,10 @@ function parsePipeSeparated(text, map, codeMap) {
     const name = parts[2].trim();
     if (!/^[0-9A-Z]{6}$/i.test(code)) continue;
     if (!name || name.length > 50) continue;
+    
+    // ★ ETF/ETN 필터링 추가
+    if (isExcluded(name)) continue;
+
     map.set(name, code);
     codeMap.set(code, name);
     count++;
@@ -202,6 +216,10 @@ function parseFixedWidth(text, tailLen, map, codeMap) {
     if (!name || name.length > 50) continue;
     name = name.replace(/[^\uAC00-\uD7A3a-zA-Z0-9\s().&-]/g, '').trim();
     if (!name) continue;
+
+    // ★ ETF/ETN 필터링 추가
+    if (isExcluded(name)) continue;
+
     map.set(name, code);
     codeMap.set(code, name);
     count++;
@@ -224,7 +242,7 @@ function findCodeByName(query) {
   if (partial.length === 1) return { code: partial[0].code };
   
   if (partial.length > 1) {
-    // ★ 개수 제한 없이 가나다순으로 정렬하여 모든 후보를 반환
+    // 개수 제한 없이 가나다순으로 정렬하여 모든 후보를 반환
     partial.sort((a, b) => a.name.localeCompare(b.name, 'ko'));
     return { candidates: partial.map((p) => `${p.name}(${p.code})`) };
   }

@@ -30,12 +30,10 @@ export async function runAnalysis(ticker, name, price, targetType = 'main', card
   if (!ticker) return;
   const isSilent = targetType === 'batch';
 
-  // ★ inline 호출 시 cardElement 필수
   if (!isSilent && targetType === 'inline' && !cardElement) {
     console.error('[runAnalysis] cardElement가 없어 inline 분석을 실행할 수 없습니다.');
     return;
   }
-  // ★ 메인 재진입 가드
   if (!isSilent && targetType === 'main' && state.isAnalyzingMain) return;
 
   let btn = null;
@@ -167,9 +165,8 @@ export async function runAnalysis(ticker, name, price, targetType = 'main', card
     state.analysisCache.set(ticker, data);
 
     if (isSilent) {
-      // 배치 모드: UI 렌더링 없이 캐시만
+      // 배치 모드
     } else if (targetType === 'main') {
-      // ★ race condition 방지: 현재 표시 중인 종목과 일치할 때만 렌더링
       if (state.currentQuote?.ticker === ticker) {
         renderAnalysisResult(data, state.currentScreen === 'analysis');
       }
@@ -292,20 +289,45 @@ function resetBatchButton() {
   batchState = 'idle';
 }
 
+// ★ 폴백 사유 메시지를 DOM에 추가하는 헬퍼
+function getFallbackMessage(reason) {
+  if (reason === 'AI_QUOTA_EXCEEDED') return '⚠️ 오늘 AI 무료 한도를 모두 사용했습니다. 한국시간 오전 9시 이후 다시 시도해 주세요.';
+  if (reason === 'JUDGE_FAILED') return '⚠️ AI 판단 응답을 해석하지 못했습니다. 잠시 후 다시 시도해 주세요.';
+  if (reason === 'AI_ERROR' || reason === 'AI_NOT_CONFIGURED') return '⚠️ AI 서비스에 일시적 오류가 발생했습니다.';
+  if (reason === 'DATA_INSUFFICIENT') return '⚠️ 시세 기준 시각을 확인할 수 없습니다.';
+  return '⚠️ AI 분석 대신 수치 지표로 임시 판단을 제공합니다.';
+}
+
 export function renderAnalysisResult(data, scrollTo = true) {
   $('#analysis-result').hidden = false;
   const badge = $('#recommendation-badge');
   badge.textContent = data.recommendation || '판단 보류';
   badge.className = 'recommendation-badge';
   const rec = data.recommendation || '';
+  
+  let warningEl = document.getElementById('fallback-warning');
+  if (!warningEl) {
+    warningEl = document.createElement('div');
+    warningEl.id = 'fallback-warning';
+    warningEl.style.cssText = 'margin-top:12px; padding:10px; background:#fef3c7; color:#92400e; border:1px solid #f59e0b; border-radius:8px; font-size:12px; line-height:1.4; display:none;';
+    const target = document.getElementById('overall-summary');
+    if (target && target.parentNode) target.parentNode.appendChild(warningEl);
+  }
 
   if (data.fallback) {
     badge.classList.add('recommendation-badge--pending');
     badge.textContent = `임시 판단: ${rec}`;
-  } else if (rec.includes('매수')) badge.classList.add('recommendation-badge--buy');
-  else if (rec.includes('매도')) badge.classList.add('recommendation-badge--sell');
-  else if (rec.includes('기다리기') || rec.includes('보유')) badge.classList.add('recommendation-badge--hold');
-  else badge.classList.add('recommendation-badge--pending');
+    if (warningEl) {
+      warningEl.textContent = getFallbackMessage(data.fallback_reason);
+      warningEl.style.display = 'block';
+    }
+  } else {
+    if (rec.includes('매수')) badge.classList.add('recommendation-badge--buy');
+    else if (rec.includes('매도')) badge.classList.add('recommendation-badge--sell');
+    else if (rec.includes('기다리기') || rec.includes('보유')) badge.classList.add('recommendation-badge--hold');
+    else badge.classList.add('recommendation-badge--pending');
+    if (warningEl) warningEl.style.display = 'none';
+  }
 
   $('#analysis-timestamp').textContent = `분석 시각: ${formatDateTime(data.analyzed_at || new Date().toISOString())}`;
   $('#overall-summary').textContent = data.overall_summary || '-';
@@ -333,6 +355,13 @@ export function renderInlineAnalysisResult(data, cardElement, scrollTo = true) {
   const badge = document.createElement('div'); badge.className = `recommendation-badge ${badgeClass}`; badge.textContent = badgeText;
   const ts = document.createElement('div'); ts.className = 'analysis-timestamp'; ts.textContent = formatDateTime(data.analyzed_at || new Date().toISOString());
   headDiv.appendChild(badge); headDiv.appendChild(ts); container.appendChild(headDiv);
+
+  if (data.fallback) {
+    const warn = document.createElement('div');
+    warn.style.cssText = 'margin-top:8px; padding:8px; background:#fef3c7; color:#92400e; border:1px solid #f59e0b; border-radius:6px; font-size:11px; line-height:1.4;';
+    warn.textContent = getFallbackMessage(data.fallback_reason);
+    container.appendChild(warn);
+  }
 
   const overallBlock = document.createElement('div');
   overallBlock.className = 'analysis-block';
