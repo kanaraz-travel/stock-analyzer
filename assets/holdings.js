@@ -1,8 +1,11 @@
 // assets/holdings.js
-import { 
-  supabase, state, $, $$, formatNumber, formatCurrency, formatDateTime, getBorderColor,
-  updateMarketStatusBadge, updateDataStatusBadge
-} from './app.js';
+import {
+  supabase, state, $,
+  formatNumber, formatCurrency, getBorderColor,
+  updateMarketStatusBadge, updateDataStatusBadge,
+  computeHoldings
+} from './core.js';
+import { runAnalysis, renderInlineAnalysisResult } from './analysis.js';
 
 export function initHoldings() {
   $('#transaction-form').addEventListener('submit', (e) => { e.preventDefault(); saveTransaction(); });
@@ -21,12 +24,11 @@ export async function loadHoldings() {
     .order('trade_date', { ascending: true })
     .order('created_at', { ascending: true });
 
-  if (error) { 
-    console.error('loadHoldings error:', error.message); 
+  if (error) {
+    console.error('loadHoldings error:', error.message);
     updateDataStatusBadge('ERROR');
-    return; 
+    return;
   }
-  
   state.transactions = data || [];
   await refreshHoldingsView();
 }
@@ -39,7 +41,7 @@ export async function refreshHoldingsView(holdingsData) {
 
   let totalCost = 0, totalCurrentValue = 0;
   const currentPriceMap = new Map();
-  
+
   if (currentHoldings.length === 0) {
     renderHoldingsList([], currentPriceMap);
     renderHoldingsSummary(holdingsData, 0, 0);
@@ -64,93 +66,25 @@ export async function refreshHoldingsView(holdingsData) {
       } else {
         console.warn(`[refreshHoldingsView] quote ${h.ticker} failed: HTTP ${res.status}`);
       }
-    } catch (e) { 
+    } catch (e) {
       console.warn(`[refreshHoldingsView] quote ${h.ticker} exception:`, e.message);
     }
 
     if (price == null) price = state.priceCache.get(h.ticker) || null;
-
     currentPriceMap.set(h.ticker, price);
     totalCurrentValue += (price || h.avgCost) * h.qty;
     await new Promise(r => setTimeout(r, 500));
   }
 
-  if (anySuccess && lastSuccessfulStatus) {
-    updateDataStatusBadge(lastSuccessfulStatus);
-  } else {
-    updateDataStatusBadge('ERROR');
-  }
+  if (anySuccess && lastSuccessfulStatus) updateDataStatusBadge(lastSuccessfulStatus);
+  else updateDataStatusBadge('ERROR');
 
   renderHoldingsList(currentHoldings, currentPriceMap);
   renderHoldingsSummary(holdingsData, totalCost, totalCurrentValue);
 }
 
-export function computeHoldings(txs) {
-  const map = new Map();
-  let totalRealizedPnl = 0, totalRealizedCost = 0;
-  const overSells = [];
-  const overSellTickers = new Set();
-
-  const sorted = [...txs].sort((a, b) => {
-    const da = a.trade_date || '';
-    const db = b.trade_date || '';
-    if (da !== db) return da < db ? -1 : 1;
-    return (a.created_at || '').localeCompare(b.created_at || '');
-  });
-
-  for (const tx of sorted) {
-    if (!tx.ticker || typeof tx.ticker !== 'string' || !tx.stock_name) {
-      console.warn('[computeHoldings] ⚠️ 유효하지 않은 거래 데이터 필터링됨:', tx);
-      continue;
-    }
-    
-    const txType = String(tx.transaction_type || '').toUpperCase();
-
-    if (!map.has(tx.ticker)) {
-      map.set(tx.ticker, {
-        ticker: tx.ticker, stock_name: tx.stock_name,
-        qty: 0, avgCost: 0, totalCost: 0, transactions: [],
-        hasOverSell: false,
-      });
-    }
-    const h = map.get(tx.ticker);
-    h.transactions.push(tx);
-    const q = Number(tx.quantity), p = Number(tx.unit_price);
-
-    if (txType === 'BUY') {
-      h.totalCost += q * p;
-      h.qty += q;
-      h.avgCost = h.qty > 0 ? h.totalCost / h.qty : 0;
-    } else if (txType === 'SELL') {
-      if (q > h.qty + 1e-9) {
-        overSells.push({
-          tx_id: tx.id, ticker: tx.ticker, stock_name: tx.stock_name,
-          trade_date: tx.trade_date, attempted: q, available: h.qty,
-        });
-        h.hasOverSell = true;
-        overSellTickers.add(tx.ticker);
-      }
-      const sellQty = Math.min(q, h.qty);
-      const costOfSold = sellQty * h.avgCost;
-      const revenue = sellQty * p;
-      totalRealizedPnl += (revenue - costOfSold);
-      totalRealizedCost += costOfSold;
-      h.totalCost -= costOfSold;
-      h.qty -= sellQty;
-      h.avgCost = h.qty > 0 ? h.totalCost / h.qty : 0;
-    }
-  }
-
-  return {
-    currentHoldings: Array.from(map.values()).filter((h) => h.qty > 0),
-    totalRealizedPnl, totalRealizedCost, overSells,
-    overSellTickers: Array.from(overSellTickers), hasAnyOverSell: overSells.length > 0,
-  };
-}
-
 export function renderHoldingsSummary(holdingsData, totalCost, totalCurrentValue) {
   const { totalRealizedPnl, totalRealizedCost, hasAnyOverSell } = holdingsData;
-
   $('#total-cost').textContent = formatCurrency(totalCost);
 
   if (hasAnyOverSell) {
@@ -177,7 +111,7 @@ export function renderHoldingsList(holdings, priceMap) {
   }
   holdings.forEach((h) => {
     if (!h.ticker || !h.stock_name) {
-      console.warn('[renderHoldingsList] ⚠️ 유효하지 않은 보유 종목 렌더링 스킵:', h);
+      console.warn('[renderHoldingsList] 유효하지 않은 보유 종목 렌더링 스킵:', h);
       return;
     }
 
@@ -222,7 +156,7 @@ export function renderHoldingsList(holdings, priceMap) {
     aiBtn.type = 'button'; aiBtn.className = 'btn btn--primary btn--half btn-ai-analyze'; aiBtn.textContent = 'AI 분석하기';
     aiBtn.disabled = isFallback;
     if (isFallback) aiBtn.title = '현재가를 확인할 수 없어 분석할 수 없습니다.';
-    aiBtn.addEventListener('click', () => window.runAnalysis(h.ticker, h.stock_name, currentPrice, 'inline', card));
+    aiBtn.addEventListener('click', () => runAnalysis(h.ticker, h.stock_name, currentPrice, 'inline', card));
     actionRow.appendChild(aiBtn);
     const toggle = document.createElement('button');
     toggle.type = 'button'; toggle.className = 'tx-toggle btn--half';
@@ -235,7 +169,7 @@ export function renderHoldingsList(holdings, priceMap) {
     inlineResult.className = 'holding-inline-result';
     inlineResult.hidden = true;
     card.appendChild(inlineResult);
-    if (state.analysisCache.has(h.ticker)) window.renderInlineAnalysisResult(state.analysisCache.get(h.ticker), card, false);
+    if (state.analysisCache.has(h.ticker)) renderInlineAnalysisResult(state.analysisCache.get(h.ticker), card, false);
 
     const txList = document.createElement('div');
     txList.className = 'tx-list'; txList.hidden = true;
@@ -279,7 +213,6 @@ function renderTransactionRow(tx) {
   return row;
 }
 
-// ★ export 추가 완료
 export function renderOverSellWarning(overSells) {
   const existing = document.getElementById('over-sell-warning');
   if (existing) existing.remove();
@@ -290,14 +223,12 @@ export function renderOverSellWarning(overSells) {
   warn.style.cssText = 'background:#fef3c7;border:1px solid #f59e0b;border-radius:12px;padding:12px;margin-bottom:12px;font-size:12px;color:#92400e;line-height:1.5;';
 
   const title = document.createElement('div');
-  title.style.fontWeight = '700';
-  title.style.marginBottom = '6px';
+  title.style.cssText = 'font-weight:700;margin-bottom:6px;';
   title.textContent = `⚠️ 초과 매도 거래 ${overSells.length}건 감지`;
   warn.appendChild(title);
 
   const desc = document.createElement('div');
-  desc.style.fontSize = '11px';
-  desc.style.marginBottom = '8px';
+  desc.style.cssText = 'font-size:11px;margin-bottom:8px;';
   desc.textContent = '매도 시점에 보유 수량이 부족한 거래가 있습니다. 손익이 부정확하므로 해당 거래를 수정하거나 삭제해 주세요.';
   warn.appendChild(desc);
 
@@ -317,14 +248,11 @@ export function renderOverSellWarning(overSells) {
       editTransaction(o.tx_id);
     });
     line.appendChild(editBtn);
-
     warn.appendChild(line);
   });
 
   const summaryCard = document.querySelector('#screen-holdings .card');
-  if (summaryCard && summaryCard.parentNode) {
-    summaryCard.parentNode.insertBefore(warn, summaryCard);
-  }
+  if (summaryCard && summaryCard.parentNode) summaryCard.parentNode.insertBefore(warn, summaryCard);
 }
 
 function setTxFormMode(tx) {
@@ -343,7 +271,6 @@ function resetTxForm() {
 
 function showTxError(msg) { const el = $('#tx-error'); el.textContent = msg; el.hidden = false; }
 
-// ★ 편집 저장 시: 이 편집으로 인해 "새로운" 초과 매도가 생기는지 확인 (기존 거래의 초과 매도는 카운트 제외)
 function previewOverSellIncrease(ticker, tradeDate, price, qty) {
   const beforeOverSell = computeHoldings(state.transactions).overSells.length;
   const simulated = state.transactions.map(t =>
@@ -384,11 +311,10 @@ async function saveTransaction() {
       if (!ok) throw new Error(`${tradeDate} 시점의 보유 수량을 초과하는 매도입니다.`);
     }
 
-    // ★ BUY 편집 저장 시: 이 편집으로 인한 초과 매도 증가 여부 확인
     if (type === 'BUY' && state.editingTxId) {
       const newOverSells = previewOverSellIncrease(qData.ticker, tradeDate, price, qty);
       if (newOverSells > 0) {
-        if (!confirm(`이 수정으로 인해 초과 매도가 ${newOverSells}건 새로 발생합니다. 계속하시겠습니까?\n\n(저장 후 화면의 경고를 확인해 주세요.)`)) {
+        if (!confirm(`이 수정으로 인해 초과 매도가 ${newOverSells}건 새로 발생합니다. 계속하시겠습니까?`)) {
           throw new Error('거래 저장을 취소했습니다.');
         }
       }
@@ -411,7 +337,7 @@ async function saveTransaction() {
     }
     if (error) throw error;
 
-    // ★ 캐시 무효화 (재렌더 이전에 반드시 실행) — 이전 ticker / 신규 ticker 모두 무효화
+    // ★ 캐시 무효화 (이전 ticker + 신규 ticker)
     if (state.editingTxId) {
       const oldTx = state.transactions.find(t => t.id === state.editingTxId);
       if (oldTx?.ticker) state.analysisCache.delete(oldTx.ticker);
@@ -442,8 +368,7 @@ async function canSell(ticker, quantity, sellDate, excludeId = null) {
   for (const tx of data || []) {
     if (excludeId && tx.id === excludeId) continue;
     if (tx.trade_date > sellDate) continue;
-    if (tx.trade_date === sellDate && excludeCreatedAt
-        && tx.created_at && tx.created_at >= excludeCreatedAt) continue;
+    if (tx.trade_date === sellDate && excludeCreatedAt && tx.created_at && tx.created_at >= excludeCreatedAt) continue;
     const q = Number(tx.quantity) || 0;
     if (tx.transaction_type === 'BUY') net += q;
     else net -= q;
@@ -468,7 +393,6 @@ async function deleteTransaction(id) {
   if (!confirm('이 거래를 삭제하시겠습니까?')) return;
   const { data: { session } } = await supabase.auth.getSession(); if (!session) return;
 
-  // ★ 캐시 무효화 (삭제 이전에 ticker 확보)
   const target = state.transactions.find(t => t.id === id);
   const deletedTicker = target?.ticker || null;
 
@@ -476,6 +400,5 @@ async function deleteTransaction(id) {
   if (error) { alert('삭제에 실패했습니다: ' + error.message); return; }
 
   if (deletedTicker) state.analysisCache.delete(deletedTicker);
-
   await loadHoldings();
 }

@@ -34,7 +34,7 @@ export async function onRequestGet(context) {
       if (!found) return jsonResponse({ error: `'${query}'에 해당하는 종목을 찾을 수 없습니다.` }, 404);
       if (found.candidates) {
         return jsonResponse({
-          error: `'${query}'에 해당하는 종목이 여러 개입니다: ${found.candidates.join(', ')} … 정확한 종목명을 입력해 주세요.`,
+          error: `'${query}'에 해당하는 종목이 여러 개입니다. 목록에서 선택해 주세요.`,
           candidates: found.candidates,
         }, 409);
       }
@@ -213,16 +213,20 @@ function findCodeByName(query) {
   const norm = (s) => s.replace(/\s+/g, '').toLowerCase();
   const q = norm(query);
   if (!q) return null;
+  
   const partial = [];
   for (const [name, code] of masterCache.map.entries()) {
     const n = norm(name);
-    if (n === q) return { code };
+    if (n === q) return { code }; // 정확히 일치하는 종목이 있으면 즉시 반환
     if (n.includes(q)) partial.push({ name, code });
   }
+  
   if (partial.length === 1) return { code: partial[0].code };
+  
   if (partial.length > 1) {
-    partial.sort((a, b) => a.name.length - b.name.length);
-    return { candidates: partial.slice(0, 5).map((p) => `${p.name}(${p.code})`) };
+    // ★ 개수 제한 없이 가나다순으로 정렬하여 모든 후보를 반환
+    partial.sort((a, b) => a.name.localeCompare(b.name, 'ko'));
+    return { candidates: partial.map((p) => `${p.name}(${p.code})`) };
   }
   return null;
 }

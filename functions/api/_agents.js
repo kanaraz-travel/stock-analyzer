@@ -10,7 +10,7 @@ function isQuotaError(e) {
 async function callAiWithRetry(env, modelKey, messages, maxTokens, temperature) {
   const modelId = MODELS[modelKey] || MODELS.judge;
   let lastError = null;
-  for (let attempt = 0; attempt < 2; attempt++) { // 재시도 횟수 2회로 축소
+  for (let attempt = 0; attempt < 2; attempt++) {
     try {
       const response = await env.AI.run(modelId, { messages, max_tokens: maxTokens, temperature });
       if (response && response.error) throw new Error(response.error);
@@ -28,7 +28,6 @@ async function callAiWithRetry(env, modelKey, messages, maxTokens, temperature) 
   throw lastError;
 }
 
-// [2] 뉴스 분석가
 export async function runNewsAgent(env, payload) {
   const prompts = buildNewsPrompts(payload);
   if (prompts.isEmpty) return { news_analysis: '관련 뉴스 없음.', news_sentiment: '중립', news_direction: '중립', news_impact: '약', key_theme: '-', status: 'success' };
@@ -37,16 +36,13 @@ export async function runNewsAgent(env, payload) {
     const response = await callAiWithRetry(env, 'news', [
       { role: 'system', content: prompts.system },
       { role: 'user', content: prompts.user }
-    ], 250, 0.3); // T7: 토큰 축소
+    ], 250, 0.3);
 
     const parsed = extractJSON(response?.response || '');
     let newsText = typeof parsed.news_analysis === 'string' ? parsed.news_analysis : '';
-    
-    // 뉴런 낭비 방지를 위해 재시도 로직 제거 (Claude T1)
     if (!newsText || isNegativeNewsResponse(newsText)) {
       newsText = `수집된 ${prompts.itemCount}건의 기사에서 뚜렷한 주가 영향 요인은 확인되지 않았음.`;
     }
-
     return {
       news_analysis: newsText,
       news_sentiment: normalizeNewsSentiment(parsed.news_sentiment),
@@ -61,14 +57,13 @@ export async function runNewsAgent(env, payload) {
   }
 }
 
-// [3] 추세 분석가
 export async function runTrendAgent(env, payload) {
   const { system, user } = buildTrendPrompts(payload);
   try {
     const response = await callAiWithRetry(env, 'trend', [
       { role: 'system', content: system },
       { role: 'user', content: user }
-    ], 350, 0.2); // T7: 토큰 축소
+    ], 350, 0.2);
     return normalizeTrendResult(extractJSON(response?.response || ''));
   } catch (e) {
     console.error('[trend agent error]', e.message);
@@ -76,14 +71,13 @@ export async function runTrendAgent(env, payload) {
   }
 }
 
-// [4] 심판 에이전트
 export async function runJudgeAgent(env, payload) {
   const { system, user } = buildJudgePrompts(payload);
   try {
     const response = await callAiWithRetry(env, 'judge', [
       { role: 'system', content: system },
       { role: 'user', content: user }
-    ], 600, 0.1); // T7: 토큰 축소
+    ], 600, 0.1);
 
     const parsed = extractJSON(response?.response || '');
     if (typeof parsed.recommendation !== 'string' || typeof parsed.overall_summary !== 'string') {
@@ -100,7 +94,7 @@ export async function runJudgeAgent(env, payload) {
 // 헬퍼
 // ─────────────────────────────────────────────────────────────
 
-// LLM 응답에서 JSON 객체를 추출 (직접 파싱, 코드펜스, 첫 중괄호 블록 순)
+// ★ 문자열 인식 balanced brace scanner로 greedy 매칭 문제 해결
 function extractJSON(text) {
   if (!text || typeof text !== 'string') return {};
   const trimmed = text.trim();
@@ -111,16 +105,27 @@ function extractJSON(text) {
     try { return JSON.parse(fenceMatch[1].trim()); } catch {}
   }
 
-  const braceMatch = trimmed.match(/\{[\s\S]*\}/);
-  if (braceMatch) {
-    try { return JSON.parse(braceMatch[0]); } catch {}
+  const start = trimmed.indexOf('{');
+  if (start < 0) return {};
+
+  let depth = 0, inString = false, escaped = false;
+  for (let i = start; i < trimmed.length; i++) {
+    const ch = trimmed[i];
+    if (escaped) { escaped = false; continue; }
+    if (ch === '\\' && inString) { escaped = true; continue; }
+    if (ch === '"') { inString = !inString; continue; }
+    if (inString) continue;
+    if (ch === '{') depth++;
+    else if (ch === '}') {
+      depth--;
+      if (depth === 0) {
+        try { return JSON.parse(trimmed.slice(start, i + 1)); } catch { return {}; }
+      }
+    }
   }
   return {};
 }
 
-// 뉴스 응답이 "실패/거부" 성격인지 판별
-// - 너무 짧거나 빈 문자열 → 실패
-// - 명시적 거부 표현(짧은 경우) → 실패
 function isNegativeNewsResponse(text) {
   if (!text || typeof text !== 'string') return true;
   const t = text.trim();
@@ -154,9 +159,7 @@ function normalizeNewsImpact(v) {
 }
 
 function normalizeTrendResult(parsed) {
-  if (!parsed || typeof parsed !== 'object') {
-    return { __exception: true, message: 'INVALID_TREND_FORMAT' };
-  }
+  if (!parsed || typeof parsed !== 'object') return { __exception: true, message: 'INVALID_TREND_FORMAT' };
   const shortTerm = ['상승', '횡보', '하락'].includes(parsed.short_term_trend) ? parsed.short_term_trend : null;
   const mediumTerm = ['상승', '횡보', '하락'].includes(parsed.medium_term_trend) ? parsed.medium_term_trend : null;
   const strength = ['강', '중', '약'].includes(parsed.trend_strength) ? parsed.trend_strength : null;
