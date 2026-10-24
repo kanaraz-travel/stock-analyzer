@@ -31,7 +31,9 @@ async function handleSearch() {
     const res = await fetch(`/api/quote?ticker=${encodeURIComponent(query)}`);
     const data = await res.json();
 
+    // ★ 여러 종목이 검색된 경우 현재 선택된 종목 상태를 초기화하여 잘못된 분석 요청 방지
     if (res.status === 409 && data.candidates) {
+      state.currentQuote = null;
       $('#quote-card').hidden = true;
       $('#analysis-result').hidden = true;
       renderSearchCandidates(data.candidates);
@@ -55,7 +57,7 @@ async function handleSearch() {
   }
 }
 
-// ★ 후보 목록 스크롤 렌더링 + parentNode null 방어
+// 후보 목록 스크롤 렌더링 + parentNode null 방어
 function renderSearchCandidates(candidates) {
   let container = document.getElementById('search-candidates');
   if (!container) {

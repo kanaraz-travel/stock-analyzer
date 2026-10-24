@@ -25,11 +25,19 @@ export function buildRuleBasedFallback({ price_data, volume_data, analysis_type,
 
   let recommendation = '판단 보류';
   const isSell = analysis_type === 'sell';
-  if (score >= 2) recommendation = isSell ? '보유 유지' : '매수 고려';
-  else if (score <= -2) recommendation = isSell ? '부분 매도 고려' : '매도 고려';
-  else recommendation = isSell ? '보유 유지' : '기다리기';
 
-  // ★ 빈 문자열 join 방지
+  if (isSell) {
+    // 매도 관점 (보유 중)
+    if (score >= 2) recommendation = '보유 유지';
+    else if (score <= -2) recommendation = '부분 매도 고려';
+    else recommendation = '보유 유지';
+  } else {
+    // ★ 매수 관점 (미보유): 안 좋으면 매도가 아니라 '기다리기'
+    if (score >= 2) recommendation = '매수 고려';
+    else if (score <= -2) recommendation = '기다리기';
+    else recommendation = '기다리기';
+  }
+
   const parts = [];
   if (p.change_rate != null && Number.isFinite(p.change_rate)) parts.push(`당일 ${p.change_rate.toFixed(2)}%`);
   if (p.ma20_disparity != null && Number.isFinite(p.ma20_disparity)) parts.push(`20일선 대비 ${p.ma20_disparity.toFixed(2)}%`);
