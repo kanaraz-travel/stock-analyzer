@@ -40,7 +40,6 @@ export function interpretConfidence(confidence) {
   return { level: 'very_low', label: `매우 낮은 확신 (${pct}%)` };
 }
 
-// ★ 폴백 사유에 따른 사용자 안내 메시지 (단일 출처)
 export function getFallbackMessage(reason) {
   if (reason === 'AI_QUOTA_EXCEEDED') return '⚠️ 오늘 AI 무료 한도를 모두 사용했습니다. 한국시간 오전 9시 이후 다시 시도해 주세요.';
   if (reason === 'AI_MODEL_DEPRECATED') return '⚠️ AI 모델 설정에 문제가 있어 임시 판단을 제공합니다. 관리자에게 알려 주세요.';
@@ -62,18 +61,29 @@ export function buildPriceVolumeFacts(price_data, volume_data, analysis_type) {
   const ma = p.ma20_disparity != null ? p.ma20_disparity.toFixed(2) : null;
   const r1m = p.return_1m != null ? p.return_1m.toFixed(2) : null;
 
+  // ★ 52주 위치 계산
+  let w52Pos = null;
+  if (p.w52_hgpr && p.w52_lwpr && p.current_price && p.w52_hgpr > p.w52_lwpr) {
+    w52Pos = ((p.current_price - p.w52_lwpr) / (p.w52_hgpr - p.w52_lwpr)) * 100;
+  }
+
   let price_flow = '';
   if (cr && cr > 0 && ma && ma > 0) price_flow = `단기 상승 흐름(등락 ${cr}%, 20일선 +${ma}%).`;
   else if (cr && cr < 0 && ma && ma < 0) price_flow = `단기 하락 흐름(등락 ${cr}%, 20일선 ${ma}%).`;
   else price_flow = `혼조세(등락 ${cr || '-'}%, 20일선 ${ma || '-'}%).`;
   if (r1m) price_flow += ` 1개월 수익률 ${r1m}%.`;
+  if (w52Pos != null) price_flow += ` 52주 밴드 내 ${w52Pos.toFixed(1)}% 위치.`;
 
   let vol_analysis = '';
   const cur = v.current_volume;
   const avg = v.avg_volume_20;
+  const isMarketClosed = String(p.market_status || '').includes('휴장') || String(p.market_status || '').includes('마감');
+
   if (cur && avg) {
     if (String(p.market_status || '').includes('정규장')) {
       vol_analysis = `장중 누적 거래량(${cur.toLocaleString()}주)은 직전 20거래일 평균(${avg.toLocaleString()}주)과 직접 비교 불가.`;
+    } else if (isMarketClosed) {
+      vol_analysis = `장 마감 기준 거래량(${cur.toLocaleString()}주)은 20일 평균 대비 ${(cur / avg).toFixed(2)}배 수준.`;
     } else {
       vol_analysis = `거래량은 20일 평균 대비 ${(cur / avg).toFixed(2)}배 수준.`;
     }

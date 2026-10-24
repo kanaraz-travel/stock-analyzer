@@ -17,6 +17,7 @@ const CLEANUP_PROBABILITY = 0.2;
 export async function onRequestPost(context) {
   const { request, env } = context;
 
+  // ─── 인증 ───
   const authHeader = request.headers.get('authorization') || '';
   const token = authHeader.replace(/^Bearer\s+/i, '').trim();
   if (!token) return jsonResponse({ error: '인증이 필요합니다.' }, 401);
@@ -49,7 +50,13 @@ export async function onRequestPost(context) {
   if (!validation.valid) return jsonResponse({ error: '입력 데이터가 유효하지 않습니다.', details: validation.errors }, 400);
 
   const { ticker, stock_name, price_data, volume_data, news_items, holdings_data } = body;
-  const analysis_type = body.analysis_type === 'sell' ? 'sell' : 'buy';
+  
+  // ★ 관점(analysis_type)과 보유 데이터(holdings_data)의 정합성 서버 단 검증
+  let analysis_type = body.analysis_type === 'sell' ? 'sell' : 'buy';
+  if (analysis_type === 'sell' && (!holdings_data || holdings_data.quantity <= 0)) {
+    console.warn(`[analyze] sell 관점 요청이지만 보유 데이터가 없음. buy로 강제 전환 (${ticker})`);
+    analysis_type = 'buy';
+  }
 
   const dataQuality = computeDataQuality(price_data);
   if (dataQuality.status === 'UNKNOWN') {
@@ -126,7 +133,6 @@ export async function onRequestPost(context) {
       isFallback = true; fallbackReason = 'AI_MODEL_DEPRECATED';
       finalData = buildRuleBasedFallback({ price_data, volume_data, analysis_type, trendResult });
     } else if (criticalAgentsFailed) {
-      // ★ 핵심 에이전트 실패 시 심판 호출 자체를 하지 않음
       isFallback = true; fallbackReason = 'CRITICAL_AGENT_FAILURE';
       finalData = buildRuleBasedFallback({ price_data, volume_data, analysis_type, trendResult });
     } else {

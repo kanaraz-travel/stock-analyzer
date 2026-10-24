@@ -1,6 +1,4 @@
 // functions/api/_prompts.js
-// 4개 에이전트의 system/user 프롬프트 빌더.
-
 import { VALID_RECS_BUY, VALID_RECS_SELL } from './_constants.js';
 
 const MAX_NEWS_FOR_AI = 8;
@@ -19,9 +17,7 @@ export function buildNewsPrompts(payload) {
     date: (typeof n.published_at === 'string' && n.published_at.length >= 10) ? n.published_at.slice(0, 10) : null,
   })).filter(n => n.title);
 
-  if (itemsForAI.length === 0) {
-    return { isEmpty: true, itemCount: 0, newsJson: null, system: null, user: null };
-  }
+  if (itemsForAI.length === 0) return { isEmpty: true, itemCount: 0, newsJson: null, system: null, user: null };
 
   const newsJson = JSON.stringify(itemsForAI);
 
@@ -41,7 +37,8 @@ export function buildNewsPrompts(payload) {
 1. 대상 종목 또는 그 산업/시장/경쟁사/규제/정책 관련 내용이 하나라도 있으면 요약하세요.
 2. 제외 대상: 스포츠·연예·정치인 개인사, 단순 홍보.
 3. 뉴스가 1건이라도 있으면 가장 관련성 높은 관점을 1~3문장으로 뽑아내세요.
-4. 관련성이 명백히 부족하거나 무관한 기사만 있으면 "주가 영향 불명" 또는 "중립"으로 응답해도 됩니다. 억지로 추측하지 마세요.
+4. ★ 단순히 종목 뉴스만 요약하지 말고, 최근 업종 전반의 트렌드(예: 금융주 밸류업, 반도체 호황 등)와 연결 지어 해석할 수 있다면 news_analysis에 한 줄 언급하세요.
+5. 관련성이 명백히 부족하거나 무관한 기사만 있으면 "주가 영향 불명" 또는 "중립"으로 응답해도 됩니다. 억지로 추측하지 마세요.
 
 [응답 형식]
 유효한 JSON 객체 하나만 출력. 필드:
@@ -123,26 +120,19 @@ export function buildTrendPrompts(payload) {
 - 1·2번 분석가의 결과, 가격·거래량 데이터, 이전 추세 판단 이력을 종합해 '향후 추세 시나리오'를 추론합니다.
 - 미래는 확실하지 않으므로 확신이 낮으면 trend_confidence를 낮게 책정하세요.
 - 최종 매수/매도 판단은 심판 에이전트가 담당합니다. 절대 하지 마세요.
-- 1번 또는 2번 결과가 "누락"이면 해당 정보 부족을 감안해 확신도를 낮추세요.
 
 [추세 추론 원칙]
 1. 가격 지표(1일·1개월·20일선·52주 위치)와 거래량 지표를 종합해 모멘텀 방향을 판단.
-2. 뉴스 감성·방향·영향력이 가격 모멘텀과 일치하는지 확인.
-3. 단기(1~2주)와 중기(1~2개월)를 구분. 두 추세가 다를 수 있음.
-4. trend_strength: 두 추세의 일치도 + 지표 강도 → '강'|'중'|'약'.
-5. '약'은 신호 상충 또는 데이터 부족 시.
-6. 상승/하락 근거는 key_drivers에, 반대 시나리오 리스크는 risk_factors에.
-
-[데이터 기준 활용]
-- '확정 종가'는 확신도 상대적 상향 가능.
-- '장중 잠정치'는 확신도 낮추고 '장 마감 후 재확인 필요' 관점 반영.
-- 샘플링이 장중 위주면 이력 신뢰도 낮춤.
+2. ★ 52주 위치가 80% 이상(고점 부근)이면 단기 과열/조정 가능성을, 20% 이하(저점 부근)이면 반등 가능성을 리스크 요인(risk_factors)에 반드시 포함하세요.
+3. 뉴스 감성·방향·영향력이 가격 모멘텀과 일치하는지 확인.
+4. 단기(1~2주)와 중기(1~2개월)를 구분. 두 추세가 다를 수 있음.
+5. trend_strength: 두 추세의 일치도 + 지표 강도 → '강'|'중'|'약'. '약'은 신호 상충 또는 데이터 부족 시.
 
 [이력 활용]
+- ★ 이 이력은 같은 종목에 대해 '다른 사용자'가 분석한 결과도 포함될 수 있습니다. 특정 사용자의 의견에 매몰되지 말고, 시장 전체의 컨센서스로 참고하세요.
 - 이전 판단과 연속성 고려. 유지 시 확신도 유지/상향, 전환 시 trend_reasoning에 '전환 사유' 명시.
-- 안정성 'insufficient'/'sparse'/'unstable'이면 확신도 낮추고 '횡보' 고려.
+- 안정성 'insufficient'/'unstable'이면 확신도 낮추고 '횡보' 고려.
 - 안정성 'stable'이고 지표가 같은 방향이면 확신도 상향.
-- 이력 없으면 신중하게 책정.
 
 [응답 형식]
 유효한 JSON 객체 하나만 출력. 필드:
@@ -155,7 +145,7 @@ export function buildTrendPrompts(payload) {
 - "risk_factors": 문자열 배열 (1~2개)
 
 [응답 예시]
-{"short_term_trend": "상승", "medium_term_trend": "횡보", "trend_strength": "중", "trend_confidence": 0.62, "trend_reasoning": "20일선 상회와 거래량 증가는 단기 상승 신호임. 다만 중기 지표는 횡보로 뚜렷한 방향성 부족함.", "key_drivers": ["20일선 상회", "거래량 증가"], "risk_factors": ["외국인 순매도 지속"]}`;
+{"short_term_trend": "상승", "medium_term_trend": "횡보", "trend_strength": "중", "trend_confidence": 0.62, "trend_reasoning": "20일선 상회와 거래량 증가는 단기 상승 신호임. 다만 중기 지표는 횡보로 뚜렷한 방향성 부족함.", "key_drivers": ["20일선 상회", "거래량 증가"], "risk_factors": ["외국인 순매도 지속", "52주 고점 부근 과열"]}`;
 
   const user = `[종목] ${payload.stock_name}(${payload.ticker})
 [시장 상태] ${marketStatus}
@@ -179,7 +169,7 @@ JSON으로만 응답하세요.`;
 }
 
 // ─────────────────────────────────────────────────────────────
-// [4] 심판 에이전트 (고도화: 관점 강제 및 예시 분리)
+// [4] 심판 에이전트
 // ─────────────────────────────────────────────────────────────
 export function buildJudgePrompts(payload) {
   const isSell = payload.analysis_type === 'sell';
@@ -305,6 +295,7 @@ export function buildJudgePrompts(payload) {
 - 상충(예: 가격↑ 뉴스↓ 추세 횡보) → 리스크 문장에 명시하고 confidence 하향.
 - 추세 정보 누락 또는 확신 낮음 → 중립 판단 우선.
 - 추세 강도 '약' → 강한 판단(매수/매도 추천) 지양, 중립 우선.
+- ★ '판단 보류'를 남발하지 마세요. 지표가 상충하더라도 우세한 쪽으로 논리적 판단을 내리세요.
 
 [사용자 상황에 따른 관점 일치 원칙]
 - 현재 사용자는 이 종목을 ${isSell ? '보유 중(매도 관점)' : '보유하지 않음(매수 관점)'}입니다.
@@ -338,7 +329,7 @@ ${examples}
 
 참고: 위 예시는 참고용이며, 허용된 등급 내에서 상황에 맞게 자유롭게 선택할 수 있습니다.`;
 
-  const prevContext = prevRec ? `[직전 판단] ${prevRec}` : '[직접 판단] 없음 (첫 분석)';
+  const prevContext = prevRec ? `[직전 판단] ${prevRec}` : '[직전 판단] 없음 (첫 분석)';
 
   const user = `${prevContext}
 
