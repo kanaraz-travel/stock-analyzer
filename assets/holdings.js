@@ -279,7 +279,8 @@ function renderTransactionRow(tx) {
   return row;
 }
 
-function renderOverSellWarning(overSells) {
+// ★ export 추가 완료
+export function renderOverSellWarning(overSells) {
   const existing = document.getElementById('over-sell-warning');
   if (existing) existing.remove();
   if (!overSells || overSells.length === 0) return;
