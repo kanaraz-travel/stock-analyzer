@@ -35,7 +35,7 @@ export async function loadHoldings() {
 
 export async function refreshHoldingsView(holdingsData) {
   if (!holdingsData) holdingsData = computeHoldings(state.transactions);
-  const { currentHoldings, overSells } = holdingsData;
+  const { currentHoldings, closedHoldings, overSells } = holdingsData;
 
   renderOverSellWarning(overSells || []);
 
@@ -43,7 +43,7 @@ export async function refreshHoldingsView(holdingsData) {
   const currentPriceMap = new Map();
 
   if (currentHoldings.length === 0) {
-    renderHoldingsList([], currentPriceMap);
+    renderHoldingsList([], currentPriceMap, closedHoldings);
     renderHoldingsSummary(holdingsData, 0, 0);
     updateDataStatusBadge('OK');
     return;
@@ -79,7 +79,7 @@ export async function refreshHoldingsView(holdingsData) {
   if (anySuccess && lastSuccessfulStatus) updateDataStatusBadge(lastSuccessfulStatus);
   else updateDataStatusBadge('ERROR');
 
-  renderHoldingsList(currentHoldings, currentPriceMap);
+  renderHoldingsList(currentHoldings, currentPriceMap, closedHoldings);
   renderHoldingsSummary(holdingsData, totalCost, totalCurrentValue);
 }
 
@@ -103,87 +103,157 @@ export function renderHoldingsSummary(holdingsData, totalCost, totalCurrentValue
   $('#realized-pnl').innerHTML = `<span class="${totalRealizedPnl > 0 ? 'positive' : totalRealizedPnl < 0 ? 'negative' : ''}">${formatCurrency(totalRealizedPnl)} (${realizedRate > 0 ? '+' : ''}${realizedRate.toFixed(2)}%)</span>`;
 }
 
-export function renderHoldingsList(holdings, priceMap) {
+export function renderHoldingsList(holdings, priceMap, closedHoldings = []) {
   const list = $('#holdings-list'); list.innerHTML = '';
   if (holdings.length === 0) {
     const p = document.createElement('p'); p.className = 'empty-text'; p.textContent = '아직 등록된 거래가 없습니다.';
-    list.appendChild(p); return;
-  }
-  holdings.forEach((h) => {
-    if (!h.ticker || !h.stock_name) {
-      console.warn('[renderHoldingsList] 유효하지 않은 보유 종목 렌더링 스킵:', h);
-      return;
-    }
+    list.appendChild(p);
+  } else {
+    holdings.forEach((h) => {
+      if (!h.ticker || !h.stock_name) return;
 
-    const cachedPrice = priceMap.get(h.ticker);
-    const isFallback = cachedPrice == null || !Number.isFinite(cachedPrice) || cachedPrice <= 0;
-    const currentPrice = isFallback ? h.avgCost : cachedPrice;
+      const cachedPrice = priceMap.get(h.ticker);
+      const isFallback = cachedPrice == null || !Number.isFinite(cachedPrice) || cachedPrice <= 0;
+      const currentPrice = isFallback ? h.avgCost : cachedPrice;
 
-    const valuation = currentPrice * h.qty;
-    const pnl = isFallback ? null : (valuation - h.totalCost);
-    const returnRate = (isFallback || h.totalCost <= 0) ? null : (pnl / h.totalCost) * 100;
-    const pnlClass = (pnl == null) ? '' : (pnl > 0 ? 'positive' : pnl < 0 ? 'negative' : '');
+      const valuation = currentPrice * h.qty;
+      const pnl = isFallback ? null : (valuation - h.totalCost);
+      const returnRate = (isFallback || h.totalCost <= 0) ? null : (pnl / h.totalCost) * 100;
+      const pnlClass = (pnl == null) ? '' : (pnl > 0 ? 'positive' : pnl < 0 ? 'negative' : '');
 
-    const card = document.createElement('div');
-    card.className = 'holding-card';
-    card.setAttribute('data-ticker', h.ticker);
-    card.style.borderColor = getBorderColor(h.ticker);
-    card.style.borderWidth = '2px';
+      const card = document.createElement('div');
+      card.className = 'holding-card';
+      card.setAttribute('data-ticker', h.ticker);
+      card.style.borderColor = getBorderColor(h.ticker);
+      card.style.borderWidth = '2px';
 
-    const header = document.createElement('div'); header.className = 'holding-header';
-    const nameEl = document.createElement('h3'); nameEl.className = 'holding-name'; nameEl.textContent = h.stock_name;
-    const qtyEl = document.createElement('span'); qtyEl.className = 'holding-qty'; qtyEl.textContent = `${formatNumber(h.qty)}주`;
-    header.appendChild(nameEl); header.appendChild(qtyEl); card.appendChild(header);
+      const header = document.createElement('div'); header.className = 'holding-header';
+      const nameEl = document.createElement('h3'); nameEl.className = 'holding-name'; nameEl.textContent = h.stock_name;
+      const qtyEl = document.createElement('span'); qtyEl.className = 'holding-qty'; qtyEl.textContent = `${formatNumber(h.qty)}주`;
+      header.appendChild(nameEl); header.appendChild(qtyEl); card.appendChild(header);
 
-    const grid = document.createElement('div'); grid.className = 'holding-grid';
-    const priceLabel = isFallback ? `${formatCurrency(currentPrice)} (대체가격)` : formatCurrency(currentPrice);
-    const valuationLabel = isFallback ? `${formatCurrency(valuation)} (임시)` : formatCurrency(valuation);
-    const pnlLabel = (pnl == null) ? '산출 불가' : formatCurrency(pnl);
-    const returnLabel = (returnRate == null) ? '산출 불가' : `${returnRate > 0 ? '+' : ''}${returnRate.toFixed(2)}%`;
+      const grid = document.createElement('div'); grid.className = 'holding-grid';
+      const priceLabel = isFallback ? `${formatCurrency(currentPrice)} (대체가격)` : formatCurrency(currentPrice);
+      const valuationLabel = isFallback ? `${formatCurrency(valuation)} (임시)` : formatCurrency(valuation);
+      const pnlLabel = (pnl == null) ? '산출 불가' : formatCurrency(pnl);
+      const returnLabel = (returnRate == null) ? '산출 불가' : `${returnRate > 0 ? '+' : ''}${returnRate.toFixed(2)}%`;
 
-    grid.innerHTML = `
-      <div class="holding-data"><span class="dt">매수 원가</span><span class="dd">${formatCurrency(h.totalCost)}</span></div>
-      <div class="holding-data"><span class="dt">평가 금액</span><span class="dd">${valuationLabel}</span></div>
-      <div class="holding-data"><span class="dt">평균 매수가</span><span class="dd">${formatCurrency(h.avgCost)}</span></div>
-      <div class="holding-data"><span class="dt">현재가</span><span class="dd">${priceLabel}</span></div>
-      <div class="holding-data"><span class="dt">평가 손익</span><span class="dd ${pnlClass}">${pnlLabel}</span></div>
-      <div class="holding-data"><span class="dt">수익률</span><span class="dd ${pnlClass}">${returnLabel}</span></div>
-    `;
-    card.appendChild(grid);
+      grid.innerHTML = `
+        <div class="holding-data"><span class="dt">매수 원가</span><span class="dd">${formatCurrency(h.totalCost)}</span></div>
+        <div class="holding-data"><span class="dt">평가 금액</span><span class="dd">${valuationLabel}</span></div>
+        <div class="holding-data"><span class="dt">평균 매수가</span><span class="dd">${formatCurrency(h.avgCost)}</span></div>
+        <div class="holding-data"><span class="dt">현재가</span><span class="dd">${priceLabel}</span></div>
+        <div class="holding-data"><span class="dt">평가 손익</span><span class="dd ${pnlClass}">${pnlLabel}</span></div>
+        <div class="holding-data"><span class="dt">수익률</span><span class="dd ${pnlClass}">${returnLabel}</span></div>
+      `;
+      card.appendChild(grid);
 
-    const actionRow = document.createElement('div'); actionRow.className = 'holding-actions';
-    const aiBtn = document.createElement('button');
-    aiBtn.type = 'button'; aiBtn.className = 'btn btn--primary btn--half btn-ai-analyze'; aiBtn.textContent = 'AI 분석하기';
-    aiBtn.disabled = isFallback;
-    if (isFallback) aiBtn.title = '현재가를 확인할 수 없어 분석할 수 없습니다.';
-    aiBtn.addEventListener('click', () => runAnalysis(h.ticker, h.stock_name, currentPrice, 'inline', card));
-    actionRow.appendChild(aiBtn);
-    const toggle = document.createElement('button');
-    toggle.type = 'button'; toggle.className = 'tx-toggle btn--half';
-    toggle.setAttribute('aria-expanded', 'false');
-    toggle.textContent = `거래 내역 (${h.transactions.length}건)`;
-    actionRow.appendChild(toggle);
-    card.appendChild(actionRow);
+      const actionRow = document.createElement('div'); actionRow.className = 'holding-actions';
+      const aiBtn = document.createElement('button');
+      aiBtn.type = 'button'; aiBtn.className = 'btn btn--primary btn--half btn-ai-analyze'; aiBtn.textContent = 'AI 분석하기';
+      aiBtn.disabled = isFallback;
+      if (isFallback) aiBtn.title = '현재가를 확인할 수 없어 분석할 수 없습니다.';
+      aiBtn.addEventListener('click', () => runAnalysis(h.ticker, h.stock_name, currentPrice, 'inline', card));
+      actionRow.appendChild(aiBtn);
+      const toggle = document.createElement('button');
+      toggle.type = 'button'; toggle.className = 'tx-toggle btn--half';
+      toggle.setAttribute('aria-expanded', 'false');
+      toggle.textContent = `거래 내역 (${h.transactions.length}건)`;
+      actionRow.appendChild(toggle);
+      card.appendChild(actionRow);
 
-    const inlineResult = document.createElement('div');
-    inlineResult.className = 'holding-inline-result';
-    inlineResult.hidden = true;
-    card.appendChild(inlineResult);
-    if (state.analysisCache.has(h.ticker)) renderInlineAnalysisResult(state.analysisCache.get(h.ticker), card, false);
+      const inlineResult = document.createElement('div');
+      inlineResult.className = 'holding-inline-result';
+      inlineResult.hidden = true;
+      card.appendChild(inlineResult);
+      if (state.analysisCache.has(h.ticker)) renderInlineAnalysisResult(state.analysisCache.get(h.ticker), card, false);
 
-    const txList = document.createElement('div');
-    txList.className = 'tx-list'; txList.hidden = true;
-    h.transactions.forEach((tx) => { txList.appendChild(renderTransactionRow(tx)); });
-    card.appendChild(txList);
+      const txList = document.createElement('div');
+      txList.className = 'tx-list'; txList.hidden = true;
+      h.transactions.forEach((tx) => { txList.appendChild(renderTransactionRow(tx)); });
+      card.appendChild(txList);
 
-    toggle.addEventListener('click', () => {
-      const expanded = toggle.getAttribute('aria-expanded') === 'true';
-      toggle.setAttribute('aria-expanded', String(!expanded));
-      txList.hidden = expanded;
-      toggle.textContent = expanded ? `거래 내역 (${h.transactions.length}건)` : '거래 내역 숨기기';
+      toggle.addEventListener('click', () => {
+        const expanded = toggle.getAttribute('aria-expanded') === 'true';
+        toggle.setAttribute('aria-expanded', String(!expanded));
+        txList.hidden = expanded;
+        toggle.textContent = expanded ? `거래 내역 (${h.transactions.length}건)` : '거래 내역 숨기기';
+      });
+      list.appendChild(card);
     });
+  }
+
+  // ★ 전량 매도 종목 렌더링
+  renderClosedHoldings(closedHoldings);
+}
+
+function renderClosedHoldings(closedHoldings) {
+  const oldSection = document.getElementById('closed-holdings-section');
+  if (oldSection) oldSection.remove();
+
+  if (!closedHoldings || closedHoldings.length === 0) return;
+
+  const section = document.createElement('div');
+  section.id = 'closed-holdings-section';
+  section.style.marginTop = '24px';
+  section.style.borderTop = '1px solid #e2e8f0';
+  section.style.paddingTop = '16px';
+
+  const header = document.createElement('div');
+  header.style.cssText = 'display:flex; justify-content:space-between; align-items:center; cursor:pointer; padding: 8px 0;';
+  
+  const title = document.createElement('h3');
+  title.style.cssText = 'font-size:16px; font-weight:bold; margin:0; color:#334155;';
+  title.textContent = `매도 완료 종목 (${closedHoldings.length}건)`;
+  
+  const icon = document.createElement('span');
+  icon.id = 'closed-holdings-icon';
+  icon.style.cssText = 'font-size:12px; color:#64748b; transition: transform 0.2s;';
+  icon.textContent = '▼';
+
+  header.appendChild(title); header.appendChild(icon);
+  section.appendChild(header);
+
+  const list = document.createElement('div');
+  list.id = 'closed-holdings-list';
+  list.style.display = 'none';
+  list.style.marginTop = '12px';
+  list.style.display = 'none';
+
+  closedHoldings.forEach(h => {
+    const card = document.createElement('div');
+    card.style.cssText = 'background:#f8fafc; border:1px solid #e2e8f0; border-radius:8px; padding:12px; margin-bottom:8px;';
+    
+    const pnlClass = h.realizedPnl > 0 ? 'positive' : h.realizedPnl < 0 ? 'negative' : '';
+    card.innerHTML = `
+      <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:8px;">
+        <strong style="font-size:14px; color:#1e293b;">${h.stock_name}</strong>
+        <span style="font-size:13px; font-weight:bold;" class="${pnlClass}">
+          ${h.realizedPnl > 0 ? '+' : ''}${formatCurrency(h.realizedPnl)} (${h.realizedRate > 0 ? '+' : ''}${h.realizedRate.toFixed(2)}%)
+        </span>
+      </div>
+      <div style="font-size:12px; color:#64748b; line-height:1.6;">
+        <div>총 매수: ${formatCurrency(h.totalBuyCost)} (평균 ${formatCurrency(h.avgBuyPrice)})</div>
+        <div>총 매도: ${formatCurrency(h.totalSellRevenue)} (평균 ${formatCurrency(h.avgSellPrice)})</div>
+        <div>수량: ${formatNumber(h.totalQty)}주</div>
+      </div>
+    `;
     list.appendChild(card);
   });
+
+  section.appendChild(list);
+
+  // 토글 이벤트
+  header.addEventListener('click', () => {
+    const isExpanded = list.style.display !== 'none';
+    list.style.display = isExpanded ? 'none' : 'block';
+    icon.style.transform = isExpanded ? 'rotate(0deg)' : 'rotate(180deg)';
+  });
+
+  const holdingsContainer = $('#holdings-list');
+  if (holdingsContainer && holdingsContainer.parentNode) {
+    holdingsContainer.parentNode.insertBefore(section, holdingsContainer.nextSibling);
+  }
 }
 
 function renderTransactionRow(tx) {
@@ -274,9 +344,7 @@ function showTxError(msg) { const el = $('#tx-error'); el.textContent = msg; el.
 function previewOverSellIncrease(ticker, tradeDate, price, qty) {
   const beforeOverSell = computeHoldings(state.transactions).overSells.length;
   const simulated = state.transactions.map(t =>
-    t.id === state.editingTxId
-      ? { ...t, ticker, trade_date: tradeDate, unit_price: price, quantity: qty }
-      : t
+    t.id === state.editingTxId ? { ...t, ticker, trade_date: tradeDate, unit_price: price, quantity: qty } : t
   );
   const afterOverSell = computeHoldings(simulated).overSells.length;
   return afterOverSell > beforeOverSell ? (afterOverSell - beforeOverSell) : 0;
@@ -337,7 +405,6 @@ async function saveTransaction() {
     }
     if (error) throw error;
 
-    // ★ 캐시 무효화 (이전 ticker + 신규 ticker)
     if (state.editingTxId) {
       const oldTx = state.transactions.find(t => t.id === state.editingTxId);
       if (oldTx?.ticker) state.analysisCache.delete(oldTx.ticker);

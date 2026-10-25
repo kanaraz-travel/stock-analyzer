@@ -80,7 +80,7 @@ export function updateDataStatusBadge(status) {
   else { badge.textContent = '연결 원활'; badge.className = 'badge badge--status-green'; }
 }
 
-// 순수 계산: 보유 종목 집계 (거래 이력 정렬 후 FIFO-like 평균단가 계산)
+// ★ 전량 매도된 종목(closedHoldings) 반환 로직 추가
 export function computeHoldings(txs) {
   const map = new Map();
   let totalRealizedPnl = 0, totalRealizedCost = 0;
@@ -126,8 +126,42 @@ export function computeHoldings(txs) {
     }
   }
 
+  const currentHoldings = [];
+  const closedHoldings = [];
+
+  for (const h of map.values()) {
+    if (h.qty > 1e-9) {
+      currentHoldings.push(h);
+    } else if (!h.hasOverSell && h.transactions.length > 0) {
+      // ★ 전량 매도 완료된 종목 계산
+      let totalBuy = 0, totalSell = 0, buyQ = 0, sellQ = 0;
+      for (const tx of h.transactions) {
+        if (tx.transaction_type === 'BUY') { totalBuy += tx.quantity * tx.unit_price; buyQ += tx.quantity; }
+        else if (tx.transaction_type === 'SELL') { totalSell += tx.quantity * tx.unit_price; sellQ += tx.quantity; }
+      }
+      if (buyQ > 0 && Math.abs(buyQ - sellQ) < 1e-9) {
+        const realizedPnl = totalSell - totalBuy;
+        const realizedRate = totalBuy > 0 ? (realizedPnl / totalBuy) * 100 : 0;
+        closedHoldings.push({
+          ticker: h.ticker, stock_name: h.stock_name,
+          totalBuyCost: totalBuy, totalSellRevenue: totalSell,
+          realizedPnl, realizedRate,
+          avgBuyPrice: totalBuy / buyQ, avgSellPrice: totalSell / sellQ,
+          totalQty: buyQ, transactions: h.transactions,
+        });
+      }
+    }
+  }
+
+  // 최근 매도일 기준 내림차순 정렬
+  closedHoldings.sort((a, b) => {
+    const lastA = a.transactions[a.transactions.length - 1].trade_date || '';
+    const lastB = b.transactions[b.transactions.length - 1].trade_date || '';
+    return lastB.localeCompare(lastA);
+  });
+
   return {
-    currentHoldings: Array.from(map.values()).filter((h) => h.qty > 0),
+    currentHoldings, closedHoldings,
     totalRealizedPnl, totalRealizedCost, overSells,
     overSellTickers: Array.from(overSellTickers), hasAnyOverSell: overSells.length > 0,
   };

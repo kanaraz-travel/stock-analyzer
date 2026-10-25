@@ -223,7 +223,8 @@ function setupNavigation() {
           const price = state.priceCache.get(h.ticker) || h.avgCost;
           totalCurrentValue += price * h.qty;
         });
-        renderHoldingsList(holdingsData.currentHoldings, state.priceCache);
+        // ★ closedHoldings 전달
+        renderHoldingsList(holdingsData.currentHoldings, state.priceCache, holdingsData.closedHoldings);
         renderHoldingsSummary(holdingsData, totalCost, totalCurrentValue);
         renderOverSellWarning(holdingsData.overSells || []);
       }
