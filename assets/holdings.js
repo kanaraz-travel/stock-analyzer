@@ -98,9 +98,12 @@ export function renderHoldingsSummary(holdingsData, totalCost, totalCurrentValue
   const unrealizedRate = totalCost > 0 ? (unrealizedPnl / totalCost) * 100 : 0;
   const realizedRate = totalRealizedCost > 0 ? (totalRealizedPnl / totalRealizedCost) * 100 : 0;
 
+  // ★ 이익일 경우 + 기호 추가 (금액)
+  const realizedPnlSign = totalRealizedPnl > 0 ? '+' : '';
+
   $('#total-value').innerHTML = `${formatCurrency(totalCurrentValue)} <span class="summary-rate ${unrealizedRate > 0 ? 'positive' : unrealizedRate < 0 ? 'negative' : ''}">(${unrealizedRate > 0 ? '+' : ''}${unrealizedRate.toFixed(2)}%)</span>`;
-  $('#total-pnl').innerHTML = `<span class="${unrealizedPnl > 0 ? 'positive' : unrealizedPnl < 0 ? 'negative' : ''}">${formatCurrency(unrealizedPnl)} (${unrealizedRate > 0 ? '+' : ''}${unrealizedRate.toFixed(2)}%)</span>`;
-  $('#realized-pnl').innerHTML = `<span class="${totalRealizedPnl > 0 ? 'positive' : totalRealizedPnl < 0 ? 'negative' : ''}">${formatCurrency(totalRealizedPnl)} (${realizedRate > 0 ? '+' : ''}${realizedRate.toFixed(2)}%)</span>`;
+  $('#total-pnl').innerHTML = `<span class="${unrealizedPnl > 0 ? 'positive' : unrealizedPnl < 0 ? 'negative' : ''}">${unrealizedPnl > 0 ? '+' : ''}${formatCurrency(unrealizedPnl)} (${unrealizedRate > 0 ? '+' : ''}${unrealizedRate.toFixed(2)}%)</span>`;
+  $('#realized-pnl').innerHTML = `<span class="${totalRealizedPnl > 0 ? 'positive' : totalRealizedPnl < 0 ? 'negative' : ''}">${realizedPnlSign}${formatCurrency(totalRealizedPnl)} (${realizedRate > 0 ? '+' : ''}${realizedRate.toFixed(2)}%)</span>`;
 }
 
 export function renderHoldingsList(holdings, priceMap, closedHoldings = []) {
@@ -135,7 +138,7 @@ export function renderHoldingsList(holdings, priceMap, closedHoldings = []) {
       const grid = document.createElement('div'); grid.className = 'holding-grid';
       const priceLabel = isFallback ? `${formatCurrency(currentPrice)} (대체가격)` : formatCurrency(currentPrice);
       const valuationLabel = isFallback ? `${formatCurrency(valuation)} (임시)` : formatCurrency(valuation);
-      const pnlLabel = (pnl == null) ? '산출 불가' : formatCurrency(pnl);
+      const pnlLabel = (pnl == null) ? '산출 불가' : `${pnl > 0 ? '+' : ''}${formatCurrency(pnl)}`;
       const returnLabel = (returnRate == null) ? '산출 불가' : `${returnRate > 0 ? '+' : ''}${returnRate.toFixed(2)}%`;
 
       grid.innerHTML = `
@@ -183,7 +186,6 @@ export function renderHoldingsList(holdings, priceMap, closedHoldings = []) {
     });
   }
 
-  // ★ 전량 매도 종목 렌더링
   renderClosedHoldings(closedHoldings);
 }
 
@@ -216,20 +218,22 @@ function renderClosedHoldings(closedHoldings) {
 
   const list = document.createElement('div');
   list.id = 'closed-holdings-list';
-  list.style.display = 'none';
   list.style.marginTop = '12px';
-  list.style.display = 'none';
+  list.style.display = 'none'; // 기본 접힘
 
   closedHoldings.forEach(h => {
     const card = document.createElement('div');
     card.style.cssText = 'background:#f8fafc; border:1px solid #e2e8f0; border-radius:8px; padding:12px; margin-bottom:8px;';
     
-    const pnlClass = h.realizedPnl > 0 ? 'positive' : h.realizedPnl < 0 ? 'negative' : '';
+    // ★ 이익이면 빨간색, 손해면 파란색
+    const pnlColor = h.realizedPnl > 0 ? '#ef4444' : h.realizedPnl < 0 ? '#3b82f6' : '#1e293b';
+    const pnlSign = h.realizedPnl > 0 ? '+' : '';
+
     card.innerHTML = `
       <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:8px;">
         <strong style="font-size:14px; color:#1e293b;">${h.stock_name}</strong>
-        <span style="font-size:13px; font-weight:bold;" class="${pnlClass}">
-          ${h.realizedPnl > 0 ? '+' : ''}${formatCurrency(h.realizedPnl)} (${h.realizedRate > 0 ? '+' : ''}${h.realizedRate.toFixed(2)}%)
+        <span style="font-size:13px; font-weight:bold; color:${pnlColor};">
+          ${pnlSign}${formatCurrency(h.realizedPnl)} (${h.realizedRate > 0 ? '+' : ''}${h.realizedRate.toFixed(2)}%)
         </span>
       </div>
       <div style="font-size:12px; color:#64748b; line-height:1.6;">
@@ -243,7 +247,6 @@ function renderClosedHoldings(closedHoldings) {
 
   section.appendChild(list);
 
-  // 토글 이벤트
   header.addEventListener('click', () => {
     const isExpanded = list.style.display !== 'none';
     list.style.display = isExpanded ? 'none' : 'block';
