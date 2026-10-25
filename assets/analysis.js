@@ -26,6 +26,30 @@ export function initAnalysis() {
   }
 }
 
+// ★ 세션 유효성 검사 및 강제 갱신 헬퍼
+async function getValidSession() {
+  let { data: { session }, error } = await supabase.auth.getSession();
+  
+  if (error || !session) {
+    throw new Error('로그인 세션이 없습니다. 다시 로그인해 주세요.');
+  }
+
+  // 만료 시간이 1분 이내로 남았거나, 리프레시 토큰이 없는 경우 강제 갱신 시도
+  const now = Math.floor(Date.now() / 1000);
+  const isExpiringSoon = session.expires_at && (session.expires_at - now < 60);
+  
+  if (isExpiringSoon || !session.refresh_token) {
+    const { data: refreshData, error: refreshError } = await supabase.auth.refreshSession();
+    if (refreshError || !refreshData.session) {
+      await supabase.auth.signOut();
+      throw new Error('세션이 만료되었습니다. 다시 로그인해 주세요.');
+    }
+    return refreshData.session;
+  }
+
+  return session;
+}
+
 export async function runAnalysis(ticker, name, price, targetType = 'main', cardElement = null) {
   if (!ticker) return;
   const isSilent = targetType === 'batch';
@@ -58,11 +82,8 @@ export async function runAnalysis(ticker, name, price, targetType = 'main', card
   }
 
   try {
-    let { data: { session } } = await supabase.auth.getSession();
-    if (!session) {
-      if (!isSilent) { alert('로그인 세션이 없습니다.'); await supabase.auth.signOut(); }
-      throw new Error('로그인 세션이 없습니다.');
-    }
+    // ★ 세션 유효성 검사 (만료 시 갱신)
+    const session = await getValidSession();
 
     let freshQuote = null;
     try {
@@ -144,16 +165,20 @@ export async function runAnalysis(ticker, name, price, targetType = 'main', card
       headers: { 'content-type': 'application/json', authorization: `Bearer ${session.access_token}` },
       body: JSON.stringify(payload)
     });
+    
+    // ★ 401 에러 시 토큰 갱신 후 재시도
     if (res.status === 401) {
+      console.warn('[runAnalysis] 401 Unauthorized. 토큰 갱신 시도...');
       await new Promise(r => setTimeout(r, 1000));
       const { data: { session: retrySession } } = await supabase.auth.refreshSession();
       if (retrySession) {
         res = await fetch('/api/analyze', { method: 'POST', headers: { 'content-type': 'application/json', authorization: `Bearer ${retrySession.access_token}` }, body: JSON.stringify(payload) });
       } else {
-        if (!isSilent) { alert('세션 만료'); await supabase.auth.signOut(); }
-        throw new Error('세션 만료');
+        await supabase.auth.signOut();
+        throw new Error('인증이 만료되었습니다. 다시 로그인해 주세요.');
       }
     }
+    
     const data = await res.json();
     if (!res.ok) {
       const detail = Array.isArray(data.details) ? `\n${data.details.join('\n')}` : '';
@@ -204,9 +229,20 @@ async function runBatchAnalysis() {
   failedStocks = [];
   let succeeded = 0, failed = 0;
   let consecutiveFallbacks = 0;
-  let lastFallbackReason = null;
+  
+  // ★ 인증 에러로 배치 중단 플래그
+  let authFailed = false;
 
   try {
+    // 배치 시작 전 세션 한 번 검사
+    try {
+      await getValidSession();
+    } catch (e) {
+      alert('세션이 만료되었습니다. 다시 로그인해 주세요.');
+      await supabase.auth.signOut();
+      return;
+    }
+
     const res = await fetch('/api/popular');
     const data = await res.json();
     if (!res.ok) throw new Error(data.error || '인기 종목을 불러오지 못했습니다.');
@@ -217,6 +253,8 @@ async function runBatchAnalysis() {
     const total = items.length;
 
     for (let i = 0; i < items.length; i++) {
+      if (authFailed) break; // 인증 실패 시 즉시 탈출
+
       await waitWhileHidden(btn, i + 1, total);
       const stock = items[i];
       btn.textContent = `이력 쌓기 ${i + 1}/${total} · ${stock.name}`;
@@ -224,45 +262,50 @@ async function runBatchAnalysis() {
       try {
         const result = await runAnalysis(stock.ticker, stock.name, null, 'batch');
 
-        // ★ P0-4: 저장 실패 또는 폴백은 실패로 집계
         if (result && result.fallback) {
           failedStocks.push(`${stock.name}(${result.fallback_reason})`);
           failed++;
           consecutiveFallbacks++;
-          lastFallbackReason = result.fallback_reason;
-
-          // ★ 폴백 3회 연속 시 중단 (설정 오류가 20종목 반복되는 것 방지)
+          
           if (consecutiveFallbacks >= 3) {
             btn.textContent = `연속 폴백 ${consecutiveFallbacks}회로 중단 (${i + 1}/${total})`;
             alert(`연속으로 분석이 실패하여 중단합니다.\n최근 사유: ${result.fallback_message || result.fallback_reason}`);
             break;
           }
         } else if (result && result.saved === false) {
-          // ★ 저장 실패를 성공으로 집계하지 않음
           failedStocks.push(`${stock.name}(저장 실패)`);
           failed++;
-          consecutiveFallbacks = 0; // 저장 실패는 폴백 연속 카운트에서 제외
+          consecutiveFallbacks = 0;
         } else {
           succeeded++;
           consecutiveFallbacks = 0;
         }
       } catch (e) {
         console.warn(`[batch] ${stock.name}(${stock.ticker}) 실패:`, e.message);
+        
+        // ★ 인증 에러(401, 세션 만료 등) 감지 시 즉시 중단
+        if (e.message.includes('인증') || e.message.includes('세션')) {
+          alert('세션이 만료되어 이력 쌓기를 중단합니다. 다시 로그인해 주세요.');
+          authFailed = true;
+          break;
+        }
+
         failedStocks.push(`${stock.name}(${e.message.slice(0, 40)})`);
         failed++;
         consecutiveFallbacks = 0;
       }
 
-      if (i < items.length - 1) {
+      if (i < items.length - 1 && !authFailed) {
         await waitWhileHidden(btn, i + 1, total);
         await new Promise(r => setTimeout(r, 2500));
       }
     }
 
-    btn.textContent = `완료 (성공 ${succeeded} / 실패 ${failed})`;
-    btn.disabled = false;
-    batchState = 'result';
-
+    if (!authFailed) {
+      btn.textContent = `완료 (성공 ${succeeded} / 실패 ${failed})`;
+      btn.disabled = false;
+      batchState = 'result';
+    }
   } catch (err) {
     console.error('[batch] error:', err);
     alert(err.message || '이력 쌓기에 실패했습니다.');
@@ -319,7 +362,6 @@ export function renderAnalysisResult(data, scrollTo = true) {
     badge.classList.add('recommendation-badge--pending');
     badge.textContent = `임시 판단: ${rec}`;
     if (warningEl) {
-      // ★ 서버가 내려준 fallback_message 단일 출처 사용
       warningEl.textContent = data.fallback_message || '⚠️ 임시 판단입니다.';
       warningEl.style.display = 'block';
     }
@@ -361,7 +403,6 @@ export function renderInlineAnalysisResult(data, cardElement, scrollTo = true) {
   if (data.fallback) {
     const warn = document.createElement('div');
     warn.style.cssText = 'margin-top:8px; padding:8px; background:#fef3c7; color:#92400e; border:1px solid #f59e0b; border-radius:6px; font-size:11px; line-height:1.4;';
-    // ★ 서버 fallback_message 사용
     warn.textContent = data.fallback_message || '⚠️ 임시 판단입니다.';
     container.appendChild(warn);
   }
