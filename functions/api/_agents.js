@@ -7,7 +7,7 @@ function isQuotaError(e) {
   return msg.includes('4006') || msg.includes('daily free allocation');
 }
 
-// ★ 폐기된 모델(5028) 또는 deprecated 문구 감지
+// 폐기된 모델(5028) 또는 deprecated 문구 감지
 function isDeprecatedModelError(e) {
   const msg = String(e?.message || e);
   return msg.includes('5028') || msg.toLowerCase().includes('deprecated');
@@ -39,7 +39,7 @@ async function callAiWithRetry(env, modelKey, messages, maxTokens, temperature) 
   throw lastError;
 }
 
-// ★ Qwen/Llama 응답 구조 차이를 흡수하는 헬퍼
+// Qwen/Llama 응답 구조 차이를 흡수하는 헬퍼
 function extractAiText(response) {
   if (!response) return '';
   if (typeof response.response === 'string' && response.response) return response.response;
