@@ -8,10 +8,16 @@ const CACHE_TTL = 24 * 60 * 60 * 1000;
 const PARTIAL_RETRY_TTL = 5 * 60 * 1000;
 const FAIL_RETRY_MS = 30 * 1000;
 
+// ★ 주식 외 상품(ETF, 채권, 리츠, 수익증권 등)을 걸러내는 키워드 대폭 확장
 const EXCLUDE_KEYWORDS = [
+  // ETF 브랜드
   'KODEX', 'TIGER', 'KBSTAR', 'ARIRANG', 'HANARO', 'SOL', 'ACE', 'PLUS', 'RISE', 'KOSEF',
-  'TIMEFOLIO', '히어로즈', '마이다스', '파워', '인버스', '레버리지', '선물', '합성', 'ETN', 'ELW'
+  'TIMEFOLIO', '히어로즈', '마이다스', '파워', '인버스', '레버리지', '선물', '합성', 'ETN', 'ELW',
+  // 채권 및 기타 금융 상품
+  '채권', '국채', '지방채', '특수채', '회사채', 'CP', '전단채', '수익증권',
+  '리츠', '부동산투자회사', '인프라', '선박', '펀드', 'MMF'
 ];
+
 function isExcluded(name) {
   const upper = String(name).toUpperCase();
   return EXCLUDE_KEYWORDS.some(k => upper.includes(k.toUpperCase()));
@@ -202,7 +208,6 @@ function parsePipeSeparated(text, map, codeMap) {
   return count;
 }
 
-// ★ 종목명 추출 로직을 정규식 기반으로 변경하여 안정성 확보
 function parseFixedWidth(text, tailLen, map, codeMap) {
   let count = 0;
   for (const line of text.split('\n')) {
@@ -220,7 +225,7 @@ function parseFixedWidth(text, tailLen, map, codeMap) {
     if (!/^[0-9A-Z]{6}$/i.test(code)) continue;
     if (!name || name.length > 50) continue;
     
-    // 불필요한 특수문자 제거 (한글, 영문, 숫자, 공백, 괄호, 점, &, - 만 허용)
+    // 불필요한 특수문자 제거
     name = name.replace(/[^\uAC00-\uD7A3a-zA-Z0-9\s().&-]/g, '').trim();
     if (!name) continue;
 
@@ -248,7 +253,6 @@ function findCodeByName(query) {
   if (partial.length === 1) return { code: partial[0].code };
   
   if (partial.length > 1) {
-    // 개수 제한 없이 가나다순으로 정렬하여 모든 후보를 반환
     partial.sort((a, b) => a.name.localeCompare(b.name, 'ko'));
     return { candidates: partial.map((p) => `${p.name}(${p.code})`) };
   }
