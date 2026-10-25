@@ -6,12 +6,13 @@ export const VALID_RECS_BUY = ['매수 추천', '매수 고려', '기다리기',
 // 매도 관점(보유): 매도/보유/추가매수/보류
 export const VALID_RECS_SELL = ['매도 추천', '부분 매도 고려', '보유 유지', '추가 매수 고려', '매수 추천', '판단 보류'];
 
-// ★ 모델 구성: 뉴스=Llama 3.1 8B, 추세=Qwen 7B, 심판=Qwen 30B
-//    (Qwen 30B: @cf/qwen/qwen3-30b-a3b-fp8, 입력 $0.0509/1M, 출력 $0.335/1M)
-//    (Qwen 7B: @cf/qwen/qwen1.5-7b-chat-awq)
+// ★ 모델 구성 최신화
+//    - 뉴스: Llama 3.1 8B (정상)
+//    - 추세: Qwen 1.5 7B는 폐기됨 → Qwen 3 8B로 교체
+//    - 심판: Qwen 3 30B (정상)
 export const MODELS = {
   price_volume: '@cf/meta/llama-3.1-8b-instruct', // 코드로 대체되어 미사용
   news: '@cf/meta/llama-3.1-8b-instruct',
-  trend: '@cf/qwen/qwen1.5-7b-chat-awq',
+  trend: '@cf/qwen/qwen3-8b',
   judge: '@cf/qwen/qwen3-30b-a3b-fp8',
 };
