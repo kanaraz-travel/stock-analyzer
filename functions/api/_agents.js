@@ -28,7 +28,6 @@ async function callAiWithRetry(env, modelKey, messages, maxTokens, temperature) 
         err.code = 'AI_QUOTA_EXCEEDED';
         throw err;
       }
-      // ★ 폐기 모델 오류는 재시도해도 동일하게 실패하므로 즉시 중단
       if (isDeprecatedModelError(e)) {
         const err = new Error('AI_MODEL_DEPRECATED');
         err.code = 'AI_MODEL_DEPRECATED';
@@ -38,6 +37,17 @@ async function callAiWithRetry(env, modelKey, messages, maxTokens, temperature) 
     }
   }
   throw lastError;
+}
+
+// ★ Qwen/Llama 응답 구조 차이를 흡수하는 헬퍼
+function extractAiText(response) {
+  if (!response) return '';
+  if (typeof response.response === 'string' && response.response) return response.response;
+  if (Array.isArray(response.choices) && response.choices[0]?.message?.content) {
+    return response.choices[0].message.content;
+  }
+  if (typeof response.result === 'string') return response.result;
+  return '';
 }
 
 export async function runNewsAgent(env, payload) {
@@ -50,7 +60,7 @@ export async function runNewsAgent(env, payload) {
       { role: 'user', content: prompts.user }
     ], 250, 0.3);
 
-    const parsed = extractJSON(response?.response || '');
+    const parsed = extractJSON(extractAiText(response));
     let newsText = typeof parsed.news_analysis === 'string' ? parsed.news_analysis : '';
     if (!newsText || isNegativeNewsResponse(newsText)) {
       newsText = `수집된 ${prompts.itemCount}건의 기사에서 뚜렷한 주가 영향 요인은 확인되지 않았음.`;
@@ -76,7 +86,7 @@ export async function runTrendAgent(env, payload) {
       { role: 'system', content: system },
       { role: 'user', content: user }
     ], 350, 0.2);
-    return normalizeTrendResult(extractJSON(response?.response || ''));
+    return normalizeTrendResult(extractJSON(extractAiText(response)));
   } catch (e) {
     console.error('[trend agent error]', e.message);
     return { __exception: true, code: e.code, message: e.message };
@@ -91,7 +101,7 @@ export async function runJudgeAgent(env, payload) {
       { role: 'user', content: user }
     ], 600, 0.1);
 
-    const parsed = extractJSON(response?.response || '');
+    const parsed = extractJSON(extractAiText(response));
     if (typeof parsed.recommendation !== 'string' || typeof parsed.overall_summary !== 'string') {
       return { __exception: true, message: 'INVALID_JUDGE_FORMAT' };
     }
