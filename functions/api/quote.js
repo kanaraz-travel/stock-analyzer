@@ -8,7 +8,6 @@ const CACHE_TTL = 24 * 60 * 60 * 1000;
 const PARTIAL_RETRY_TTL = 5 * 60 * 1000;
 const FAIL_RETRY_MS = 30 * 1000;
 
-// ★ ETF/ETN/ELW 제외 필터 추가 (popular.js와 동일한 기준)
 const EXCLUDE_KEYWORDS = [
   'KODEX', 'TIGER', 'KBSTAR', 'ARIRANG', 'HANARO', 'SOL', 'ACE', 'PLUS', 'RISE', 'KOSEF',
   'TIMEFOLIO', '히어로즈', '마이다스', '파워', '인버스', '레버리지', '선물', '합성', 'ETN', 'ELW'
@@ -194,7 +193,6 @@ function parsePipeSeparated(text, map, codeMap) {
     if (!/^[0-9A-Z]{6}$/i.test(code)) continue;
     if (!name || name.length > 50) continue;
     
-    // ★ ETF/ETN 필터링 추가
     if (isExcluded(name)) continue;
 
     map.set(name, code);
@@ -204,20 +202,28 @@ function parsePipeSeparated(text, map, codeMap) {
   return count;
 }
 
+// ★ 종목명 추출 로직을 정규식 기반으로 변경하여 안정성 확보
 function parseFixedWidth(text, tailLen, map, codeMap) {
   let count = 0;
   for (const line of text.split('\n')) {
     if (!line.trim()) continue;
     if (line.length <= tailLen) continue;
     const head = line.substring(0, line.length - tailLen);
-    const code = head.substring(0, 9).trim();
+    
+    // 6자리 코드 + 선택적 12자리 표준코드 + 종목명 추출
+    const match = head.match(/^([0-9A-Z]{6})\s*(?:[0-9A-Z]{12})?\s*(.+)$/);
+    if (!match) continue;
+    
+    const code = match[1].trim();
+    let name = match[2].trim();
+    
     if (!/^[0-9A-Z]{6}$/i.test(code)) continue;
-    let name = head.substring(21).trim();
     if (!name || name.length > 50) continue;
+    
+    // 불필요한 특수문자 제거 (한글, 영문, 숫자, 공백, 괄호, 점, &, - 만 허용)
     name = name.replace(/[^\uAC00-\uD7A3a-zA-Z0-9\s().&-]/g, '').trim();
     if (!name) continue;
 
-    // ★ ETF/ETN 필터링 추가
     if (isExcluded(name)) continue;
 
     map.set(name, code);
