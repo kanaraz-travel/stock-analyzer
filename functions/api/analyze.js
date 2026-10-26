@@ -51,7 +51,7 @@ export async function onRequestPost(context) {
 
   const { ticker, stock_name, price_data, volume_data, news_items, holdings_data } = body;
   
-  // ★ 관점(analysis_type)과 보유 데이터(holdings_data)의 정합성 서버 단 검증
+  // 관점(analysis_type)과 보유 데이터(holdings_data)의 정합성 서버 단 검증
   let analysis_type = body.analysis_type === 'sell' ? 'sell' : 'buy';
   if (analysis_type === 'sell' && (!holdings_data || holdings_data.quantity <= 0)) {
     console.warn(`[analyze] sell 관점 요청이지만 보유 데이터가 없음. buy로 강제 전환 (${ticker})`);
@@ -81,7 +81,8 @@ export async function onRequestPost(context) {
   let previousRec = null;
   let trendSummary = null;
 
-  // ★ 실제 에이전트 상태를 추적하는 객체
+  // ★ 저장 성공 여부를 추적하는 변수
+  let saved = false;
   const agentStatus = { news: { ok: false }, trend: { ok: false }, judge: { ok: false } };
 
   try {
@@ -122,13 +123,16 @@ export async function onRequestPost(context) {
       else if (!trendRaw.__exception) {
         const tv = validateTrendOutput(trendRaw);
         if (tv.valid) { trendResult = trendRaw; agentStatus.trend = { ok: true }; }
-        else agentStatus.trend = { ok: false, reason: tv.reason };
+        else {
+          agentStatus.trend = { ok: false, reason: tv.reason };
+          console.warn(`[analyze] Trend validation failed (${tv.reason}):`, JSON.stringify(trendRaw));
+        }
       } else {
         agentStatus.trend = { ok: false, reason: trendRaw.message || 'EXCEPTION' };
       }
     }
 
-    // ★ P0-3: 뉴스·추세 둘 다 결과가 없으면 심판 결과를 신뢰하지 않음
+    // P0-3: 뉴스·추세 둘 다 결과가 없으면 심판 결과를 신뢰하지 않음
     const criticalAgentsFailed = (!newsResult && !trendResult);
 
     if (quotaExceeded) {
@@ -223,8 +227,12 @@ export async function onRequestPost(context) {
             },
           },
         });
+        saved = true; // ★ DB 저장 성공 시 true로 변경 (누락되어 있던 부분)
         if (Math.random() < CLEANUP_PROBABILITY) { try { await cleanupOldRuns(env, userId); } catch {} }
-      } catch (e) { console.error('[analyze] save failed:', e.message); }
+      } catch (e) { 
+        console.error('[analyze] save failed:', e.message); 
+        saved = false;
+      }
     }
 
   } catch (e) {
@@ -234,7 +242,6 @@ export async function onRequestPost(context) {
     finalData = buildRuleBasedFallback({ price_data, volume_data, analysis_type, trendResult });
   }
 
-  // ★ 실제 agentStatus 반환
   return jsonResponse({
     recommendation: finalData?.recommendation || '판단 보류',
     overall_summary: finalData?.overall_summary || '-',
@@ -243,7 +250,7 @@ export async function onRequestPost(context) {
     fallback_message: isFallback ? getFallbackMessage(fallbackReason) : undefined,
     retry_hint: quotaExceeded ? '한국시간 오전 9시 이후 다시 시도해 주세요.' : undefined,
     agent_status: agentStatus,
-    saved: false,
+    saved: saved, // ★ 수정된 저장 성공 여부 반환
   });
 }
 
