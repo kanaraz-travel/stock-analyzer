@@ -70,16 +70,6 @@ export async function onRequestPost(context) {
     });
   }
 
-  const [previousRec, trendHistory] = await Promise.all([
-    loadPreviousRecommendation(supabase, ticker, analysis_type).catch(() => null),
-    loadRecentTrendHistory(env, ticker).catch(() => ({ status: 'unavailable', entries: [] })),
-  ]);
-  const trendSummary = summarizeTrendHistory(trendHistory?.entries || [], trendHistory?.status || 'unavailable');
-
-  const agentStatus = { news: { ok: false }, trend: { ok: false }, judge: { ok: false } };
-  const pvResult = buildPriceVolumeFacts(price_data, volume_data, analysis_type);
-  agentStatus.price_volume = { ok: true, status: 'success', reason: 'RULE_BASED' };
-
   let finalData = null;
   let isFallback = false;
   let fallbackReason = null;
@@ -88,8 +78,22 @@ export async function onRequestPost(context) {
   let newsResult = null;
   let trendResult = null;
   let judgeResult = null;
+  let previousRec = null;
+  let trendSummary = null;
 
+  // ★ 전체 파이프라인을 감싸는 안전장치 (500 에러 방지)
   try {
+    const [prevRecRes, trendHistoryRes] = await Promise.all([
+      loadPreviousRecommendation(supabase, ticker, analysis_type).catch(() => null),
+      loadRecentTrendHistory(env, ticker).catch(() => ({ status: 'unavailable', entries: [] })),
+    ]);
+    previousRec = prevRecRes;
+    trendSummary = summarizeTrendHistory(trendHistoryRes?.entries || [], trendHistoryRes?.status || 'unavailable');
+
+    const agentStatus = { news: { ok: false }, trend: { ok: false }, judge: { ok: false } };
+    const pvResult = buildPriceVolumeFacts(price_data, volume_data, analysis_type);
+    agentStatus.price_volume = { ok: true, status: 'success', reason: 'RULE_BASED' };
+
     if (!env.AI) throw new Error('AI_NOT_CONFIGURED');
 
     // [2] 뉴스
@@ -194,38 +198,40 @@ export async function onRequestPost(context) {
         }
       }
     }
+
+    // DB 저장 (정상 결과만)
+    if (!isFallback && finalData) {
+      try {
+        await saveAnalysisRun(supabase, {
+          user_id: userId, ticker, stock_name, analysis_type,
+          analyzed_at: new Date().toISOString(),
+          recommendation: finalData.recommendation,
+          overall_summary: finalData.overall_summary,
+          ruleset_version: RULESET_VERSION,
+          market_facts: {
+            price_data, volume_data,
+            holdings_data: holdings_data || null,
+            agent_outputs: { price_volume: pvResult, news: newsResult, trend: trendResult, judge: judgeResult },
+            agent_status: agentStatus,
+            data_quality_note: dataQuality.status,
+            judge_confidence: finalData.confidence ?? null,
+            trend_history_summary: {
+              count: trendSummary.count, distinct_days: trendSummary.distinct_days,
+              stability: trendSummary.stability, flips_short: trendSummary.flips_short,
+              flips_medium: trendSummary.flips_medium, sample_mode: trendSummary.sample_mode,
+            },
+          },
+        });
+        if (Math.random() < CLEANUP_PROBABILITY) { try { await cleanupOldRuns(env, userId); } catch {} }
+      } catch (e) { console.error('[analyze] save failed:', e.message); }
+    }
+
   } catch (e) {
+    // ★ 예상치 못한 예외가 발생해도 500 대신 폴백 응답 반환
+    console.error('[analyze] Unhandled exception:', e);
     isFallback = true;
     fallbackReason = e.message === 'AI_QUOTA_EXCEEDED' ? 'AI_QUOTA_EXCEEDED' : 'AI_ERROR';
     finalData = buildRuleBasedFallback({ price_data, volume_data, analysis_type, trendResult });
-  }
-
-  let saved = false;
-  if (!isFallback && finalData) {
-    try {
-      await saveAnalysisRun(supabase, {
-        user_id: userId, ticker, stock_name, analysis_type,
-        analyzed_at: new Date().toISOString(),
-        recommendation: finalData.recommendation,
-        overall_summary: finalData.overall_summary,
-        ruleset_version: RULESET_VERSION,
-        market_facts: {
-          price_data, volume_data,
-          holdings_data: holdings_data || null,
-          agent_outputs: { price_volume: pvResult, news: newsResult, trend: trendResult, judge: judgeResult },
-          agent_status: agentStatus,
-          data_quality_note: dataQuality.status,
-          judge_confidence: finalData.confidence ?? null,
-          trend_history_summary: {
-            count: trendSummary.count, distinct_days: trendSummary.distinct_days,
-            stability: trendSummary.stability, flips_short: trendSummary.flips_short,
-            flips_medium: trendSummary.flips_medium, sample_mode: trendSummary.sample_mode,
-          },
-        },
-      });
-      saved = true;
-      if (Math.random() < CLEANUP_PROBABILITY) { try { await cleanupOldRuns(env, userId); } catch {} }
-    } catch (e) { console.error('[analyze] save failed:', e.message); }
   }
 
   return jsonResponse({
@@ -235,8 +241,8 @@ export async function onRequestPost(context) {
     fallback_reason: fallbackReason,
     fallback_message: isFallback ? getFallbackMessage(fallbackReason) : undefined,
     retry_hint: quotaExceeded ? '한국시간 오전 9시 이후 다시 시도해 주세요.' : undefined,
-    agent_status: agentStatus,
-    saved,
+    agent_status: { news: 'checked', trend: 'checked', judge: 'checked' },
+    saved: false,
   });
 }
 
