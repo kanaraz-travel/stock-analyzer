@@ -4,9 +4,8 @@ import { VALID_RECS_BUY, VALID_RECS_SELL } from './_constants.js';
 
 export { VALID_RECS_BUY, VALID_RECS_SELL };
 
-// ─────────────────────────────────────────────────────────────
-// 판단 등급 매핑
-// ─────────────────────────────────────────────────────────────
+// ... (REC_LEVEL, REC_METADATA, getRecommendationMeta, interpretConfidence, getFallbackMessage, buildPriceVolumeFacts, normalizeRecommendation, validateNewsOutput, validateTrendOutput, validateAnalyzeInput, computeDataQuality, deriveConsistencyThreshold, needsHighConfidenceForLevelJump, computeReferenceScore, cleanupOldRuns, jsonResponse, loadRecentTrendHistory, summarizeTrendHistory 함수는 이전과 동일하므로 생략하지 않고 전체 코드에 포함합니다.)
+
 const REC_LEVEL = {
   '매수 추천': 2, '추가 매수 고려': 1,
   '매수 고려': 1, '보유 유지': 0,
@@ -51,9 +50,6 @@ export function getFallbackMessage(reason) {
   return '⚠️ AI 분석 대신 수치 지표로 임시 판단을 제공합니다.';
 }
 
-// ─────────────────────────────────────────────────────────────
-// T6: 가격·거래량 지표를 코드로 생성 (0뉴런)
-// ─────────────────────────────────────────────────────────────
 export function buildPriceVolumeFacts(price_data, volume_data, analysis_type) {
   const p = price_data || {};
   const v = volume_data || {};
@@ -61,7 +57,6 @@ export function buildPriceVolumeFacts(price_data, volume_data, analysis_type) {
   const ma = p.ma20_disparity != null ? p.ma20_disparity.toFixed(2) : null;
   const r1m = p.return_1m != null ? p.return_1m.toFixed(2) : null;
 
-  // ★ 52주 위치 계산
   let w52Pos = null;
   if (p.w52_hgpr && p.w52_lwpr && p.current_price && p.w52_hgpr > p.w52_lwpr) {
     w52Pos = ((p.current_price - p.w52_lwpr) / (p.w52_hgpr - p.w52_lwpr)) * 100;
@@ -98,9 +93,6 @@ export function buildPriceVolumeFacts(price_data, volume_data, analysis_type) {
   };
 }
 
-// ─────────────────────────────────────────────────────────────
-// 추천 등급 정규화
-// ─────────────────────────────────────────────────────────────
 export function normalizeRecommendation(raw, analysisType) {
   if (raw && typeof raw === 'object') raw = raw.recommendation || raw.label || raw.value || raw.action || '';
   if (typeof raw !== 'string') return null;
@@ -114,9 +106,6 @@ export function normalizeRecommendation(raw, analysisType) {
   return null;
 }
 
-// ─────────────────────────────────────────────────────────────
-// 출력 검증
-// ─────────────────────────────────────────────────────────────
 export function validateNewsOutput(out) {
   if (!out || typeof out !== 'object') return { valid: false, reason: 'NOT_OBJECT' };
   if (out.status === 'error') return { valid: false, reason: 'AGENT_ERROR' };
@@ -169,9 +158,6 @@ export function validateAnalyzeInput(body) {
   return { valid: errors.length === 0, errors };
 }
 
-// ─────────────────────────────────────────────────────────────
-// 데이터 품질 판정
-// ─────────────────────────────────────────────────────────────
 export function computeDataQuality(price_data) {
   const marketStatus = price_data?.market_status || '';
   const serverTimeStr = price_data?.server_time || null;
@@ -206,9 +192,6 @@ export function computeDataQuality(price_data) {
   return { status: 'UNKNOWN', label: '확인 불가', quote_time_verified: false };
 }
 
-// ─────────────────────────────────────────────────────────────
-// 일관성/스코어 관련
-// ─────────────────────────────────────────────────────────────
 export function deriveConsistencyThreshold(previousAnalyzedAt, recentFlipCount) {
   let threshold = 0.8;
   if (previousAnalyzedAt) {
@@ -239,11 +222,9 @@ export function computeReferenceScore(price) {
   return score;
 }
 
-// ─────────────────────────────────────────────────────────────
-// DB 저장 / 정리 / 응답
-// ─────────────────────────────────────────────────────────────
+// ★ 단순 insert만 수행하여 PGRST116 에러 원천 차단
 export async function saveAnalysisRun(supabase, payload) {
-  const { error } = await supabase.from('stock_analysis_runs').insert(payload).select('id').single();
+  const { error } = await supabase.from('stock_analysis_runs').insert(payload);
   if (error) throw error;
   return true;
 }
@@ -265,9 +246,6 @@ export function jsonResponse(body, status = 200) {
   return new Response(JSON.stringify(body), { status, headers: { 'content-type': 'application/json; charset=utf-8' } });
 }
 
-// ─────────────────────────────────────────────────────────────
-// 이력 조회 / 요약
-// ─────────────────────────────────────────────────────────────
 export async function loadRecentTrendHistory(env, ticker) {
   if (!env.SUPABASE_SERVICE_ROLE_KEY) return { status: 'unavailable', entries: [] };
   const since = new Date(Date.now() - 45 * 24 * 60 * 60 * 1000).toISOString();
