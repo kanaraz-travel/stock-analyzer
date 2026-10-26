@@ -3,7 +3,10 @@ import { getKisAccessToken } from './_kis_token.js';
 
 const EXCLUDE_KEYWORDS = [
   'KODEX', 'TIGER', 'KBSTAR', 'ARIRANG', 'HANARO', 'SOL', 'ACE', 'PLUS', 'RISE', 'KOSEF',
-  'TIMEFOLIO', '히어로즈', '마이다스', '파워', '인버스', '레버리지', '선물', '합성', 'ETN', 'ELW'
+  'TIMEFOLIO', '히어로즈', '마이다스', '파워', '인버스', '레버리지', '선물', '합성', 'ETN', 'ELW',
+  'UNICORN', '액티브', '밸류체인', '인덱스',
+  '채권', '국채', '지방채', '특수채', '회사채', 'CP', '전단채', '수익증권',
+  '리츠', '부동산투자회사', '인프라', '선박', '펀드', 'MMF'
 ];
 function isExcluded(name) {
   const upper = String(name).toUpperCase();
@@ -42,17 +45,14 @@ function ymdToUtcDate(ymd) {
   ));
 }
 
-// 1차 후보일: 주말은 직전 금요일, 평일 장 시작(09:00) 전이면 전일 (주말 재스킵)
 function getCandidateStartDate() {
   const kst = getKstNow();
   const hhmm = kst.getUTCHours() * 100 + kst.getUTCMinutes();
   const date = new Date(Date.UTC(kst.getUTCFullYear(), kst.getUTCMonth(), kst.getUTCDate()));
 
-  // 주말 스킵
   while (date.getUTCDay() === 0 || date.getUTCDay() === 6) {
     date.setUTCDate(date.getUTCDate() - 1);
   }
-  // 장 시작 전이면 전일 + 다시 주말 스킵
   if (hhmm < 900) {
     date.setUTCDate(date.getUTCDate() - 1);
     while (date.getUTCDay() === 0 || date.getUTCDay() === 6) {
@@ -62,7 +62,6 @@ function getCandidateStartDate() {
   return formatYmd(date);
 }
 
-// 하루 앞당기되 주말은 스킵 (API 호출 절약)
 function prevWeekdayYmd(ymd) {
   const date = ymdToUtcDate(ymd);
   do {
@@ -71,9 +70,6 @@ function prevWeekdayYmd(ymd) {
   return formatYmd(date);
 }
 
-// ─────────────────────────────────────────────────────────────
-// "실제 영업일" 캐시 (isolate 로컬, 5분 TTL)
-// ─────────────────────────────────────────────────────────────
 let resolvedTradingDayCache = { ymd: null, resolvedAt: 0 };
 const RESOLVED_CACHE_TTL_MS = 5 * 60 * 1000;
 
@@ -92,7 +88,7 @@ function pickTopAndRandom(sourceItems) {
   return [...topN, ...randomN];
 }
 
-// 1순위: 네이버 인기 검색 종목 (최대 100개 원본 수집)
+// 1순위: 네이버 인기 검색 종목
 async function fetchFromNaver() {
   try {
     const res = await fetch('https://finance.naver.com/sise/lastsearch2.naver', {
@@ -121,7 +117,7 @@ async function fetchFromNaver() {
   } catch { return []; }
 }
 
-// 2순위: 다음 금융 조회 급등 (최대 100개 원본 수집)
+// 2순위: 다음 금융 조회 급등
 async function fetchFromDaum() {
   try {
     const res = await fetch('https://finance.daum.net/api/trend/price_performance?intervalType=TODAY&perPage=100&page=1', {
@@ -145,14 +141,11 @@ async function fetchFromDaum() {
   } catch { return []; }
 }
 
-// ─────────────────────────────────────────────────────────────
-// 4순위 후보: KIS 거래량+등락률 (휴장/연휴 자동 캘리브레이션)
-// ─────────────────────────────────────────────────────────────
+// 4순위 후보: KIS 거래량+등락률
 async function fetchKisCandidates(env, limit = 100) {
   const baseUrl = env.KIS_BASE_URL || 'https://openapi.koreainvestment.com:9443';
   if (!env.KIS_APP_KEY || !env.KIS_APP_SECRET) return [];
 
-  // 캐시 히트 시 그 날짜부터 시작
   const now = Date.now();
   let startYmd;
   if (resolvedTradingDayCache.ymd && (now - resolvedTradingDayCache.resolvedAt) < RESOLVED_CACHE_TTL_MS) {
@@ -164,20 +157,17 @@ async function fetchKisCandidates(env, limit = 100) {
   try {
     const accessToken = await getKisAccessToken(env, baseUrl);
 
-    // 최대 7회 앞당겨 탐색: 공휴일/연휴는 "응답 없음"으로 자동 감지
     let currentYmd = startYmd;
     for (let attempt = 0; attempt < 7; attempt++) {
       const results = await tryFetchKisForDate(env, baseUrl, accessToken, currentYmd, limit);
       if (results.length > 0) {
         resolvedTradingDayCache = { ymd: currentYmd, resolvedAt: Date.now() };
-        console.log(`[popular] KIS 영업일 확정: ${currentYmd} (시도 ${attempt + 1}회, ${results.length}건)`);
         return results;
       }
       currentYmd = prevWeekdayYmd(currentYmd);
       await new Promise(r => setTimeout(r, 200));
     }
 
-    console.warn('[popular] KIS 7회 재시도 후에도 데이터 없음');
     return [];
   } catch (e) {
     console.warn('[popular] KIS 후보 실패:', e.message);
@@ -196,7 +186,6 @@ async function tryFetchKisForDate(env, baseUrl, accessToken, ymd, limit) {
       if (!ticker || !name) continue;
       if (!isValidTicker(ticker) || seen.has(ticker) || isExcluded(name)) continue;
 
-      // 시장 구분 필터: 코스피/코스닥만
       const mkt = String(row.rprs_mrkt_kor_name || row.bstp_kor_isnm || '').toUpperCase();
       const isKospiKosdaq = /유가증권|코스피|코스닥|KOSPI|KOSDAQ/.test(mkt);
       if (mkt && !isKospiKosdaq) continue;
@@ -207,7 +196,6 @@ async function tryFetchKisForDate(env, baseUrl, accessToken, ymd, limit) {
     }
   };
 
-  // 거래량 순위
   const qVol = new URLSearchParams({
     FID_COND_MRKT_DIV_CODE: 'J', FID_COND_SCR_DIV_CODE: '20171',
     FID_INPUT_ISCD: '0000', FID_DIV_CLS_CODE: '0', FID_BLNG_CLS_CODE: '0',
@@ -229,7 +217,6 @@ async function tryFetchKisForDate(env, baseUrl, accessToken, ymd, limit) {
     if (data.rt_cd === '0') addFromRows(data.output, 'mksc_shrn_iscd');
   }
 
-  // 등락률 순위 (보충)
   if (results.length < limit) {
     await new Promise(r => setTimeout(r, 200));
     const qChg = new URLSearchParams({
@@ -257,20 +244,23 @@ async function tryFetchKisForDate(env, baseUrl, accessToken, ymd, limit) {
   return results;
 }
 
-// ─────────────────────────────────────────────────────────────
-// 3순위: 뉴스 이슈 점수 기반 (KIS 후보 없으면 즉시 스킵)
-// ─────────────────────────────────────────────────────────────
+// 3순위: 뉴스 이슈 점수 기반
 async function fetchIssueStocks(kisCandidates) {
-  // ★ KIS 후보가 없으면 뉴스 조회 자체가 무의미 (휴장일에 낭비 방지)
   if (!kisCandidates || kisCandidates.length === 0) return [];
 
   try {
-    // ★ 검색 기간 7일로 확장 (연휴 커버)
     const query = encodeURIComponent('특징주 OR 급등주 OR 상한가 when:7d');
+    // ★ User-Agent를 브라우저용으로 변경하여 차단 우회
     const res = await fetch(`https://news.google.com/rss/search?q=${query}&hl=ko&gl=KR&ceid=KR:ko`, {
-      headers: { 'User-Agent': 'stock-analyzer/1.0' }
+      headers: { 
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+        'Accept': 'application/rss+xml, application/xml, text/xml'
+      }
     });
-    if (!res.ok) return [];
+    if (!res.ok) {
+      console.warn(`[popular] Google News RSS HTTP error: ${res.status}`);
+      return [];
+    }
     const xml = await res.text();
     const titles = [];
     const itemRegex = /<item>([\s\S]*?)<\/item>/g;
@@ -296,7 +286,7 @@ async function fetchIssueStocks(kisCandidates) {
 }
 
 // ─────────────────────────────────────────────────────────────
-// 메인 핸들러: 4단계 폴백
+// 메인 핸들러
 // ─────────────────────────────────────────────────────────────
 export async function onRequestGet(context) {
   const { env } = context;
