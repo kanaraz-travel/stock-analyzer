@@ -81,7 +81,9 @@ export async function onRequestPost(context) {
   let previousRec = null;
   let trendSummary = null;
 
-  // ★ 전체 파이프라인을 감싸는 안전장치 (500 에러 방지)
+  // ★ 실제 에이전트 상태를 추적하는 객체
+  const agentStatus = { news: { ok: false }, trend: { ok: false }, judge: { ok: false } };
+
   try {
     const [prevRecRes, trendHistoryRes] = await Promise.all([
       loadPreviousRecommendation(supabase, ticker, analysis_type).catch(() => null),
@@ -90,7 +92,6 @@ export async function onRequestPost(context) {
     previousRec = prevRecRes;
     trendSummary = summarizeTrendHistory(trendHistoryRes?.entries || [], trendHistoryRes?.status || 'unavailable');
 
-    const agentStatus = { news: { ok: false }, trend: { ok: false }, judge: { ok: false } };
     const pvResult = buildPriceVolumeFacts(price_data, volume_data, analysis_type);
     agentStatus.price_volume = { ok: true, status: 'success', reason: 'RULE_BASED' };
 
@@ -140,7 +141,7 @@ export async function onRequestPost(context) {
       isFallback = true; fallbackReason = 'CRITICAL_AGENT_FAILURE';
       finalData = buildRuleBasedFallback({ price_data, volume_data, analysis_type, trendResult });
     } else {
-      // [4] 심판 (뉴스/추세 중 최소 하나는 성공한 경우에만)
+      // [4] 심판
       const judgeRaw = await runJudgeAgent(env, {
         ticker, stock_name, analysis_type, holdings_data, price_data,
         price_volume_result: pvResult,
@@ -227,13 +228,13 @@ export async function onRequestPost(context) {
     }
 
   } catch (e) {
-    // ★ 예상치 못한 예외가 발생해도 500 대신 폴백 응답 반환
     console.error('[analyze] Unhandled exception:', e);
     isFallback = true;
     fallbackReason = e.message === 'AI_QUOTA_EXCEEDED' ? 'AI_QUOTA_EXCEEDED' : 'AI_ERROR';
     finalData = buildRuleBasedFallback({ price_data, volume_data, analysis_type, trendResult });
   }
 
+  // ★ 실제 agentStatus 반환
   return jsonResponse({
     recommendation: finalData?.recommendation || '판단 보류',
     overall_summary: finalData?.overall_summary || '-',
@@ -241,7 +242,7 @@ export async function onRequestPost(context) {
     fallback_reason: fallbackReason,
     fallback_message: isFallback ? getFallbackMessage(fallbackReason) : undefined,
     retry_hint: quotaExceeded ? '한국시간 오전 9시 이후 다시 시도해 주세요.' : undefined,
-    agent_status: { news: 'checked', trend: 'checked', judge: 'checked' },
+    agent_status: agentStatus,
     saved: false,
   });
 }
