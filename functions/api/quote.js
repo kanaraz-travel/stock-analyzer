@@ -22,9 +22,16 @@ function isExcluded(name) {
   return EXCLUDE_KEYWORDS.some(k => upper.includes(k.toUpperCase()));
 }
 
-// ★ 6자리 영숫자 코드 허용 (신규 상장 주권의 알파벳 코드 대응)
+// 6자리 영숫자 코드 허용 (신규 상장 주권 대응)
 function isValidTicker(ticker) {
   return /^[0-9A-Z]{6}$/.test(String(ticker));
+}
+
+// A 접두사가 붙은 코드(예: A005930) 정규화
+function normalizeTicker(ticker) {
+  let t = String(ticker).trim();
+  if (t.length === 7 && t.startsWith('A')) t = t.substring(1);
+  return t;
 }
 
 export async function onRequestGet(context) {
@@ -32,7 +39,6 @@ export async function onRequestGet(context) {
   const url = new URL(request.url);
   const query = (url.searchParams.get('ticker') || '').trim();
 
-  // 테스트용 캐시 초기화 (?reset=true)
   if (url.searchParams.get('reset') === 'true') {
     masterCache.loaded = false;
     masterCache.expiresAt = 0;
@@ -45,11 +51,11 @@ export async function onRequestGet(context) {
   const baseUrl = env.KIS_BASE_URL || 'https://openapi.koreainvestment.com:9443';
   if (!env.KIS_APP_KEY || !env.KIS_APP_SECRET) return jsonResponse({ error: 'KIS API 키가 설정되지 않았습니다.' }, 500);
 
-  let ticker = query;
+  let ticker = normalizeTicker(query);
   let stock_name = query;
 
   try {
-    const isDirectCode = isValidTicker(query);
+    const isDirectCode = isValidTicker(ticker);
 
     if (!isDirectCode) {
       await ensureMasterLoaded();
@@ -209,7 +215,7 @@ function parsePipeSeparated(text, map, codeMap) {
     if (!line.trim()) continue;
     const parts = line.split('|');
     if (parts.length < 3) continue;
-    const code = parts[0].trim();
+    let code = normalizeTicker(parts[0].trim());
     const name = parts[2].trim();
     
     if (!isValidTicker(code)) continue;
@@ -223,23 +229,22 @@ function parsePipeSeparated(text, map, codeMap) {
   return count;
 }
 
-// ★ KIS 공식 파싱 구조 반영: 앞부분(단축코드+표준코드+한글종목명)을 공백 기준으로 분리
+// ★ 정규식을 사용해 코드, (표준코드), 종목명을 유연하게 추출
 function parseFixedWidth(text, tailLen, map, codeMap) {
   let count = 0;
   for (const line of text.split('\n')) {
     if (!line.trim()) continue;
     if (line.length <= tailLen) continue;
     
-    // 뒷부분(tailLen)을 제외한 앞부분 추출
     const head = line.substring(0, line.length - tailLen).trim();
     if (!head) continue;
     
-    // 공백 기준으로 분리 (단축코드, 표준코드, 한글종목명 순)
-    const parts = head.split(/\s+/);
-    if (parts.length < 3) continue;
+    // 패턴: [단축코드(A 접두사 허용)] + 공백 + [표준코드(12자리, 생략가능)] + 공백 + [종목명]
+    const match = head.match(/^(A?[0-9A-Z]{6})\s+(?:[A-Z0-9]{12})?\s*(.+)$/);
+    if (!match) continue;
     
-    const code = parts[0].trim();
-    let name = parts.slice(2).join(' ').trim(); // 종목명에 공백이 포함될 수 있음
+    let code = normalizeTicker(match[1].trim());
+    let name = match[2].trim();
     
     if (!isValidTicker(code)) continue;
     if (!name || name.length > 50) continue;
@@ -255,6 +260,7 @@ function parseFixedWidth(text, tailLen, map, codeMap) {
   return count;
 }
 
+// ★ 검색 로직: 정확히 일치하는 종목이 있으면 무조건 해당 종목 반환
 function findCodeByName(query) {
   const norm = (s) => String(s).replace(/\s+/g, '').toLowerCase();
   const q = norm(query);
