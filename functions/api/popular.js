@@ -14,7 +14,19 @@ function isExcluded(name) {
   return EXCLUDE_KEYWORDS.some(k => upper.includes(k.toUpperCase()));
 }
 
-// ★ 6자리 영숫자 코드 허용 (신규 상장 주권 대응)
+// ★ [신규 추가] 우선주 판별 로직
+// 종목명 끝이 '우', '2우B', '3우C' 등으로 끝나는 경우를 감지합니다.
+function isPreferredStock(name) {
+  if (!name) return false;
+  // 괄호와 그 안의 내용(예: (전환))을 제거하여 순수 종목명만 추출
+  const cleanName = String(name).replace(/\(.*?\)/g, '').trim();
+  
+  // 정규식: '우'로 끝나거나, 숫자+'우'+알파벳(선택)으로 끝나는 경우
+  // 예: 삼성전자우, 현대차2우B, LG화학우
+  return /(우|[0-9]+우[A-Z]?)$/.test(cleanName);
+}
+
+// 6자리 영숫자 코드 허용 (신규 상장 주권 대응)
 function isValidTicker(ticker) {
   return /^[0-9A-Z]{6}$/.test(String(ticker));
 }
@@ -80,7 +92,13 @@ const RESOLVED_CACHE_TTL_MS = 5 * 60 * 1000;
 // 인기 소스
 // ─────────────────────────────────────────────────────────────
 function pickTopAndRandom(sourceItems) {
-  const valid = sourceItems.filter(i => isValidTicker(i.ticker) && !isExcluded(i.name));
+  // ★ isPreferredStock 필터링 적용
+  const valid = sourceItems.filter(i => 
+    isValidTicker(i.ticker) && 
+    !isExcluded(i.name) && 
+    !isPreferredStock(i.name)
+  );
+  
   if (valid.length === 0) return [];
 
   const topN = valid.slice(0, 10);
@@ -187,7 +205,9 @@ async function tryFetchKisForDate(env, baseUrl, accessToken, ymd, limit) {
       const ticker = row[tickerField];
       const name = row.hts_kor_isnm;
       if (!ticker || !name) continue;
-      if (!isValidTicker(ticker) || seen.has(ticker) || isExcluded(name)) continue;
+      
+      // ★ isPreferredStock 필터링 적용
+      if (!isValidTicker(ticker) || seen.has(ticker) || isExcluded(name) || isPreferredStock(name)) continue;
 
       const mkt = String(row.rprs_mrkt_kor_name || row.bstp_kor_isnm || '').toUpperCase();
       const isKospiKosdaq = /유가증권|코스피|코스닥|KOSPI|KOSDAQ/.test(mkt);
@@ -249,9 +269,7 @@ async function tryFetchKisForDate(env, baseUrl, accessToken, ymd, limit) {
   return results;
 }
 
-// ─────────────────────────────────────────────────────────────
 // ★ 5순위: KIS 시가총액 상위 200위 중 랜덤 추출
-// ─────────────────────────────────────────────────────────────
 async function fetchMarketCapRandom(env, neededCount) {
   const baseUrl = env.KIS_BASE_URL || 'https://openapi.koreainvestment.com:9443';
   if (!env.KIS_APP_KEY || !env.KIS_APP_SECRET) return [];
@@ -270,7 +288,7 @@ async function fetchMarketCapRandom(env, neededCount) {
         FID_COND_MRKT_DIV_CODE: 'J',
         FID_COND_SCR_DIV_CODE: '20174', // 시가총액 순위
         FID_INPUT_ISCD: '0000',
-        FID_DIV_CLS_CODE: '1', // 보통주만
+        FID_DIV_CLS_CODE: '1', // 보통주만 (이 옵션이 있지만 이중 방어)
         FID_TRGT_CLS_CODE: '0',
         FID_TRGT_EXLS_CLS_CODE: '0',
         FID_INPUT_PRICE_1: '',
@@ -298,12 +316,14 @@ async function fetchMarketCapRandom(env, neededCount) {
         const ticker = row.mksc_shrn_iscd;
         const name = row.hts_kor_isnm;
         if (!ticker || !name) continue;
-        if (!isValidTicker(ticker) || seen.has(ticker) || isExcluded(name)) continue;
+        
+        // ★ isPreferredStock 필터링 적용
+        if (!isValidTicker(ticker) || seen.has(ticker) || isExcluded(name) || isPreferredStock(name)) continue;
+        
         seen.add(ticker);
         collected.push({ ticker, name });
       }
 
-      // 200건 이상 모이면 중단
       if (collected.length >= 200) break;
 
       trCont = res.headers.get('tr_cont') || '';
@@ -313,7 +333,6 @@ async function fetchMarketCapRandom(env, neededCount) {
 
     console.log(`[popular] 시가총액 상위 수집: ${collected.length}건`);
 
-    // 랜덤 셔플 후 필요한 개수만 반환
     const shuffled = [...collected].sort(() => Math.random() - 0.5);
     return shuffled.slice(0, neededCount);
   } catch (e) {
@@ -322,9 +341,7 @@ async function fetchMarketCapRandom(env, neededCount) {
   }
 }
 
-// ─────────────────────────────────────────────────────────────
 // 3순위: 뉴스 이슈 점수 기반
-// ─────────────────────────────────────────────────────────────
 async function fetchIssueStocks(kisCandidates) {
   if (!kisCandidates || kisCandidates.length === 0) return [];
 
@@ -404,7 +421,7 @@ export async function onRequestGet(context) {
     if (selected.length > 0 && source === 'none') source = 'issue';
   }
 
-  // 4순위: KIS 거래량/등락률 보충 (기존 유지)
+  // 4순위: KIS 거래량/등락률 보충
   if (selected.length < 20) {
     if (kisCandidates.length === 0) kisCandidates = await fetchKisCandidates(env, 100);
     const newItems = kisCandidates.filter(d => !selected.find(i => i.ticker === d.ticker));
@@ -415,10 +432,10 @@ export async function onRequestGet(context) {
     if (selected.length > 0 && source === 'none') source = 'kis';
   }
 
-  // ★ 5순위: KIS 시가총액 상위 200위 중 랜덤 추출 (신규 추가)
+  // 5순위: KIS 시가총액 상위 200위 중 랜덤 추출
   if (selected.length < 20) {
     const remaining = 20 - selected.length;
-    const capPicked = await fetchMarketCapRandom(env, remaining + 10); // 중복 제거 대비 여유있게
+    const capPicked = await fetchMarketCapRandom(env, remaining + 10);
     const newItems = capPicked.filter(d => !selected.find(i => i.ticker === d.ticker));
     const capFill = newItems.slice(0, remaining);
     selected = [...selected, ...capFill];
