@@ -4,13 +4,13 @@ import { MODELS } from './_constants.js';
 
 function isQuotaError(e) {
   const msg = String(e?.message || e);
-  return msg.includes('4006') || msg.includes('daily free allocation');
+  return msg.includes('4006') || msg.includes('daily free allocation') || msg.includes('quota');
 }
 
-// 폐기된 모델(5028) 또는 deprecated 문구 감지
+// 폐기된 모델(5028, 410) 또는 deprecated 문구 감지
 function isDeprecatedModelError(e) {
   const msg = String(e?.message || e);
-  return msg.includes('5028') || msg.toLowerCase().includes('deprecated');
+  return msg.includes('5028') || msg.includes('410') || msg.toLowerCase().includes('deprecated');
 }
 
 async function callAiWithRetry(env, modelKey, messages, maxTokens, temperature) {
@@ -23,6 +23,10 @@ async function callAiWithRetry(env, modelKey, messages, maxTokens, temperature) 
       return response;
     } catch (e) {
       lastError = e;
+      
+      // ★ 디버깅을 위해 실제 에러 메시지 전체를 로깅
+      console.error(`[AI Error] Model: ${modelId}, Attempt: ${attempt + 1}, Error:`, e.message, JSON.stringify(e));
+
       if (isQuotaError(e)) {
         const err = new Error('AI_QUOTA_EXCEEDED');
         err.code = 'AI_QUOTA_EXCEEDED';
@@ -39,7 +43,7 @@ async function callAiWithRetry(env, modelKey, messages, maxTokens, temperature) 
   throw lastError;
 }
 
-// Qwen/Llama 응답 구조 차이를 흡수하는 헬퍼
+// Qwen/Llama 등 모델별 응답 구조 차이를 흡수하는 헬퍼
 function extractAiText(response) {
   if (!response) return '';
   if (typeof response.response === 'string' && response.response) return response.response;
