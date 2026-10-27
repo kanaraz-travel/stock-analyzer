@@ -21,7 +21,6 @@ function isExcluded(name) {
   return EXCLUDE_KEYWORDS.some(k => upper.includes(k.toUpperCase()));
 }
 
-// ★ 6자리 숫자 코드만 허용
 function isValidTicker(ticker) {
   return /^\d{6}$/.test(String(ticker));
 }
@@ -52,7 +51,6 @@ export async function onRequestGet(context) {
       const found = findCodeByName(query);
       if (!found) return jsonResponse({ error: `'${query}'에 해당하는 종목을 찾을 수 없습니다.` }, 404);
       
-      // ★ 정확히 일치하는 종목이 여러 개가 아닌 하나라면 바로 진행
       if (found.candidates) {
         return jsonResponse({
           error: `'${query}'에 해당하는 종목이 여러 개입니다. 목록에서 선택해 주세요.`,
@@ -216,26 +214,38 @@ function parsePipeSeparated(text, map, codeMap) {
   return count;
 }
 
-// ★ 정규식을 사용하여 마스터 파일 파싱을 견고하게 변경
+// ★ 핵심 수정: substring 위치 기반 + 유연한 fallback 파싱
 function parseFixedWidth(text, tailLen, map, codeMap) {
   let count = 0;
   for (const line of text.split('\n')) {
     if (!line.trim()) continue;
-    if (line.length <= tailLen) continue;
     
-    // 뒷부분(tailLen)을 제외한 앞부분 추출
-    const head = line.substring(0, line.length - tailLen);
+    // 1. 앞부분에서 코드 추출 (KIS 마스터 파일은 앞 9자리에 코드가 위치)
+    const code = line.substring(0, 9).trim();
+    if (!isValidTicker(code)) continue; // 6자리 숫자가 아니면 스킵
+
+    // 2. 종목명 추출 시도
+    let name = '';
     
-    // KIS 마스터 파일 정규식 매칭: [6자리 코드] + [공백] + [표준코드(12자리, 선택적)] + [공백] + [종목명]
-    const match = head.match(/^([0-9A-Z]{6})\s+(?:[0-9A-Z]{12})?\s*(.+)$/);
-    if (!match) continue;
+    // Case A: tailLen을 제외한 앞부분에서 21번째 문자부터 추출 (일반적인 경우)
+    if (line.length > tailLen) {
+      const head = line.substring(0, line.length - tailLen);
+      if (head.length > 21) {
+        name = head.substring(21).trim();
+      }
+    }
     
-    const code = match[1].trim();
-    let name = match[2].trim();
-    
-    if (!isValidTicker(code)) continue;
+    // Case B: Case A가 실패했거나 비어있다면, 코드(9자리)와 ISIN(12자리)을 제외한 나머지에서 추출
+    if (!name && line.length > 21) {
+      name = line.substring(21).trim();
+      // 만약 뒤에 부가정보가 붙어있다면, 첫 번째 공백 전까지만 취함
+      const firstSpace = name.indexOf(' ');
+      if (firstSpace > 0) name = name.substring(0, firstSpace);
+    }
+
     if (!name || name.length > 50) continue;
     
+    // 특수문자 제거
     name = name.replace(/[^\uAC00-\uD7A3a-zA-Z0-9\s().&-]/g, '').trim();
     if (!name) continue;
     if (isExcluded(name)) continue;
@@ -247,7 +257,6 @@ function parseFixedWidth(text, tailLen, map, codeMap) {
   return count;
 }
 
-// ★ 검색 로직 고도화: 정확히 일치하는 종목이 있으면 무조건 해당 종목 반환
 function findCodeByName(query) {
   const norm = (s) => String(s).replace(/\s+/g, '').toLowerCase();
   const q = norm(query);
@@ -260,12 +269,11 @@ function findCodeByName(query) {
     const n = norm(name);
     if (n === q) {
       exactMatch = { name, code };
-      break; // 정확히 일치하는 종목을 찾으면 더 이상 순회할 필요 없음
+      break;
     }
     if (n.includes(q)) partial.push({ name, code });
   }
   
-  // 정확히 일치하는 종목이 있으면 그것만 반환 (후보 목록 띄우지 않음)
   if (exactMatch) return { code: exactMatch.code };
   
   if (partial.length === 1) return { code: partial[0].code };
