@@ -27,11 +27,14 @@ async function handleSearch() {
 
   const btn = $('#search-btn');
   btn.disabled = true; btn.textContent = '조회 중';
+  
+  let httpStatus = 0; // ★ HTTP 상태 코드를 추적하기 위한 변수
+
   try {
     const res = await fetch(`/api/quote?ticker=${encodeURIComponent(query)}`);
+    httpStatus = res.status;
     const data = await res.json();
 
-    // ★ 여러 종목이 검색된 경우 현재 선택된 종목 상태를 초기화하여 잘못된 분석 요청 방지
     if (res.status === 409 && data.candidates) {
       state.currentQuote = null;
       $('#quote-card').hidden = true;
@@ -51,7 +54,14 @@ async function handleSearch() {
   } catch (err) {
     if (errorEl) { errorEl.textContent = err.message || '시세를 가져오지 못했습니다.'; errorEl.hidden = false; }
     $('#quote-card').hidden = true; $('#analysis-result').hidden = true;
-    updateDataStatusBadge('ERROR');
+    
+    // ★ 수정: 네트워크 오류(0)이거나 서버 오류(500 이상)일 때만 '연결 끊김' 표시
+    // 404(종목 없음), 400(잘못된 요청) 등은 정상 통신이므로 '연결 원활' 유지
+    if (httpStatus === 0 || httpStatus >= 500) {
+      updateDataStatusBadge('ERROR');
+    } else {
+      updateDataStatusBadge('OK');
+    }
   } finally {
     btn.disabled = false; btn.textContent = '조회';
   }
@@ -161,7 +171,11 @@ function renderQuote(q) {
 export async function refreshQuoteSilently(ticker) {
   try {
     const res = await fetch(`/api/quote?ticker=${encodeURIComponent(ticker)}`);
-    if (!res.ok) { updateDataStatusBadge('ERROR'); return; }
+    if (!res.ok) { 
+      // ★ 수정: 500 이상일 때만 ERROR 표시
+      if (res.status >= 500) updateDataStatusBadge('ERROR');
+      return; 
+    }
     const data = await res.json();
     if (state.currentQuote?.ticker === ticker) {
       if (data.price > 0) state.priceCache.set(ticker, data.price);
