@@ -8,12 +8,15 @@ const EXCLUDE_KEYWORDS = [
   '채권', '국채', '지방채', '특수채', '회사채', 'CP', '전단채', '수익증권',
   '리츠', '부동산투자회사', '인프라', '선박', '펀드', 'MMF'
 ];
+
 function isExcluded(name) {
   const upper = String(name).toUpperCase();
   return EXCLUDE_KEYWORDS.some(k => upper.includes(k.toUpperCase()));
 }
+
+// ★ 6자리 영숫자 코드 허용 (신규 상장 주권 대응)
 function isValidTicker(ticker) {
-  return /^\d{6}$/.test(String(ticker));
+  return /^[0-9A-Z]{6}$/.test(String(ticker));
 }
 
 function decodeHtmlEntities(str) {
@@ -141,7 +144,7 @@ async function fetchFromDaum() {
   } catch { return []; }
 }
 
-// 4순위 후보: KIS 거래량+등락률
+// 4순위 후보: KIS 거래량+등락률 (기존 유지)
 async function fetchKisCandidates(env, limit = 100) {
   const baseUrl = env.KIS_BASE_URL || 'https://openapi.koreainvestment.com:9443';
   if (!env.KIS_APP_KEY || !env.KIS_APP_SECRET) return [];
@@ -196,6 +199,7 @@ async function tryFetchKisForDate(env, baseUrl, accessToken, ymd, limit) {
     }
   };
 
+  // 거래량 순위
   const qVol = new URLSearchParams({
     FID_COND_MRKT_DIV_CODE: 'J', FID_COND_SCR_DIV_CODE: '20171',
     FID_INPUT_ISCD: '0000', FID_DIV_CLS_CODE: '0', FID_BLNG_CLS_CODE: '0',
@@ -217,6 +221,7 @@ async function tryFetchKisForDate(env, baseUrl, accessToken, ymd, limit) {
     if (data.rt_cd === '0') addFromRows(data.output, 'mksc_shrn_iscd');
   }
 
+  // 등락률 순위 (보충)
   if (results.length < limit) {
     await new Promise(r => setTimeout(r, 200));
     const qChg = new URLSearchParams({
@@ -244,15 +249,89 @@ async function tryFetchKisForDate(env, baseUrl, accessToken, ymd, limit) {
   return results;
 }
 
+// ─────────────────────────────────────────────────────────────
+// ★ 5순위: KIS 시가총액 상위 200위 중 랜덤 추출
+// ─────────────────────────────────────────────────────────────
+async function fetchMarketCapRandom(env, neededCount) {
+  const baseUrl = env.KIS_BASE_URL || 'https://openapi.koreainvestment.com:9443';
+  if (!env.KIS_APP_KEY || !env.KIS_APP_SECRET) return [];
+
+  const startYmd = resolvedTradingDayCache.ymd || getCandidateStartDate();
+
+  try {
+    const accessToken = await getKisAccessToken(env, baseUrl);
+    const collected = [];
+    const seen = new Set();
+    let trCont = '';
+
+    // 최대 7페이지 순회 (약 200건)
+    for (let page = 0; page < 7; page++) {
+      const q = new URLSearchParams({
+        FID_COND_MRKT_DIV_CODE: 'J',
+        FID_COND_SCR_DIV_CODE: '20174', // 시가총액 순위
+        FID_INPUT_ISCD: '0000',
+        FID_DIV_CLS_CODE: '1', // 보통주만
+        FID_TRGT_CLS_CODE: '0',
+        FID_TRGT_EXLS_CLS_CODE: '0',
+        FID_INPUT_PRICE_1: '',
+        FID_INPUT_PRICE_2: '',
+        FID_VOL_CNT: '',
+        FID_INPUT_DATE_1: startYmd,
+      });
+
+      const res = await fetch(`${baseUrl}/uapi/domestic-stock/v1/ranking/market-cap?${q}`, {
+        headers: {
+          'content-type': 'application/json',
+          authorization: `Bearer ${accessToken}`,
+          appkey: env.KIS_APP_KEY,
+          appsecret: env.KIS_APP_SECRET,
+          tr_id: 'FHPST01740000',
+          tr_cont: trCont,
+        },
+      });
+
+      if (!res.ok) break;
+      const data = await res.json();
+      if (data.rt_cd !== '0') break;
+
+      for (const row of data.output || []) {
+        const ticker = row.mksc_shrn_iscd;
+        const name = row.hts_kor_isnm;
+        if (!ticker || !name) continue;
+        if (!isValidTicker(ticker) || seen.has(ticker) || isExcluded(name)) continue;
+        seen.add(ticker);
+        collected.push({ ticker, name });
+      }
+
+      // 200건 이상 모이면 중단
+      if (collected.length >= 200) break;
+
+      trCont = res.headers.get('tr_cont') || '';
+      if (trCont !== 'F' && trCont !== 'M') break;
+      await new Promise(r => setTimeout(r, 200));
+    }
+
+    console.log(`[popular] 시가총액 상위 수집: ${collected.length}건`);
+
+    // 랜덤 셔플 후 필요한 개수만 반환
+    const shuffled = [...collected].sort(() => Math.random() - 0.5);
+    return shuffled.slice(0, neededCount);
+  } catch (e) {
+    console.warn('[popular] 시가총액 순위 실패:', e.message);
+    return [];
+  }
+}
+
+// ─────────────────────────────────────────────────────────────
 // 3순위: 뉴스 이슈 점수 기반
+// ─────────────────────────────────────────────────────────────
 async function fetchIssueStocks(kisCandidates) {
   if (!kisCandidates || kisCandidates.length === 0) return [];
 
   try {
     const query = encodeURIComponent('특징주 OR 급등주 OR 상한가 when:7d');
-    // ★ Google News RSS 차단 우회를 위해 브라우저 User-Agent 사용
     const res = await fetch(`https://news.google.com/rss/search?q=${query}&hl=ko&gl=KR&ceid=KR:ko`, {
-      headers: { 
+      headers: {
         'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
         'Accept': 'application/rss+xml, application/xml, text/xml'
       }
@@ -286,11 +365,11 @@ async function fetchIssueStocks(kisCandidates) {
 }
 
 // ─────────────────────────────────────────────────────────────
-// 메인 핸들러
+// 메인 핸들러: 5단계 폴백
 // ─────────────────────────────────────────────────────────────
 export async function onRequestGet(context) {
   const { env } = context;
-  const sourceStats = { naver: 0, daum: 0, issue: 0, kis: 0 };
+  const sourceStats = { naver: 0, daum: 0, issue: 0, kis: 0, cap: 0 };
   let selected = [];
   let source = 'none';
 
@@ -325,7 +404,7 @@ export async function onRequestGet(context) {
     if (selected.length > 0 && source === 'none') source = 'issue';
   }
 
-  // 4순위: KIS 보충
+  // 4순위: KIS 거래량/등락률 보충 (기존 유지)
   if (selected.length < 20) {
     if (kisCandidates.length === 0) kisCandidates = await fetchKisCandidates(env, 100);
     const newItems = kisCandidates.filter(d => !selected.find(i => i.ticker === d.ticker));
@@ -334,6 +413,17 @@ export async function onRequestGet(context) {
     selected = [...selected, ...kisFill];
     sourceStats.kis = kisFill.length;
     if (selected.length > 0 && source === 'none') source = 'kis';
+  }
+
+  // ★ 5순위: KIS 시가총액 상위 200위 중 랜덤 추출 (신규 추가)
+  if (selected.length < 20) {
+    const remaining = 20 - selected.length;
+    const capPicked = await fetchMarketCapRandom(env, remaining + 10); // 중복 제거 대비 여유있게
+    const newItems = capPicked.filter(d => !selected.find(i => i.ticker === d.ticker));
+    const capFill = newItems.slice(0, remaining);
+    selected = [...selected, ...capFill];
+    sourceStats.cap = capFill.length;
+    if (selected.length > 0 && source === 'none') source = 'cap';
   }
 
   const items = selected.slice(0, 20).map((item, idx) => ({ ...item, rank: idx + 1 }));
