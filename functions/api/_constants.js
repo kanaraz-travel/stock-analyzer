@@ -6,11 +6,11 @@ export const VALID_RECS_BUY = ['매수 추천', '매수 고려', '기다리기',
 // 매도 관점(보유): 매도/보유/추가매수/보류
 export const VALID_RECS_SELL = ['매도 추천', '부분 매도 고려', '보유 유지', '추가 매수 고려', '매수 추천', '판단 보류'];
 
-// ★ 모델 구성: 뉴스=Llama 4 Scout, 추세=Qwen 3 30B, 심판=Llama 3.3 70B
-//    - Llama 3.1 8B / Qwen 3.8 27B는 폐기됨(Legacy)
+// ★ 무료 뉴런 한도(10,000개) 내에서 최대한 많은 분석을 수행하기 위해 모든 에이전트를 가장 저렴한 Llama 3.1 8B 모델로 통일합니다.
+// (참고: 심판의 판단력을 높이고 싶다면 judge 모델을 '@cf/meta/llama-3.3-70b-instruct-fp8-fast'로 변경할 수 있으나, 뉴런 소모가 매우 커집니다.)
 export const MODELS = {
-  price_volume: '@cf/meta/llama-4-scout-17b-16e-instruct',
-  news: '@cf/meta/llama-4-scout-17b-16e-instruct',
-  trend: '@cf/qwen/qwen3-30b-a3b-fp8',
-  judge: '@cf/meta/llama-3.3-70b-instruct-fp8-fast',
+  price_volume: '@cf/meta/llama-3.1-8b-instruct', // 코드로 대체되어 미사용
+  news: '@cf/meta/llama-3.1-8b-instruct',
+  trend: '@cf/meta/llama-3.1-8b-instruct',
+  judge: '@cf/meta/llama-3.1-8b-instruct',
 };
