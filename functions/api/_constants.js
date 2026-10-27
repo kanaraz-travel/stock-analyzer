@@ -6,11 +6,11 @@ export const VALID_RECS_BUY = ['매수 추천', '매수 고려', '기다리기',
 // 매도 관점(보유): 매도/보유/추가매수/보류
 export const VALID_RECS_SELL = ['매도 추천', '부분 매도 고려', '보유 유지', '추가 매수 고려', '매수 추천', '판단 보류'];
 
-// ★ 무료 뉴런 한도(10,000개) 내에서 최대한 많은 분석을 수행하기 위해 모든 에이전트를 가장 저렴한 Llama 3.1 8B 모델로 통일합니다.
-// (참고: 심판의 판단력을 높이고 싶다면 judge 모델을 '@cf/meta/llama-3.3-70b-instruct-fp8-fast'로 변경할 수 있으나, 뉴런 소모가 매우 커집니다.)
+// ★ 폐기된 Llama 3.1 8B 대신, 현재 Cloudflare Workers AI에서 무료로 정상 지원되는 Llama 3.3 70B 모델로 통일
+//    (추론 성능도 뛰어나며, 안정적으로 동작합니다.)
 export const MODELS = {
-  price_volume: '@cf/meta/llama-3.1-8b-instruct', // 코드로 대체되어 미사용
-  news: '@cf/meta/llama-3.1-8b-instruct',
-  trend: '@cf/meta/llama-3.1-8b-instruct',
-  judge: '@cf/meta/llama-3.1-8b-instruct',
+  price_volume: '@cf/meta/llama-3.3-70b-instruct-fp8-fast', // 코드로 대체되어 미사용
+  news: '@cf/meta/llama-3.3-70b-instruct-fp8-fast',
+  trend: '@cf/meta/llama-3.3-70b-instruct-fp8-fast',
+  judge: '@cf/meta/llama-3.3-70b-instruct-fp8-fast',
 };
