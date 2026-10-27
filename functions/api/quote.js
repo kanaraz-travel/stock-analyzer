@@ -21,6 +21,11 @@ function isExcluded(name) {
   return EXCLUDE_KEYWORDS.some(k => upper.includes(k.toUpperCase()));
 }
 
+// ★ 종목 코드가 '6자리 숫자'인지 검증하는 함수 추가
+function isValidTicker(ticker) {
+  return /^\d{6}$/.test(String(ticker));
+}
+
 export async function onRequestGet(context) {
   const { request, env } = context;
   const url = new URL(request.url);
@@ -36,7 +41,8 @@ export async function onRequestGet(context) {
   let stock_name = query;
 
   try {
-    const isDirectCode = /^[0-9A-Z]{6}$/i.test(query);
+    // 입력값이 6자리 숫자인지 확인 (직접 코드 입력인 경우)
+    const isDirectCode = isValidTicker(query);
 
     if (!isDirectCode) {
       await ensureMasterLoaded();
@@ -194,7 +200,9 @@ function parsePipeSeparated(text, map, codeMap) {
     if (parts.length < 3) continue;
     const code = parts[0].trim();
     const name = parts[2].trim();
-    if (!/^[0-9A-Z]{6}$/i.test(code)) continue;
+    
+    // ★ 6자리 숫자 코드만 허용
+    if (!isValidTicker(code)) continue;
     if (!name || name.length > 50) continue;
     
     if (isExcluded(name)) continue;
@@ -206,7 +214,6 @@ function parsePipeSeparated(text, map, codeMap) {
   return count;
 }
 
-// ★ 종목명 추출 정규식 보완 및 안정성 강화
 function parseFixedWidth(text, tailLen, map, codeMap) {
   let count = 0;
   for (const line of text.split('\n')) {
@@ -214,17 +221,16 @@ function parseFixedWidth(text, tailLen, map, codeMap) {
     if (line.length <= tailLen) continue;
     const head = line.substring(0, line.length - tailLen);
     
-    // 6자리 코드 + 공백 + 12자리 표준코드(선택) + 종목명 패턴 매칭
     const match = head.match(/^([0-9A-Z]{6})\s*(?:[0-9A-Z]{12})?\s*(.+)$/);
     if (!match) continue;
     
     const code = match[1].trim();
     let name = match[2].trim();
     
-    if (!/^[0-9A-Z]{6}$/i.test(code)) continue;
+    // ★ 6자리 숫자 코드만 허용 (F70600 등 ETN/ELW 코드 필터링)
+    if (!isValidTicker(code)) continue;
     if (!name || name.length > 50) continue;
     
-    // 불필요한 특수문자 제거
     name = name.replace(/[^\uAC00-\uD7A3a-zA-Z0-9\s().&-]/g, '').trim();
     if (!name) continue;
 
@@ -238,7 +244,6 @@ function parseFixedWidth(text, tailLen, map, codeMap) {
 }
 
 function findCodeByName(query) {
-  // ★ 검색어와 종목명의 공백을 모두 제거하여 비교 (띄어쓰기 무시)
   const norm = (s) => String(s).replace(/\s+/g, '').toLowerCase();
   const q = norm(query);
   if (!q) return null;
@@ -246,7 +251,7 @@ function findCodeByName(query) {
   const partial = [];
   for (const [name, code] of masterCache.map.entries()) {
     const n = norm(name);
-    if (n === q) return { code }; // 정확히 일치하는 종목이 있으면 즉시 반환
+    if (n === q) return { code };
     if (n.includes(q)) partial.push({ name, code });
   }
   
@@ -254,7 +259,12 @@ function findCodeByName(query) {
   
   if (partial.length > 1) {
     partial.sort((a, b) => a.name.localeCompare(b.name, 'ko'));
-    return { candidates: partial.map((p) => `${p.name}(${p.code})`) };
+    // ★ 후보 목록 반환 시에도 6자리 숫자 코드인지 한 번 더 검증
+    const validCandidates = partial.filter(p => isValidTicker(p.code));
+    if (validCandidates.length === 0) return null;
+    if (validCandidates.length === 1) return { code: validCandidates[0].code };
+    
+    return { candidates: validCandidates.map((p) => `${p.name}(${p.code})`) };
   }
   return null;
 }
