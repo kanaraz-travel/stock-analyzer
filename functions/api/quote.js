@@ -8,13 +8,10 @@ const CACHE_TTL = 24 * 60 * 60 * 1000;
 const PARTIAL_RETRY_TTL = 5 * 60 * 1000;
 const FAIL_RETRY_MS = 30 * 1000;
 
-// ★ ETF/ETN/채권/리츠 등 주식 외 상품을 걸러내는 키워드 (UNICORN 등 추가)
 const EXCLUDE_KEYWORDS = [
-  // ETF 브랜드
   'KODEX', 'TIGER', 'KBSTAR', 'ARIRANG', 'HANARO', 'SOL', 'ACE', 'PLUS', 'RISE', 'KOSEF',
   'TIMEFOLIO', '히어로즈', '마이다스', '파워', '인버스', '레버리지', '선물', '합성', 'ETN', 'ELW',
   'UNICORN', '액티브', '밸류체인', '인덱스',
-  // 채권 및 기타 금융 상품
   '채권', '국채', '지방채', '특수채', '회사채', 'CP', '전단채', '수익증권',
   '리츠', '부동산투자회사', '인프라', '선박', '펀드', 'MMF'
 ];
@@ -209,6 +206,7 @@ function parsePipeSeparated(text, map, codeMap) {
   return count;
 }
 
+// ★ 종목명 추출 정규식 보완 및 안정성 강화
 function parseFixedWidth(text, tailLen, map, codeMap) {
   let count = 0;
   for (const line of text.split('\n')) {
@@ -216,6 +214,7 @@ function parseFixedWidth(text, tailLen, map, codeMap) {
     if (line.length <= tailLen) continue;
     const head = line.substring(0, line.length - tailLen);
     
+    // 6자리 코드 + 공백 + 12자리 표준코드(선택) + 종목명 패턴 매칭
     const match = head.match(/^([0-9A-Z]{6})\s*(?:[0-9A-Z]{12})?\s*(.+)$/);
     if (!match) continue;
     
@@ -225,6 +224,7 @@ function parseFixedWidth(text, tailLen, map, codeMap) {
     if (!/^[0-9A-Z]{6}$/i.test(code)) continue;
     if (!name || name.length > 50) continue;
     
+    // 불필요한 특수문자 제거
     name = name.replace(/[^\uAC00-\uD7A3a-zA-Z0-9\s().&-]/g, '').trim();
     if (!name) continue;
 
@@ -238,14 +238,15 @@ function parseFixedWidth(text, tailLen, map, codeMap) {
 }
 
 function findCodeByName(query) {
-  const norm = (s) => s.replace(/\s+/g, '').toLowerCase();
+  // ★ 검색어와 종목명의 공백을 모두 제거하여 비교 (띄어쓰기 무시)
+  const norm = (s) => String(s).replace(/\s+/g, '').toLowerCase();
   const q = norm(query);
   if (!q) return null;
   
   const partial = [];
   for (const [name, code] of masterCache.map.entries()) {
     const n = norm(name);
-    if (n === q) return { code };
+    if (n === q) return { code }; // 정확히 일치하는 종목이 있으면 즉시 반환
     if (n.includes(q)) partial.push({ name, code });
   }
   
