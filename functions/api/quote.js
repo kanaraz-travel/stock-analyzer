@@ -8,6 +8,7 @@ const CACHE_TTL = 24 * 60 * 60 * 1000;
 const PARTIAL_RETRY_TTL = 5 * 60 * 1000;
 const FAIL_RETRY_MS = 30 * 1000;
 
+// ETF, ETN, 채권 등 제외 키워드
 const EXCLUDE_KEYWORDS = [
   'KODEX', 'TIGER', 'KBSTAR', 'ARIRANG', 'HANARO', 'SOL', 'ACE', 'PLUS', 'RISE', 'KOSEF',
   'TIMEFOLIO', '히어로즈', '마이다스', '파워', '인버스', '레버리지', '선물', '합성', 'ETN', 'ELW',
@@ -21,14 +22,22 @@ function isExcluded(name) {
   return EXCLUDE_KEYWORDS.some(k => upper.includes(k.toUpperCase()));
 }
 
+// ★ 6자리 영숫자 코드 허용 (신규 상장 주권의 알파벳 코드 대응)
 function isValidTicker(ticker) {
-  return /^\d{6}$/.test(String(ticker));
+  return /^[0-9A-Z]{6}$/.test(String(ticker));
 }
 
 export async function onRequestGet(context) {
   const { request, env } = context;
   const url = new URL(request.url);
   const query = (url.searchParams.get('ticker') || '').trim();
+
+  // 테스트용 캐시 초기화 (?reset=true)
+  if (url.searchParams.get('reset') === 'true') {
+    masterCache.loaded = false;
+    masterCache.expiresAt = 0;
+    console.log('[마스터] 캐시 강제 초기화됨');
+  }
 
   if (!query) return jsonResponse({ error: '종목명 또는 코드를 입력해 주세요.' }, 400);
   if (query.length > 50) return jsonResponse({ error: '검색어가 너무 깁니다.' }, 400);
@@ -214,38 +223,27 @@ function parsePipeSeparated(text, map, codeMap) {
   return count;
 }
 
-// ★ 핵심 수정: substring 위치 기반 + 유연한 fallback 파싱
+// ★ KIS 공식 파싱 구조 반영: 앞부분(단축코드+표준코드+한글종목명)을 공백 기준으로 분리
 function parseFixedWidth(text, tailLen, map, codeMap) {
   let count = 0;
   for (const line of text.split('\n')) {
     if (!line.trim()) continue;
+    if (line.length <= tailLen) continue;
     
-    // 1. 앞부분에서 코드 추출 (KIS 마스터 파일은 앞 9자리에 코드가 위치)
-    const code = line.substring(0, 9).trim();
-    if (!isValidTicker(code)) continue; // 6자리 숫자가 아니면 스킵
-
-    // 2. 종목명 추출 시도
-    let name = '';
+    // 뒷부분(tailLen)을 제외한 앞부분 추출
+    const head = line.substring(0, line.length - tailLen).trim();
+    if (!head) continue;
     
-    // Case A: tailLen을 제외한 앞부분에서 21번째 문자부터 추출 (일반적인 경우)
-    if (line.length > tailLen) {
-      const head = line.substring(0, line.length - tailLen);
-      if (head.length > 21) {
-        name = head.substring(21).trim();
-      }
-    }
+    // 공백 기준으로 분리 (단축코드, 표준코드, 한글종목명 순)
+    const parts = head.split(/\s+/);
+    if (parts.length < 3) continue;
     
-    // Case B: Case A가 실패했거나 비어있다면, 코드(9자리)와 ISIN(12자리)을 제외한 나머지에서 추출
-    if (!name && line.length > 21) {
-      name = line.substring(21).trim();
-      // 만약 뒤에 부가정보가 붙어있다면, 첫 번째 공백 전까지만 취함
-      const firstSpace = name.indexOf(' ');
-      if (firstSpace > 0) name = name.substring(0, firstSpace);
-    }
-
+    const code = parts[0].trim();
+    let name = parts.slice(2).join(' ').trim(); // 종목명에 공백이 포함될 수 있음
+    
+    if (!isValidTicker(code)) continue;
     if (!name || name.length > 50) continue;
     
-    // 특수문자 제거
     name = name.replace(/[^\uAC00-\uD7A3a-zA-Z0-9\s().&-]/g, '').trim();
     if (!name) continue;
     if (isExcluded(name)) continue;
