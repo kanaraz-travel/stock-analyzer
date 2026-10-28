@@ -4,7 +4,8 @@ import {
   formatNumber, formatDateTime,
   updateMarketStatusBadge, updateDataStatusBadge
 } from './core.js';
-import { renderAnalysisResult } from './analysis.js';
+// ★ analysis.js -> analysis_ui.js 로 경로 수정
+import { renderAnalysisResult } from './analysis_ui.js';
 
 export function initSearch() {
   const searchBtn = $('#search-btn');
@@ -27,8 +28,7 @@ async function handleSearch() {
 
   const btn = $('#search-btn');
   btn.disabled = true; btn.textContent = '조회 중';
-  
-  let httpStatus = 0; // ★ HTTP 상태 코드를 추적하기 위한 변수
+  let httpStatus = 0;
 
   try {
     const res = await fetch(`/api/quote?ticker=${encodeURIComponent(query)}`);
@@ -55,8 +55,7 @@ async function handleSearch() {
     if (errorEl) { errorEl.textContent = err.message || '시세를 가져오지 못했습니다.'; errorEl.hidden = false; }
     $('#quote-card').hidden = true; $('#analysis-result').hidden = true;
     
-    // ★ 수정: 네트워크 오류(0)이거나 서버 오류(500 이상)일 때만 '연결 끊김' 표시
-    // 404(종목 없음), 400(잘못된 요청) 등은 정상 통신이므로 '연결 원활' 유지
+    // 네트워크 오류(0)이거나 서버 오류(500 이상)일 때만 '연결 끊김' 표시
     if (httpStatus === 0 || httpStatus >= 500) {
       updateDataStatusBadge('ERROR');
     } else {
@@ -67,7 +66,6 @@ async function handleSearch() {
   }
 }
 
-// 후보 목록 스크롤 렌더링 + parentNode null 방어
 function renderSearchCandidates(candidates) {
   let container = document.getElementById('search-candidates');
   if (!container) {
@@ -172,7 +170,6 @@ export async function refreshQuoteSilently(ticker) {
   try {
     const res = await fetch(`/api/quote?ticker=${encodeURIComponent(ticker)}`);
     if (!res.ok) { 
-      // ★ 수정: 500 이상일 때만 ERROR 표시
       if (res.status >= 500) updateDataStatusBadge('ERROR');
       return; 
     }
