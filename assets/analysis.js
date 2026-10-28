@@ -26,7 +26,6 @@ export function initAnalysis() {
   }
 }
 
-// 세션 유효성 검사 및 강제 갱신 헬퍼
 async function getValidSession() {
   let { data: { session }, error } = await supabase.auth.getSession();
   

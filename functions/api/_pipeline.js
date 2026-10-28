@@ -37,7 +37,6 @@ export function interpretConfidence(confidence) {
   return { level: 'very_low', label: `매우 낮은 확신 (${pct}%)` };
 }
 
-// ★ getFallbackMessage 함수 (이게 빠지면 500 에러가 발생합니다)
 export function getFallbackMessage(reason) {
   if (reason === 'AI_QUOTA_EXCEEDED') return '⚠️ 오늘 AI 무료 한도를 모두 사용했습니다. 한국시간 오전 9시 이후 다시 시도해 주세요.';
   if (reason === 'AI_MODEL_DEPRECATED') return '⚠️ AI 모델 설정에 문제가 있어 임시 판단을 제공합니다. 관리자에게 알려 주세요.';
