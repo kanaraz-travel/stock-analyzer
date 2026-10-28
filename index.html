@@ -9,8 +9,8 @@
   <meta name="theme-color" content="#f3f4f6" />
   <title>주식 초보 AI분석기</title>
   <link rel="manifest" href="/public/manifest.webmanifest" />
-  <!-- ★ 버전을 1.1.5로 업데이트하여 캐시 무효화 -->
-  <link rel="stylesheet" href="/assets/styles.css?v=1.1.5" />
+  <!-- ★ 버전을 1.2.0으로 업데이트하여 캐시 무효화 -->
+  <link rel="stylesheet" href="/assets/styles.css?v=1.2.0" />
 </head>
 <body>
   <main id="screen-login" class="login-screen">
@@ -42,6 +42,8 @@
         <div class="header-badges">
           <span id="market-status-badge" class="badge">시장 상태 확인 중</span>
           <span id="data-status-badge" class="badge badge--muted">데이터 상태 확인 중</span>
+          <!-- ★ 자동 이력 쌓기 배지 추가 -->
+          <span id="auto-batch-badge" class="badge badge--muted">자동 대기</span>
         </div>
         <div class="header-actions">
           <button id="batch-build-btn" class="batch-btn" type="button" hidden>이력 쌓기</button>
@@ -147,7 +149,7 @@
   </div>
 
   <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
-  <!-- ★ 버전을 1.1.5로 업데이트하여 캐시 무효화 -->
-  <script src="/assets/app.js?v=1.1.5" type="module"></script>
+  <!-- ★ 버전을 1.2.0으로 업데이트하여 캐시 무효화 -->
+  <script src="/assets/app.js?v=1.2.0" type="module"></script>
 </body>
 </html>

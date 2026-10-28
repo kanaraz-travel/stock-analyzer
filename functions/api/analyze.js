@@ -14,7 +14,6 @@ const RULESET_VERSION = 'RULESET_AI_V25_12_OPTIMIZED';
 const MAX_BODY_BYTES = 100 * 1024;
 const CLEANUP_PROBABILITY = 0.2;
 
-// ★ 최상위 래퍼: 어떤 치명적 에러가 발생해도 500 HTML 대신 JSON을 반환하도록 강제
 export async function onRequestPost(context) {
   try {
     return await handleAnalyze(context);
@@ -32,26 +31,28 @@ export async function onRequestPost(context) {
 async function handleAnalyze(context) {
   const { request, env } = context;
 
-  // ─── 인증 ───
+  // ─── 인증 (크론 우회 로직 추가) ───
   const authHeader = request.headers.get('authorization') || '';
   const token = authHeader.replace(/^Bearer\s+/i, '').trim();
-  if (!token) return jsonResponse({ error: '인증이 필요합니다.' }, 401);
-
-  if (!env.SUPABASE_URL || !env.SUPABASE_SERVICE_ROLE_KEY) {
-    return jsonResponse({ error: '서버 설정 오류입니다.' }, 500);
-  }
-
+  const cronSecret = request.headers.get('x-cron-secret');
+  
+  let userId = null;
   const supabase = createClient(env.SUPABASE_URL, env.SUPABASE_SERVICE_ROLE_KEY, {
     auth: { persistSession: false, autoRefreshToken: false, detectSessionInUrl: false },
   });
 
-  let userId;
-  try {
-    const { data: userData, error: authError } = await supabase.auth.getUser(token);
-    if (authError || !userData?.user) return jsonResponse({ error: '인증이 유효하지 않습니다.' }, 401);
-    userId = userData.user.id;
-  } catch {
-    return jsonResponse({ error: '인증 처리 중 오류가 발생했습니다.' }, 401);
+  if (cronSecret && cronSecret === env.CRON_SECRET) {
+    // 크론 요청인 경우 지정된 유저 ID(박필립)로 강제 세팅
+    userId = env.CRON_USER_ID; 
+  } else {
+    if (!token) return jsonResponse({ error: '인증이 필요합니다.' }, 401);
+    try {
+      const { data: userData, error: authError } = await supabase.auth.getUser(token);
+      if (authError || !userData?.user) return jsonResponse({ error: '인증이 유효하지 않습니다.' }, 401);
+      userId = userData.user.id;
+    } catch {
+      return jsonResponse({ error: '인증 처리 중 오류가 발생했습니다.' }, 401);
+    }
   }
 
   const contentLength = Number(request.headers.get('content-length') || 0);
@@ -66,7 +67,6 @@ async function handleAnalyze(context) {
 
   const { ticker, stock_name, price_data, volume_data, news_items, holdings_data } = body;
   
-  // 관점(analysis_type)과 보유 데이터(holdings_data)의 정합성 서버 단 검증
   let analysis_type = body.analysis_type === 'sell' ? 'sell' : 'buy';
   if (analysis_type === 'sell' && (!holdings_data || holdings_data.quantity <= 0)) {
     console.warn(`[analyze] sell 관점 요청이지만 보유 데이터가 없음. buy로 강제 전환 (${ticker})`);
