@@ -175,7 +175,6 @@ export async function runAnalysis(ticker, name, price, targetType = 'main', card
       }
     }
 
-    // ★ HTML 응답(500 에러)으로 인한 JSON 파싱 실패 방지
     const text = await res.text();
     let data;
     try {
@@ -215,13 +214,6 @@ export async function runAnalysis(ticker, name, price, targetType = 'main', card
   }
 }
 
-async function waitWhileHidden(btn, currentIdx, total) {
-  while (document.hidden) {
-    btn.textContent = `일시정지 중 (탭 복귀 시 재개) ${currentIdx}/${total}`;
-    await new Promise(r => setTimeout(r, 1000));
-  }
-}
-
 async function runBatchAnalysis() {
   const name = $('#current-user-name').textContent;
   if (name !== '박필립') { alert(`박필립 계정에서만 사용할 수 있습니다.`); return; }
@@ -258,7 +250,6 @@ async function runBatchAnalysis() {
     for (let i = 0; i < items.length; i++) {
       if (authFailed) break;
 
-      await waitWhileHidden(btn, i + 1, total);
       const stock = items[i];
       btn.textContent = `이력 쌓기 ${i + 1}/${total} · ${stock.name}`;
 
@@ -298,7 +289,6 @@ async function runBatchAnalysis() {
       }
 
       if (i < items.length - 1 && !authFailed) {
-        await waitWhileHidden(btn, i + 1, total);
         await new Promise(r => setTimeout(r, 2500));
       }
     }
