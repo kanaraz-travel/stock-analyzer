@@ -1,12 +1,12 @@
 // assets/analysis.js
 import {
   supabase, state, $,
-  formatDateTime, computeHoldings
+  computeHoldings
 } from './core.js';
+import { renderAnalysisResult, renderInlineAnalysisResult } from './analysis_ui.js';
 
 let batchState = 'idle';
 let failedStocks = [];
-let autoBatchInterval = null;
 
 export function initAnalysis() {
   const analyzeBtn = $('#analyze-btn');
@@ -27,99 +27,9 @@ export function initAnalysis() {
   }
 }
 
-// ★ 자동 이력 쌓기 배지 폴링 로직 (analysis.js로 이동)
-export function initAutoBatchBadge() {
-  if (autoBatchInterval) clearInterval(autoBatchInterval);
-  pollAutoBatchStatus();
-  autoBatchInterval = setInterval(pollAutoBatchStatus, 30000); // 30초마다
-}
-
-export function stopAutoBatchBadge() {
-  if (autoBatchInterval) {
-    clearInterval(autoBatchInterval);
-    autoBatchInterval = null;
-  }
-}
-
-async function pollAutoBatchStatus() {
-  if (document.hidden) return;
-
-  try {
-    const res = await fetch('/api/cron-status');
-    if (!res.ok) throw new Error('상태 조회 실패');
-    const data = await res.json();
-    renderAutoBatchBadge(data);
-  } catch (e) {
-    renderAutoBatchBadge({ status: 'failed' });
-  }
-}
-
-function renderAutoBatchBadge(data) {
-  const badge = $('#auto-batch-badge');
-  if (!badge) return;
-
-  const now = Date.now();
-  const nextRun = data.next_run_at ? new Date(data.next_run_at).getTime() : 0;
-  const isDelayed = data.status === 'idle' && (now > nextRun + 10 * 60 * 1000); // 예정 +10분 지연
-
-  let text = '', className = '';
-
-  if (data.status === 'running') {
-    text = '자동 중...'; className = 'badge--status-orange';
-  } else if (data.status === 'failed' || isDelayed) {
-    text = '자동 끊김'; className = 'badge--status-gray';
-  } else {
-    text = '자동 원활'; className = 'badge--status-green';
-  }
-
-  badge.textContent = text;
-  badge.className = `badge ${className}`;
-  badge.style.cursor = 'pointer';
-  
-  badge.onclick = (e) => {
-    e.stopPropagation();
-    showAutoBatchTooltip(badge, data);
-  };
-}
-
-function showAutoBatchTooltip(anchor, data) {
-  let tooltip = document.getElementById('auto-batch-tooltip');
-  if (tooltip) tooltip.remove();
-
-  tooltip = document.createElement('div');
-  tooltip.id = 'auto-batch-tooltip';
-  tooltip.style.cssText = `
-    position:absolute; top:40px; right:0; z-index:100;
-    background:#1e293b; color:#fff; padding:12px; border-radius:8px;
-    font-size:12px; line-height:1.5; box-shadow:0 4px 6px rgba(0,0,0,0.3); width:220px;
-  `;
-
-  const formatTime = (iso) => iso ? new Date(iso).toLocaleString('ko-KR', { hour: '2-digit', minute: '2-digit' }) : '-';
-
-  tooltip.innerHTML = `
-    <div style="font-weight:bold; margin-bottom:8px; border-bottom:1px solid #475569; padding-bottom:4px;">자동 이력 쌓기</div>
-    <div>다음 실행: <span style="color:#38bdf8;">${formatTime(data.next_run_at)}</span></div>
-    <div>마지막 실행: ${formatTime(data.last_run_at)}</div>
-    <div>결과: 성공 ${data.succeeded || 0} / 실패 ${data.failed || 0}</div>
-  `;
-
-  anchor.parentNode.style.position = 'relative';
-  anchor.parentNode.appendChild(tooltip);
-
-  setTimeout(() => {
-    document.addEventListener('click', function closeTooltip() {
-      tooltip.remove();
-      document.removeEventListener('click', closeTooltip);
-    });
-  }, 0);
-}
-
 async function getValidSession() {
   let { data: { session }, error } = await supabase.auth.getSession();
-  
-  if (error || !session) {
-    throw new Error('로그인 세션이 없습니다. 다시 로그인해 주세요.');
-  }
+  if (error || !session) throw new Error('로그인 세션이 없습니다. 다시 로그인해 주세요.');
 
   const now = Math.floor(Date.now() / 1000);
   const isExpiringSoon = session.expires_at && (session.expires_at - now < 60);
@@ -132,7 +42,6 @@ async function getValidSession() {
     }
     return refreshData.session;
   }
-
   return session;
 }
 
@@ -140,23 +49,16 @@ export async function runAnalysis(ticker, name, price, targetType = 'main', card
   if (!ticker) return;
   const isSilent = targetType === 'batch';
 
-  if (!isSilent && targetType === 'inline' && !cardElement) {
-    console.error('[runAnalysis] cardElement가 없어 inline 분석을 실행할 수 없습니다.');
-    return;
-  }
+  if (!isSilent && targetType === 'inline' && !cardElement) return;
   if (!isSilent && targetType === 'main' && state.isAnalyzingMain) return;
 
-  let btn = null;
-  let originalText = '';
+  let btn = null, originalText = '';
   if (!isSilent) {
     btn = targetType === 'main' ? $('#analyze-btn') : cardElement.querySelector('.btn-ai-analyze');
     if (btn) {
       originalText = btn.textContent.trim();
-      if (originalText.includes('분석 중')) {
-        originalText = targetType === 'main' ? '분석' : 'AI 분석하기';
-      }
-      btn.disabled = true;
-      btn.textContent = '분석 중…';
+      if (originalText.includes('분석 중')) originalText = targetType === 'main' ? '분석' : 'AI 분석하기';
+      btn.disabled = true; btn.textContent = '분석 중…';
     }
     if (targetType === 'main') {
       state.isAnalyzingMain = true;
@@ -206,8 +108,7 @@ export async function runAnalysis(ticker, name, price, targetType = 'main', card
       }
     }
 
-    let newsItems = [];
-    let historyData = {};
+    let newsItems = [], historyData = {};
     try {
       const [newsRes, histRes] = await Promise.all([
         fetch(`/api/news?ticker=${encodeURIComponent(name)}`),
@@ -227,27 +128,18 @@ export async function runAnalysis(ticker, name, price, targetType = 'main', card
     const payload = {
       ticker, stock_name: name || ticker, analysis_type: holdingsData ? 'sell' : 'buy',
       price_data: {
-        current_price: actualPrice,
-        quote_as_of: freshQuote?.quote_as_of ?? null,
-        server_time: freshQuote?.server_time ?? null,
-        quote_time_source: freshQuote?.quote_time_source ?? 'UNKNOWN',
-        market_status: freshQuote?.market_status ?? null,
-        price_source: priceSource,
-        change_rate: actualChangeRate,
-        return_1m: historyData?.return_1m ?? null,
-        ma20_disparity: historyData?.ma20_disparity ?? null,
-        w52_hgpr: w52Hgpr, w52_lwpr: w52Lwpr,
-        is_after_hours_quote: freshQuote?.is_after_hours_quote ?? false,
-        quote_note: freshQuote?.quote_note ?? null,
+        current_price: actualPrice, quote_as_of: freshQuote?.quote_as_of ?? null,
+        server_time: freshQuote?.server_time ?? null, quote_time_source: freshQuote?.quote_time_source ?? 'UNKNOWN',
+        market_status: freshQuote?.market_status ?? null, price_source: priceSource,
+        change_rate: actualChangeRate, return_1m: historyData?.return_1m ?? null,
+        ma20_disparity: historyData?.ma20_disparity ?? null, w52_hgpr: w52Hgpr, w52_lwpr: w52Lwpr,
+        is_after_hours_quote: freshQuote?.is_after_hours_quote ?? false, quote_note: freshQuote?.quote_note ?? null,
       },
-      volume_data: volumeData,
-      news_items: newsItems,
-      holdings_data: holdingsData
+      volume_data: volumeData, news_items: newsItems, holdings_data: holdingsData
     };
 
     let res = await fetch('/api/analyze', {
-      method: 'POST',
-      headers: { 'content-type': 'application/json', authorization: `Bearer ${session.access_token}` },
+      method: 'POST', headers: { 'content-type': 'application/json', authorization: `Bearer ${session.access_token}` },
       body: JSON.stringify(payload)
     });
     
@@ -265,29 +157,22 @@ export async function runAnalysis(ticker, name, price, targetType = 'main', card
 
     const text = await res.text();
     let data;
-    try {
-      data = JSON.parse(text);
-    } catch (e) {
+    try { data = JSON.parse(text); } catch (e) {
       console.error('서버 응답이 JSON이 아닙니다:', text.slice(0, 200));
       throw new Error(`서버 오류가 발생했습니다. (Status: ${res.status})`);
     }
 
-    if (!res.ok) {
-      const detail = Array.isArray(data.details) ? `\n${data.details.join('\n')}` : '';
-      throw new Error((data.error || '분석 실패') + detail);
-    }
+    if (!res.ok) throw new Error((data.error || '분석 실패') + (Array.isArray(data.details) ? `\n${data.details.join('\n')}` : ''));
     
     data.analyzed_at = new Date().toISOString();
     state.analysisCache.set(ticker, data);
 
-    if (isSilent) {
-      // 배치 모드
-    } else if (targetType === 'main') {
-      if (state.currentQuote?.ticker === ticker) {
-        renderAnalysisResult(data, state.currentScreen === 'analysis');
+    if (!isSilent) {
+      if (targetType === 'main') {
+        if (state.currentQuote?.ticker === ticker) renderAnalysisResult(data, state.currentScreen === 'analysis');
+      } else {
+        renderInlineAnalysisResult(data, cardElement, true);
       }
-    } else {
-      renderInlineAnalysisResult(data, cardElement, true);
     }
     return data;
   } catch (err) {
@@ -295,8 +180,7 @@ export async function runAnalysis(ticker, name, price, targetType = 'main', card
     throw err;
   } finally {
     if (!isSilent && btn) {
-      btn.disabled = false;
-      btn.textContent = originalText || (targetType === 'main' ? '분석' : 'AI 분석하기');
+      btn.disabled = false; btn.textContent = originalText || (targetType === 'main' ? '분석' : 'AI 분석하기');
       if (targetType === 'main') state.isAnalyzingMain = false;
     }
   }
@@ -308,196 +192,64 @@ async function runBatchAnalysis() {
   if (state.isBatching) return;
 
   const btn = $('#batch-build-btn');
-  btn.disabled = true;
-  btn.textContent = '인기 종목 불러오는 중...';
+  btn.disabled = true; btn.textContent = '인기 종목 불러오는 중...';
 
-  state.isBatching = true;
-  failedStocks = [];
-  let succeeded = 0, failed = 0;
-  let consecutiveFallbacks = 0;
-  let authFailed = false;
+  state.isBatching = true; failedStocks = [];
+  let succeeded = 0, failed = 0, consecutiveFallbacks = 0, authFailed = false;
 
   try {
-    try {
-      await getValidSession();
-    } catch (e) {
-      alert('세션이 만료되었습니다. 다시 로그인해 주세요.');
-      await supabase.auth.signOut();
-      return;
-    }
+    try { await getValidSession(); } catch (e) { alert('세션이 만료되었습니다. 다시 로그인해 주세요.'); await supabase.auth.signOut(); return; }
 
     const res = await fetch('/api/popular');
     const data = await res.json();
     if (!res.ok) throw new Error(data.error || '인기 종목을 불러오지 못했습니다.');
-
     const items = Array.isArray(data.items) ? data.items : [];
     if (items.length === 0) throw new Error('인기 종목이 없습니다.');
 
-    const total = items.length;
-
     for (let i = 0; i < items.length; i++) {
       if (authFailed) break;
-
       const stock = items[i];
-      btn.textContent = `이력 쌓기 ${i + 1}/${total} · ${stock.name}`;
+      btn.textContent = `이력 쌓기 ${i + 1}/${items.length} · ${stock.name}`;
 
       try {
         const result = await runAnalysis(stock.ticker, stock.name, null, 'batch');
-
         if (result && result.fallback) {
           failedStocks.push(`${stock.name}(${result.fallback_reason})`);
-          failed++;
-          consecutiveFallbacks++;
-          
+          failed++; consecutiveFallbacks++;
           if (consecutiveFallbacks >= 3) {
-            btn.textContent = `연속 폴백 ${consecutiveFallbacks}회로 중단 (${i + 1}/${total})`;
+            btn.textContent = `연속 폴백 ${consecutiveFallbacks}회로 중단`;
             alert(`연속으로 분석이 실패하여 중단합니다.\n최근 사유: ${result.fallback_message || result.fallback_reason}`);
             break;
           }
         } else if (result && result.saved === false) {
-          failedStocks.push(`${stock.name}(저장 실패)`);
-          failed++;
-          consecutiveFallbacks = 0;
-        } else {
-          succeeded++;
-          consecutiveFallbacks = 0;
-        }
+          failedStocks.push(`${stock.name}(저장 실패)`); failed++; consecutiveFallbacks = 0;
+        } else { succeeded++; consecutiveFallbacks = 0; }
       } catch (e) {
-        console.warn(`[batch] ${stock.name}(${stock.ticker}) 실패:`, e.message);
-        
         if (e.message.includes('인증') || e.message.includes('세션')) {
-          alert('세션이 만료되어 이력 쌓기를 중단합니다. 다시 로그인해 주세요.');
-          authFailed = true;
-          break;
+          alert('세션이 만료되어 이력 쌓기를 중단합니다.'); authFailed = true; break;
         }
-
-        failedStocks.push(`${stock.name}(${e.message.slice(0, 40)})`);
-        failed++;
-        consecutiveFallbacks = 0;
+        failedStocks.push(`${stock.name}(${e.message.slice(0, 40)})`); failed++; consecutiveFallbacks = 0;
       }
-
-      if (i < items.length - 1 && !authFailed) {
-        await new Promise(r => setTimeout(r, 2500));
-      }
+      if (i < items.length - 1 && !authFailed) await new Promise(r => setTimeout(r, 2500));
     }
-
-    if (!authFailed) {
-      btn.textContent = `완료 (성공 ${succeeded} / 실패 ${failed})`;
-      btn.disabled = false;
-      batchState = 'result';
-    }
+    if (!authFailed) { btn.textContent = `완료 (성공 ${succeeded} / 실패 ${failed})`; btn.disabled = false; batchState = 'result'; }
   } catch (err) {
-    console.error('[batch] error:', err);
-    alert(err.message || '이력 쌓기에 실패했습니다.');
-    resetBatchButton();
-  } finally {
-    state.isBatching = false;
-  }
+    alert(err.message || '이력 쌓기에 실패했습니다.'); resetBatchButton();
+  } finally { state.isBatching = false; }
 }
 
 function showFailures() {
   const btn = $('#batch-build-btn');
   if (failedStocks.length === 0) { alert('모든 종목 분석에 성공했습니다!'); resetBatchButton(); return; }
-
   let tooltip = document.getElementById('batch-tooltip');
   if (!tooltip) {
-    tooltip = document.createElement('div');
-    tooltip.id = 'batch-tooltip';
-    tooltip.className = 'batch-tooltip';
-    btn.parentNode.appendChild(tooltip);
+    tooltip = document.createElement('div'); tooltip.id = 'batch-tooltip'; tooltip.className = 'batch-tooltip'; btn.parentNode.appendChild(tooltip);
   }
   tooltip.textContent = `실패한 종목 (${failedStocks.length}건):\n${failedStocks.join(', ')}`;
-  tooltip.hidden = false;
-
-  btn.textContent = '닫기';
-  batchState = 'failures';
+  tooltip.hidden = false; btn.textContent = '닫기'; batchState = 'failures';
 }
 
 function resetBatchButton() {
-  const tooltip = document.getElementById('batch-tooltip');
-  if (tooltip) tooltip.remove();
-  const btn = $('#batch-build-btn');
-  btn.textContent = '이력 쌓기';
-  btn.disabled = false;
-  batchState = 'idle';
-}
-
-export function renderAnalysisResult(data, scrollTo = true) {
-  $('#analysis-result').hidden = false;
-  const badge = $('#recommendation-badge');
-  badge.textContent = data.recommendation || '판단 보류';
-  badge.className = 'recommendation-badge';
-  const rec = data.recommendation || '';
-
-  let warningEl = document.getElementById('fallback-warning');
-  if (!warningEl) {
-    warningEl = document.createElement('div');
-    warningEl.id = 'fallback-warning';
-    warningEl.style.cssText = 'margin-top:12px; padding:10px; background:#fef3c7; color:#92400e; border:1px solid #f59e0b; border-radius:8px; font-size:12px; line-height:1.4; display:none;';
-    const target = document.getElementById('overall-summary');
-    if (target && target.parentNode) target.parentNode.appendChild(warningEl);
-  }
-
-  if (data.fallback) {
-    badge.classList.add('recommendation-badge--pending');
-    badge.textContent = `임시 판단: ${rec}`;
-    if (warningEl) {
-      warningEl.textContent = data.fallback_message || '⚠️ 임시 판단입니다.';
-      warningEl.style.display = 'block';
-    }
-  } else {
-    if (rec.includes('매수')) badge.classList.add('recommendation-badge--buy');
-    else if (rec.includes('매도')) badge.classList.add('recommendation-badge--sell');
-    else if (rec.includes('기다리기') || rec.includes('보유')) badge.classList.add('recommendation-badge--hold');
-    else badge.classList.add('recommendation-badge--pending');
-    if (warningEl) warningEl.style.display = 'none';
-  }
-
-  $('#analysis-timestamp').textContent = `분석 시각: ${formatDateTime(data.analyzed_at || new Date().toISOString())}`;
-  $('#overall-summary').textContent = data.overall_summary || '-';
-
-  if (scrollTo && state.currentScreen === 'analysis') {
-    $('#analysis-result').scrollIntoView({ behavior: 'smooth', block: 'start' });
-  }
-}
-
-export function renderInlineAnalysisResult(data, cardElement, scrollTo = true) {
-  const container = cardElement.querySelector('.holding-inline-result');
-  if (!container) return;
-  container.hidden = false;
-  container.innerHTML = '';
-
-  const rec = data.recommendation || '판단 보류';
-  let badgeClass = 'recommendation-badge--pending';
-  let badgeText = rec;
-  if (data.fallback) { badgeClass = 'recommendation-badge--pending'; badgeText = `임시 판단: ${rec}`; }
-  else if (rec.includes('매수')) badgeClass = 'recommendation-badge--buy';
-  else if (rec.includes('매도')) badgeClass = 'recommendation-badge--sell';
-  else if (rec.includes('기다리기') || rec.includes('보유')) badgeClass = 'recommendation-badge--hold';
-
-  const headDiv = document.createElement('div'); headDiv.className = 'analysis-head';
-  const badge = document.createElement('div'); badge.className = `recommendation-badge ${badgeClass}`; badge.textContent = badgeText;
-  const ts = document.createElement('div'); ts.className = 'analysis-timestamp'; ts.textContent = formatDateTime(data.analyzed_at || new Date().toISOString());
-  headDiv.appendChild(badge); headDiv.appendChild(ts); container.appendChild(headDiv);
-
-  if (data.fallback) {
-    const warn = document.createElement('div');
-    warn.style.cssText = 'margin-top:8px; padding:8px; background:#fef3c7; color:#92400e; border:1px solid #f59e0b; border-radius:6px; font-size:11px; line-height:1.4;';
-    warn.textContent = data.fallback_message || '⚠️ 임시 판단입니다.';
-    container.appendChild(warn);
-  }
-
-  const overallBlock = document.createElement('div');
-  overallBlock.className = 'analysis-block';
-  const overallTitle = document.createElement('h4');
-  overallTitle.className = 'analysis-block-title';
-  overallTitle.textContent = '종합 분석';
-  overallBlock.appendChild(overallTitle);
-  const overallText = document.createElement('p');
-  overallText.className = 'overall-summary-text';
-  overallText.textContent = data.overall_summary || '-';
-  overallBlock.appendChild(overallText);
-  container.appendChild(overallBlock);
-
-  if (scrollTo) container.scrollIntoView({ behavior: 'smooth', block: 'start' });
+  const tooltip = document.getElementById('batch-tooltip'); if (tooltip) tooltip.remove();
+  const btn = $('#batch-build-btn'); btn.textContent = '이력 쌓기'; btn.disabled = false; batchState = 'idle';
 }

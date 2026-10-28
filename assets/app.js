@@ -6,14 +6,19 @@ import {
   computeHoldings
 } from './core.js';
 import {
-  initHoldings, loadHoldings, refreshHoldingsView,
-  renderHoldingsList, renderHoldingsSummary, renderOverSellWarning
+  initHoldings, loadHoldings, refreshHoldingsView
 } from './holdings.js';
+import { 
+  renderHoldingsList, renderHoldingsSummary, renderOverSellWarning 
+} from './holdings_ui.js';
 import { initSearch, refreshQuoteSilently } from './search.js';
 import {
-  initAnalysis, initAutoBatchBadge, stopAutoBatchBadge,
-  renderAnalysisResult, renderInlineAnalysisResult
+  initAnalysis, runAnalysis
 } from './analysis.js';
+import { 
+  renderAnalysisResult, renderInlineAnalysisResult 
+} from './analysis_ui.js';
+import { initAutoBatchBadge, stopAutoBatchBadge } from './auto_badge.js';
 
 let isLoggingOut = false;
 
@@ -28,7 +33,6 @@ async function init() {
   setupVisibility();
 
   supabase.auth.onAuthStateChange(async (event, session) => {
-    console.log(`[Auth Event] ${event}`, session?.user?.email);
     if (event === 'SIGNED_IN' || event === 'INITIAL_SESSION') await handleAuthState(session);
     else if (event === 'SIGNED_OUT') await handleAuthState(null);
   });
@@ -52,16 +56,10 @@ async function handleAuthState(session) {
     const batchBtn = $('#batch-build-btn');
     if (batchBtn) batchBtn.hidden = !isBatchAllowed;
 
-    // ★ 자동 이력 쌓기 배지 제어 (박필립 전용)
     const autoBadge = $('#auto-batch-badge');
     if (autoBadge) {
-      if (isBatchAllowed) {
-        autoBadge.hidden = false;
-        initAutoBatchBadge(); // 폴링 시작
-      } else {
-        autoBadge.hidden = true;
-        stopAutoBatchBadge(); // 폴링 중지
-      }
+      if (isBatchAllowed) { autoBadge.hidden = false; initAutoBatchBadge(); }
+      else { autoBadge.hidden = true; stopAutoBatchBadge(); }
     }
 
     switchScreen('holdings');
@@ -90,12 +88,9 @@ function resetState() {
   state.isAnalyzingMain = false; state.isBatching = false;
   $('#quote-card').hidden = true; $('#analysis-result').hidden = true;
   $('#ticker-input').value = ''; $('#search-error').hidden = true;
-  const candidatesEl = document.getElementById('search-candidates');
-  if (candidatesEl) candidatesEl.hidden = true;
+  const candidatesEl = document.getElementById('search-candidates'); if (candidatesEl) candidatesEl.hidden = true;
   $('#transaction-form').reset(); $('#tx-id').value = ''; $('#tx-error').hidden = true;
-  $('#tx-form-title').textContent = '거래 등록';
-  $('#tx-submit-btn').textContent = '거래 저장';
-  $('#tx-cancel-btn').hidden = true;
+  $('#tx-form-title').textContent = '거래 등록'; $('#tx-submit-btn').textContent = '거래 저장'; $('#tx-cancel-btn').hidden = true;
   $('#holdings-list').innerHTML = '<p class="empty-text">아직 등록된 거래가 없습니다.</p>';
   const w = document.getElementById('over-sell-warning'); if (w) w.remove();
   ['#total-cost', '#total-value', '#total-pnl', '#realized-pnl'].forEach((id) => { const el = $(id); if (el) el.textContent = '-'; });
@@ -107,7 +102,6 @@ function resetState() {
   const batchBtn = $('#batch-build-btn');
   if (batchBtn) { batchBtn.hidden = true; batchBtn.disabled = false; batchBtn.textContent = '이력 쌓기'; }
   
-  // ★ 로그아웃 시 자동 배지 중지 및 숨김
   stopAutoBatchBadge();
   const autoBadge = $('#auto-batch-badge');
   if (autoBadge) { autoBadge.hidden = true; autoBadge.textContent = '자동 대기'; autoBadge.className = 'badge badge--muted'; }
@@ -153,14 +147,12 @@ function setupLogoutButton() {
     if (isLoggingOut) return;
     if (state.isBatching) { alert('이력 쌓기가 진행 중입니다. 완료 후 로그아웃해 주세요.'); return; }
     if (!confirm('로그아웃하시겠습니까?')) return;
-    isLoggingOut = true;
-    stopCountdown();
+    isLoggingOut = true; stopCountdown();
     try {
       const { error } = await supabase.auth.signOut();
       if (error && error.message !== 'session_not_found') console.error('Logout error:', error);
-    } catch (e) {
-      if (e.message !== 'session_not_found') console.error(e);
-    } finally { isLoggingOut = false; }
+    } catch (e) { if (e.message !== 'session_not_found') console.error(e); }
+    finally { isLoggingOut = false; }
   };
 }
 
@@ -191,17 +183,13 @@ function setupRefreshButton() {
   btn.addEventListener('click', async () => {
     if (state.isRefreshing || state.countdown > 0 || state.isBatching) return;
     state.isRefreshing = true; stopCountdown(); updateRefreshButton();
-    try { await performRefresh(); }
-    finally { state.isRefreshing = false; startCountdown(); }
+    try { await performRefresh(); } finally { state.isRefreshing = false; startCountdown(); }
   });
 }
 
 async function performRefresh() {
-  if (state.currentScreen === 'analysis') {
-    if (state.currentQuote) await refreshQuoteSilently(state.currentQuote.ticker);
-  } else if (state.currentScreen === 'holdings') {
-    await refreshHoldingsView();
-  }
+  if (state.currentScreen === 'analysis') { if (state.currentQuote) await refreshQuoteSilently(state.currentQuote.ticker); }
+  else if (state.currentScreen === 'holdings') { await refreshHoldingsView(); }
 }
 
 function setupVisibility() { document.addEventListener('visibilitychange', () => updateRefreshButton()); }
@@ -215,9 +203,7 @@ function switchScreen(target) {
     $('#analysis-result').hidden = true;
     restoreAnalysisResults();
     const analyzeBtn = $('#analyze-btn');
-    if (state.isAnalyzingMain && analyzeBtn) {
-      analyzeBtn.disabled = true; analyzeBtn.textContent = '분석 중…';
-    }
+    if (state.isAnalyzingMain && analyzeBtn) { analyzeBtn.disabled = true; analyzeBtn.textContent = '분석 중…'; }
   }
 }
 
