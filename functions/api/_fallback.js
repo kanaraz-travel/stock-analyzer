@@ -29,10 +29,10 @@ export function buildRuleBasedFallback({ price_data, volume_data, analysis_type,
   if (isSell) {
     // 매도 관점 (보유 중)
     if (score >= 2) recommendation = '보유 유지';
-    else if (score <= -2) recommendation = '부분 매도 고려';
+    else if (score <= -2) recommendation = '매도 고려';
     else recommendation = '보유 유지';
   } else {
-    // ★ 매수 관점 (미보유): 안 좋으면 매도가 아니라 '기다리기'
+    // 매수 관점 (미보유)
     if (score >= 2) recommendation = '매수 고려';
     else if (score <= -2) recommendation = '기다리기';
     else recommendation = '기다리기';

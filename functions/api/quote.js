@@ -1,6 +1,7 @@
 // functions/api/quote.js
 import { unzipSync } from 'fflate';
 import { getKisAccessToken } from './_kis_token.js';
+import { isValidTicker, normalizeTicker } from './_code.js';
 
 let masterCache = { loaded: false, map: new Map(), codeMap: new Map(), expiresAt: 0, retryAfter: 0 };
 let masterPromise = null;
@@ -8,7 +9,6 @@ const CACHE_TTL = 24 * 60 * 60 * 1000;
 const PARTIAL_RETRY_TTL = 5 * 60 * 1000;
 const FAIL_RETRY_MS = 30 * 1000;
 
-// ETF, ETN, 채권 등 제외 키워드
 const EXCLUDE_KEYWORDS = [
   'KODEX', 'TIGER', 'KBSTAR', 'ARIRANG', 'HANARO', 'SOL', 'ACE', 'PLUS', 'RISE', 'KOSEF',
   'TIMEFOLIO', '히어로즈', '마이다스', '파워', '인버스', '레버리지', '선물', '합성', 'ETN', 'ELW',
@@ -22,28 +22,10 @@ function isExcluded(name) {
   return EXCLUDE_KEYWORDS.some(k => upper.includes(k.toUpperCase()));
 }
 
-// 6자리 영숫자 코드 허용 (신규 상장 주권 대응)
-function isValidTicker(ticker) {
-  return /^[0-9A-Z]{6}$/.test(String(ticker));
-}
-
-// A 접두사가 붙은 코드(예: A005930) 정규화
-function normalizeTicker(ticker) {
-  let t = String(ticker).trim();
-  if (t.length === 7 && t.startsWith('A')) t = t.substring(1);
-  return t;
-}
-
 export async function onRequestGet(context) {
   const { request, env } = context;
   const url = new URL(request.url);
   const query = (url.searchParams.get('ticker') || '').trim();
-
-  if (url.searchParams.get('reset') === 'true') {
-    masterCache.loaded = false;
-    masterCache.expiresAt = 0;
-    console.log('[마스터] 캐시 강제 초기화됨');
-  }
 
   if (!query) return jsonResponse({ error: '종목명 또는 코드를 입력해 주세요.' }, 400);
   if (query.length > 50) return jsonResponse({ error: '검색어가 너무 깁니다.' }, 400);
@@ -56,23 +38,19 @@ export async function onRequestGet(context) {
 
   try {
     const isDirectCode = isValidTicker(ticker);
-
     if (!isDirectCode) {
       await ensureMasterLoaded();
       if (masterCache.map.size === 0) {
         return jsonResponse({ error: '종목 목록을 불러오지 못했습니다. 잠시 후 다시 시도해 주세요.' }, 503);
       }
-      
       const found = findCodeByName(query);
       if (!found) return jsonResponse({ error: `'${query}'에 해당하는 종목을 찾을 수 없습니다.` }, 404);
-      
       if (found.candidates) {
         return jsonResponse({
           error: `'${query}'에 해당하는 종목이 여러 개입니다. 목록에서 선택해 주세요.`,
           candidates: found.candidates,
         }, 409);
       }
-      
       ticker = found.code;
       stock_name = masterCache.codeMap.get(ticker) || query;
     }
@@ -111,7 +89,6 @@ export async function onRequestGet(context) {
 
     let data;
     try { data = await kisRes.json(); } catch { return jsonResponse({ error: '시세 응답을 처리하지 못했습니다.' }, 502); }
-
     if (data.rt_cd && data.rt_cd !== '0') {
       return jsonResponse({ error: `시세 조회 실패: ${data.msg1 || '알 수 없는 오류'}` }, 502);
     }
@@ -130,8 +107,7 @@ export async function onRequestGet(context) {
     const serverTime = new Date().toISOString();
     const marketStatus = getMarketStatus();
     const dataStatus = getDataStatus();
-
-    const isAfterHoursQuote = dataStatus === 'AFTER_HOURS' || dataStatus === 'AFTER_MARKET' || dataStatus === 'MARKET_CLOSED';
+    const isAfterHoursQuote = false;
 
     return jsonResponse({
       ticker, stock_name: finalName,
@@ -147,8 +123,8 @@ export async function onRequestGet(context) {
       provider: '한국투자증권 Open API',
       data_status: dataStatus,
       is_after_hours_quote: isAfterHoursQuote,
-      quote_note: isAfterHoursQuote
-        ? (price != null ? '정규장 종가 기준 (시간외 시세는 별도 API 필요)' : '시간외 시세 미제공')
+      quote_note: dataStatus === 'MARKET_CLOSED' || dataStatus === 'AFTER_HOURS' || dataStatus === 'AFTER_MARKET'
+        ? '정규장 종가 기준 (시간외 시세 미반영)'
         : null,
     });
   } catch (err) {
@@ -185,7 +161,6 @@ async function loadMaster() {
         const content = new TextDecoder('euc-kr').decode(unzipped[filename]);
         const pipeResult = parsePipeSeparated(content, nextMap, nextCodeMap);
         if (pipeResult > 0) { console.log(`[마스터] ${market.key}: 파이프 ${pipeResult}건`); marketCount += pipeResult; continue; }
-        
         const fixedResult = parseFixedWidth(content, market.tailLen, nextMap, nextCodeMap);
         console.log(`[마스터] ${market.key}: 고정폭 ${fixedResult}건`);
         marketCount += fixedResult;
@@ -217,11 +192,9 @@ function parsePipeSeparated(text, map, codeMap) {
     if (parts.length < 3) continue;
     let code = normalizeTicker(parts[0].trim());
     const name = parts[2].trim();
-    
     if (!isValidTicker(code)) continue;
     if (!name || name.length > 50) continue;
     if (isExcluded(name)) continue;
-
     map.set(name, code);
     codeMap.set(code, name);
     count++;
@@ -229,30 +202,22 @@ function parsePipeSeparated(text, map, codeMap) {
   return count;
 }
 
-// ★ 정규식을 사용해 코드, (표준코드), 종목명을 유연하게 추출
 function parseFixedWidth(text, tailLen, map, codeMap) {
   let count = 0;
   for (const line of text.split('\n')) {
     if (!line.trim()) continue;
     if (line.length <= tailLen) continue;
-    
     const head = line.substring(0, line.length - tailLen).trim();
     if (!head) continue;
-    
-    // 패턴: [단축코드(A 접두사 허용)] + 공백 + [표준코드(12자리, 생략가능)] + 공백 + [종목명]
     const match = head.match(/^(A?[0-9A-Z]{6})\s+(?:[A-Z0-9]{12})?\s*(.+)$/);
     if (!match) continue;
-    
     let code = normalizeTicker(match[1].trim());
     let name = match[2].trim();
-    
     if (!isValidTicker(code)) continue;
     if (!name || name.length > 50) continue;
-    
     name = name.replace(/[^\uAC00-\uD7A3a-zA-Z0-9\s().&-]/g, '').trim();
     if (!name) continue;
     if (isExcluded(name)) continue;
-
     map.set(name, code);
     codeMap.set(code, name);
     count++;
@@ -260,34 +225,24 @@ function parseFixedWidth(text, tailLen, map, codeMap) {
   return count;
 }
 
-// ★ 검색 로직: 정확히 일치하는 종목이 있으면 무조건 해당 종목 반환
 function findCodeByName(query) {
   const norm = (s) => String(s).replace(/\s+/g, '').toLowerCase();
   const q = norm(query);
   if (!q) return null;
-  
   const partial = [];
   let exactMatch = null;
-
   for (const [name, code] of masterCache.map.entries()) {
     const n = norm(name);
-    if (n === q) {
-      exactMatch = { name, code };
-      break;
-    }
+    if (n === q) { exactMatch = { name, code }; break; }
     if (n.includes(q)) partial.push({ name, code });
   }
-  
   if (exactMatch) return { code: exactMatch.code };
-  
   if (partial.length === 1) return { code: partial[0].code };
-  
   if (partial.length > 1) {
     partial.sort((a, b) => a.name.localeCompare(b.name, 'ko'));
     const validCandidates = partial.filter(p => isValidTicker(p.code));
     if (validCandidates.length === 0) return null;
     if (validCandidates.length === 1) return { code: validCandidates[0].code };
-    
     return { candidates: validCandidates.map((p) => `${p.name}(${p.code})`) };
   }
   return null;

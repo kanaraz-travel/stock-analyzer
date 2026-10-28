@@ -1,15 +1,10 @@
 // functions/api/_kis_token.js
-// KIS 접근 토큰의 통합 발급/캐시 모듈.
-// 메모리 캐시(isolate 로컬) + Supabase 캐시(전역) 2단계로 동작.
-// KIS는 24시간 유효한 토큰을 1분에 1회만 발급 가능하므로, 전역 캐시가 필수.
-
 import { createClient } from '@supabase/supabase-js';
 
 const CACHE_KEY = 'kis_access_token';
-const SAFETY_MARGIN_MS = 5 * 60 * 1000;   // 만료 5분 전부터 갱신
-const MIN_REFRESH_INTERVAL_MS = 60 * 1000; // KIS 1분 제한 준수
+const SAFETY_MARGIN_MS = 5 * 60 * 1000;
+const MIN_REFRESH_INTERVAL_MS = 60 * 1000;
 
-// ─── 메모리 캐시 (같은 isolate 내 재사용) ───
 let memCache = { accessToken: null, expiresAt: 0 };
 let inflightPromise = null;
 let lastFetchAttemptAt = 0;
@@ -17,35 +12,31 @@ let lastFetchAttemptAt = 0;
 export async function getKisAccessToken(env, baseUrl) {
   const now = Date.now();
 
-  // 1) 메모리 캐시 유효 → 즉시 반환
   if (memCache.accessToken && now < memCache.expiresAt - SAFETY_MARGIN_MS) {
     return memCache.accessToken;
   }
 
-  // 2) 같은 isolate에서 이미 발급 중이면 대기
   if (inflightPromise) return inflightPromise;
 
-  // 3) KIS 1분 제한 방어 (연속 발급 시도 방지)
-  if (now - lastFetchAttemptAt < MIN_REFRESH_INTERVAL_MS && memCache.accessToken) {
-    // 1분 안 지났지만 기존 토큰이 있으면 재사용 (만료 임박해도)
-    return memCache.accessToken;
+  if (now - lastFetchAttemptAt < MIN_REFRESH_INTERVAL_MS) {
+    if (memCache.accessToken && now < memCache.expiresAt - SAFETY_MARGIN_MS) {
+      return memCache.accessToken;
+    }
+    throw new Error('KIS 토큰 만료 임박: 잠시 후 재시도 필요');
   }
 
   inflightPromise = (async () => {
     try {
-      // 4) Supabase 전역 캐시 조회
       const globalToken = await readGlobalCache(env);
       if (globalToken && now < globalToken.expiresAt - SAFETY_MARGIN_MS) {
-        memCache = globalToken;   // 메모리 캐시 승격
+        memCache = globalToken;
         return globalToken.accessToken;
       }
 
-      // 5) KIS에서 신규 발급
       lastFetchAttemptAt = Date.now();
       const fresh = await fetchNewToken(env, baseUrl);
       memCache = fresh;
 
-      // 6) Supabase에 저장 (다른 isolate가 재사용)
       await writeGlobalCache(env, fresh);
 
       return fresh.accessToken;

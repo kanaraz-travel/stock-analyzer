@@ -9,7 +9,7 @@
   <meta name="theme-color" content="#f3f4f6" />
   <title>주식 초보 AI분석기</title>
   <link rel="manifest" href="/public/manifest.webmanifest" />
-  <link rel="stylesheet" href="/assets/styles.css?v=1.3.0" />
+  <link rel="stylesheet" href="/assets/styles.css?v=1.4.0" />
 </head>
 <body>
   <main id="screen-login" class="login-screen">
@@ -21,6 +21,13 @@
       </div>
       <div class="login-card">
         <div id="login-buttons" class="login-buttons"></div>
+        <!-- 비밀번호 입력 영역 추가 -->
+        <div id="login-password-wrap" hidden style="margin-top:16px;">
+          <label class="label">비밀번호
+            <input type="password" id="login-password" autocomplete="current-password" placeholder="비밀번호 입력" />
+          </label>
+          <button type="button" id="login-submit" class="btn btn--primary btn--block">로그인</button>
+        </div>
         <p id="login-error" class="error-text" hidden></p>
         <p id="login-loading" class="login-loading" hidden>로그인 중…</p>
       </div>
@@ -34,6 +41,7 @@
         <div class="app-brand">주식 초보 AI분석기</div>
         <div class="header-user">
           <span id="current-user-name" class="current-user-name"></span>
+          <button id="settings-btn" class="logout-btn" type="button" title="계정 설정" style="margin-right:8px;">⚙️</button>
           <button id="logout-btn" class="logout-btn" type="button">로그아웃</button>
         </div>
       </div>
@@ -146,6 +154,33 @@
     </nav>
   </div>
 
-  <script src="/assets/app.js?v=1.3.0" type="module"></script>
+  <!-- ⚙️ 계정 설정 모달 -->
+  <div id="settings-modal" hidden style="position:fixed;inset:0;background:rgba(0,0,0,.5);display:flex;align-items:center;justify-content:center;z-index:1000;padding:16px;">
+    <div style="background:#fff;border-radius:16px;padding:24px;max-width:400px;width:100%;box-shadow:0 4px 12px rgba(0,0,0,.15);">
+      <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:16px;">
+        <h3 style="font-size:17px;font-weight:700;margin:0;">계정 설정</h3>
+        <button type="button" data-close style="background:none;border:none;font-size:20px;cursor:pointer;padding:0;color:#64748b;">✕</button>
+      </div>
+      <form id="password-form">
+        <label class="label">현재 비밀번호
+          <input type="password" id="current-password" autocomplete="current-password" required>
+        </label>
+        <label class="label">새 비밀번호 (6자 이상)
+          <input type="password" id="new-password" autocomplete="new-password" required minlength="6">
+        </label>
+        <label class="label">새 비밀번호 확인
+          <input type="password" id="new-password-confirm" autocomplete="new-password" required minlength="6">
+        </label>
+        <p id="password-error" class="error-text" hidden style="margin-top:8px;"></p>
+        <p id="password-ok" style="color:#10b981;font-size:13px;margin-top:8px;font-weight:600;" hidden></p>
+        <div style="display:flex;gap:8px;margin-top:20px;">
+          <button type="button" data-close class="btn btn--block" style="background:#f3f4f6;color:#374151;">취소</button>
+          <button type="submit" id="password-submit" class="btn btn--primary btn--block">변경</button>
+        </div>
+      </form>
+    </div>
+  </div>
+
+  <script src="/assets/app.js?v=1.4.0" type="module"></script>
 </body>
 </html>

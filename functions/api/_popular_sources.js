@@ -18,10 +18,10 @@ export function isValidTicker(ticker) {
   return /^[0-9A-Z]{6}$/.test(String(ticker));
 }
 
-function isPreferredStock(name) {
-  if (!name) return false;
-  const cleanName = String(name).replace(/\(.*?\)/g, '').trim();
-  return /(우|[0-9]+우[A-Z]?)$/.test(cleanName);
+export function isPreferredStock(name) {
+  if (!name || typeof name !== 'string') return false;
+  const clean = name.replace(/\(.*?\)/g, '').trim();
+  return /[0-9]*우[A-Za-z]?$/.test(clean);
 }
 
 function decodeHtmlEntities(str) {
@@ -30,7 +30,6 @@ function decodeHtmlEntities(str) {
     .replace(/&quot;/g, '"').replace(/&#39;/g, "'").replace(/&nbsp;/g, ' ');
 }
 
-// ─── 날짜 유틸 ───
 function getKstNow() { return new Date(Date.now() + 9 * 60 * 60 * 1000); }
 function formatYmd(date) { return date.toISOString().slice(0, 10).replace(/-/g, ''); }
 function ymdToUtcDate(ymd) { return new Date(Date.UTC(Number(ymd.slice(0, 4)), Number(ymd.slice(4, 6)) - 1, Number(ymd.slice(6, 8)))); }
@@ -56,7 +55,6 @@ function prevWeekdayYmd(ymd) {
 export let resolvedTradingDayCache = { ymd: null, resolvedAt: 0 };
 const RESOLVED_CACHE_TTL_MS = 5 * 60 * 1000;
 
-// ─── 수집 소스 ───
 export async function fetchFromNaver() {
   try {
     const res = await fetch('https://finance.naver.com/sise/lastsearch2.naver', {
@@ -108,7 +106,7 @@ export async function fetchKisCandidates(env, limit = 100) {
   if (!env.KIS_APP_KEY || !env.KIS_APP_SECRET) return [];
 
   const now = Date.now();
-  let startYmd = (resolvedTradingDayCache.ymd && (now - resolvedTradingDayCache.resolvedAt) < RESOLVED_CACHE_TTL_MS) 
+  let startYmd = (resolvedTradingDayCache.ymd && (now - resolvedTradingDayCache.resolvedAt) < RESOLVED_CACHE_TTL_MS)
     ? resolvedTradingDayCache.ymd : getCandidateStartDate();
 
   try {

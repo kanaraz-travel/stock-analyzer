@@ -4,21 +4,16 @@ import { VALID_RECS_BUY, VALID_RECS_SELL } from './_constants.js';
 const MAX_NEWS_FOR_AI = 8;
 const MAX_NEWS_TITLE_LENGTH = 80;
 
-// ─────────────────────────────────────────────────────────────
-// [2] 뉴스 분석가
-// ─────────────────────────────────────────────────────────────
+// ─── [2] 뉴스 분석가 ───
 export function buildNewsPrompts(payload) {
   if (!payload.news_items || payload.news_items.length === 0) {
     return { isEmpty: true, itemCount: 0, newsJson: null, system: null, user: null };
   }
-
   const itemsForAI = payload.news_items.slice(0, MAX_NEWS_FOR_AI).map(n => ({
     title: typeof n.title === 'string' ? n.title.slice(0, MAX_NEWS_TITLE_LENGTH) : '',
     date: (typeof n.published_at === 'string' && n.published_at.length >= 10) ? n.published_at.slice(0, 10) : null,
   })).filter(n => n.title);
-
   if (itemsForAI.length === 0) return { isEmpty: true, itemCount: 0, newsJson: null, system: null, user: null };
-
   const newsJson = JSON.stringify(itemsForAI);
 
   const system = `당신은 종목 뉴스 분석가입니다. 반드시 JSON으로 응답하세요. '~함', '~임' 체를 사용하세요.
@@ -61,9 +56,7 @@ ${newsJson}
   return { isEmpty: false, itemCount: itemsForAI.length, newsJson, system, user };
 }
 
-// ─────────────────────────────────────────────────────────────
-// [3] 추세 분석가
-// ─────────────────────────────────────────────────────────────
+// ─── [3] 추세 분석가 ───
 export function buildTrendPrompts(payload) {
   const pd = payload.price_data;
   const pv = payload.price_volume_result;
@@ -79,11 +72,9 @@ export function buildTrendPrompts(payload) {
   }
 
   const marketStatus = pd.market_status || '정보 없음';
-  const isAfterHours = pd.is_after_hours_quote === true;
   let dataBasisContext = '';
-  if (isAfterHours) dataBasisContext = '[데이터 기준] 확정 종가 (애프터마켓/시간외 시점)';
-  else if (String(marketStatus).includes('정규장')) dataBasisContext = '[데이터 기준] 장중 잠정치';
-  else if (String(marketStatus).includes('휴장') || String(marketStatus).includes('마감')) dataBasisContext = '[데이터 기준] 확정 종가 (장 마감/휴장)';
+  if (/정규장/.test(marketStatus)) dataBasisContext = '[데이터 기준] 장중 잠정치 (정규장 진행 중)';
+  else if (/마감|휴장|애프터마켓|장마감/.test(marketStatus)) dataBasisContext = '[데이터 기준] 확정 종가 (정규장 종가, 시간외 시세 미반영)';
   else dataBasisContext = `[데이터 기준] ${marketStatus}`;
 
   let pvContext = '[가격·거래량 분석 결과 없음 (누락)]';
@@ -91,12 +82,10 @@ export function buildTrendPrompts(payload) {
     const signals = Array.isArray(pv.key_signals) ? pv.key_signals.slice(0, 5).join(' / ') : '-';
     pvContext = `[가격 흐름] ${pv.price_flow_analysis || '-'}\n[거래량] ${pv.volume_analysis || '-'}\n[주요 신호] ${signals}`;
   }
-
   let newsContext = '[뉴스 분석 결과 없음 (누락)]';
   if (news) {
     newsContext = `[뉴스 요약] ${news.news_analysis || '-'}\n[감성] ${news.news_sentiment || '중립'} / [방향] ${news.news_direction || '중립'} / [영향력] ${news.news_impact || '약'}\n[핵심 테마] ${news.key_theme || '-'}`;
   }
-
   let historyContext = '[이전 추세 판단 이력 없음]';
   let stabilityContext = '안정성: 판단 보류 (이력 없음)';
   if (hist && hist.count > 0) {
@@ -168,9 +157,7 @@ JSON으로만 응답하세요.`;
   return { system, user };
 }
 
-// ─────────────────────────────────────────────────────────────
-// [4] 심판 에이전트 (JSON 강제 지시 추가)
-// ─────────────────────────────────────────────────────────────
+// ─── [4] 심판 에이전트 ───
 export function buildJudgePrompts(payload) {
   const isSell = payload.analysis_type === 'sell';
   const prevRec = payload.previous_recommendation;
@@ -178,11 +165,9 @@ export function buildJudgePrompts(payload) {
   const pd = payload.price_data || {};
 
   const marketStatus = pd.market_status || '정보 없음';
-  const isAfterHours = pd.is_after_hours_quote === true;
   let dataBasisContext = '';
-  if (isAfterHours) dataBasisContext = '현재 데이터 기준: 확정 종가 (애프터마켓/시간외)';
-  else if (String(marketStatus).includes('정규장')) dataBasisContext = '현재 데이터 기준: 장중 잠정치';
-  else if (String(marketStatus).includes('휴장') || String(marketStatus).includes('마감')) dataBasisContext = '현재 데이터 기준: 확정 종가 (장 마감/휴장)';
+  if (/정규장/.test(marketStatus)) dataBasisContext = '현재 데이터 기준: 장중 잠정치 (정규장 진행 중)';
+  else if (/마감|휴장|애프터마켓|장마감/.test(marketStatus)) dataBasisContext = '현재 데이터 기준: 확정 종가 (정규장 종가, 시간외 시세 미반영)';
   else dataBasisContext = `현재 데이터 기준: ${marketStatus}`;
 
   let pvContext = '[가격·거래량 분석 결과 없음 (누락)]';
@@ -191,13 +176,11 @@ export function buildJudgePrompts(payload) {
     const signals = Array.isArray(pv.key_signals) ? pv.key_signals.slice(0, 5).join(' / ') : '-';
     pvContext = `[가격 흐름] ${pv.price_flow_analysis || '-'}\n[거래량] ${pv.volume_analysis || '-'}\n[주요 신호] ${signals}`;
   }
-
   let newsContext = '[뉴스 분석 결과 없음 (누락)]';
   if (payload.news_result) {
     const n = payload.news_result;
     newsContext = `[뉴스 요약] ${n.news_analysis || '-'}\n[감성] ${n.news_sentiment || '중립'} / [방향] ${n.news_direction || '중립'} / [영향력] ${n.news_impact || '약'}\n[핵심 테마] ${n.key_theme || '-'}`;
   }
-
   let trendContext = '[추세 분석 결과 없음 (누락)]';
   if (payload.trend_result) {
     const t = payload.trend_result;
@@ -210,7 +193,6 @@ export function buildJudgePrompts(payload) {
 [주요 동인] ${drivers}
 [리스크] ${risks}`;
   }
-
   let trendHistoryContext = '[추세 이력 없음]';
   if (hist && hist.count > 0) {
     const sd = hist.short_term_distribution || {};
@@ -222,7 +204,6 @@ export function buildJudgePrompts(payload) {
 - 안정성: ${hist.stability_label} (단기 전환 ${hist.flips_short} / 중기 전환 ${hist.flips_medium})
 - 샘플링/기준: ${sampleLabel}`;
   }
-
   let holdingsContext = '';
   if (payload.holdings_data) {
     const hd = payload.holdings_data;
@@ -230,7 +211,6 @@ export function buildJudgePrompts(payload) {
     const avgCost = hd.avg_cost ?? 0;
     const rr = hd.return_rate;
     const rrStr = rr != null && Number.isFinite(rr) ? `${rr.toFixed(2)}%` : '미확인';
-
     holdingsContext = `사용자는 현재 ${qty}주를 평균 ${avgCost.toLocaleString()}원에 보유 중이며 수익률은 ${rrStr}임.`;
     if (hd.total_cost != null && Number.isFinite(hd.total_cost)) holdingsContext += ` 총 투자원금은 ${Math.round(hd.total_cost).toLocaleString()}원임.`;
     if (hd.first_buy_date) {
@@ -331,7 +311,6 @@ ${examples}
 참고: 위 예시는 참고용이며, 허용된 등급 내에서 상황에 맞게 자유롭게 선택할 수 있습니다.`;
 
   const prevContext = prevRec ? `[직전 판단] ${prevRec}` : '[직전 판단] 없음 (첫 분석)';
-
   const user = `${prevContext}
 
 [시장 상태] ${marketStatus}

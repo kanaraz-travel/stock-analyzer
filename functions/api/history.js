@@ -1,12 +1,13 @@
 // functions/api/history.js
 import { getKisAccessToken } from './_kis_token.js';
+import { isValidTicker } from './_code.js';
 
 export async function onRequestGet(context) {
   const { request, env } = context;
   const url = new URL(request.url);
   const ticker = (url.searchParams.get('ticker') || '').trim();
 
-  if (!/^[0-9A-Z]{6}$/i.test(ticker)) return jsonResponse({ error: '종목코드 형식이 올바르지 않습니다.' }, 400);
+  if (!isValidTicker(ticker)) return jsonResponse({ error: '종목코드 형식이 올바르지 않습니다.' }, 400);
 
   const baseUrl = env.KIS_BASE_URL || 'https://openapi.koreainvestment.com:9443';
   if (!env.KIS_APP_KEY || !env.KIS_APP_SECRET) return jsonResponse({ error: 'KIS API 키가 설정되지 않았습니다.' }, 500);
@@ -35,12 +36,10 @@ export async function onRequestGet(context) {
       },
     });
 
-    // ★ KIS API 에러 시 502 대신 200(데이터 없음)으로 응답
     if (!res.ok) {
-      const errText = await res.text();
-      console.error('KIS History API Error:', res.status, errText.slice(0, 300));
-      return jsonResponse({ 
-        error: '과거 시세를 가져오지 못했습니다.', 
+      console.error('KIS History API Error:', res.status);
+      return jsonResponse({
+        error: '과거 시세를 가져오지 못했습니다.',
         data_available: false,
         return_1m: null,
         ma20_disparity: null,
@@ -50,11 +49,10 @@ export async function onRequestGet(context) {
     }
 
     const data = await res.json();
-    
     if (data.rt_cd && data.rt_cd !== '0') {
       console.error('KIS History Data Error:', data.msg1);
-      return jsonResponse({ 
-        error: '과거 시세를 가져오지 못했습니다.', 
+      return jsonResponse({
+        error: '과거 시세를 가져오지 못했습니다.',
         data_available: false,
         return_1m: null,
         ma20_disparity: null,
@@ -68,8 +66,8 @@ export async function onRequestGet(context) {
       .sort((a, b) => String(b.stck_bsop_date).localeCompare(String(a.stck_bsop_date)));
 
     if (output2.length < 20) {
-      return jsonResponse({ 
-        error: '과거 데이터가 부족합니다.', 
+      return jsonResponse({
+        error: '과거 데이터가 부족합니다.',
         data_available: false,
         return_1m: null,
         ma20_disparity: null,
@@ -79,34 +77,33 @@ export async function onRequestGet(context) {
     }
 
     const currentPrice = Number(output2[0].stck_clpr);
-    const currentVolume = Number(output2[0].acml_vol || 0);
-    const price20DaysAgo = Number(output2[19].stck_clpr);
-    const return1M = ((currentPrice - price20DaysAgo) / price20DaysAgo) * 100;
+    const price20DaysAgo = output2.length > 20 ? Number(output2[20].stck_clpr) : Number(output2[output2.length - 1].stck_clpr);
+    const validLookback = output2.length > 20;
+    const return1M = validLookback ? ((currentPrice - price20DaysAgo) / price20DaysAgo) * 100 : null;
 
     let sum20Price = 0;
     for (let i = 0; i < 20; i++) sum20Price += Number(output2[i].stck_clpr);
     const ma20 = sum20Price / 20;
     const ma20Disparity = ((currentPrice - ma20) / ma20) * 100;
 
-    const todayPartial = output2[0].stck_bsop_date === toKstDateStr(now) && isRegularSessionKst(now);
-    const volRows = (todayPartial ? output2.slice(1) : output2).slice(0, 20);
-    let sum20Volume = 0;
-    let validVolumeDays = 0;
-    for (const r of volRows) {
-      const v = Number(r.acml_vol || 0);
-      if (v > 0) { sum20Volume += v; validVolumeDays++; }
-    }
-    const avgVolume20 = validVolumeDays > 0 ? Math.round(sum20Volume / validVolumeDays) : null;
+    const todayYmd = toKstDateStr(now);
+    const isToday = output2[0].stck_bsop_date === todayYmd;
+    const todayVolume = isToday ? Number(output2[0].acml_vol || 0) : null;
+
+    const completedRows = (isToday ? output2.slice(1) : output2).slice(0, 20);
+    const validVols = completedRows.map(r => Number(r.acml_vol || 0)).filter(v => v > 0);
+    const avgVolume20Completed = validVols.length > 0 ? Math.round(validVols.reduce((a, b) => a + b, 0) / validVols.length) : null;
 
     return jsonResponse({
       ticker,
       data_available: true,
-      return_1m: Number(return1M.toFixed(2)),
+      return_1m: return1M != null ? Number(return1M.toFixed(2)) : null,
+      return_1m_lookback_days: validLookback ? 20 : null,
       ma20_disparity: Number(ma20Disparity.toFixed(2)),
-      current_volume: currentVolume > 0 ? currentVolume : null,
-      avg_volume_20: avgVolume20,
-      valid_volume_days: validVolumeDays,
-      today_partial: todayPartial,
+      current_volume: todayVolume,
+      avg_volume_20: avgVolume20Completed,
+      today_partial: isToday && isRegularSessionKst(now),
+      volume_basis: isToday ? 'TODAY_PARTIAL_VS_COMPLETED_20' : 'COMPLETED_20',
     });
   } catch (err) {
     console.error('history.js Error:', err.message);

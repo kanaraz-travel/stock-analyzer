@@ -1,7 +1,7 @@
 // functions/api/popular.js
 import {
   fetchFromNaver, fetchFromDaum, fetchKisCandidates, fetchMarketCapRandom,
-  fetchIssueStocks, isValidTicker, isExcluded, resolvedTradingDayCache
+  fetchIssueStocks, isValidTicker, isExcluded, isPreferredStock, resolvedTradingDayCache
 } from './_popular_sources.js';
 
 function pickTopAndRandom(sourceItems) {
@@ -14,7 +14,10 @@ function pickTopAndRandom(sourceItems) {
 }
 
 export async function onRequestGet(context) {
-  const { env } = context;
+  const { env, request } = context;
+  const url = new URL(request.url);
+  const excludePreferred = url.searchParams.get('exclude_preferred') === '1';
+  
   const sourceStats = { naver: 0, daum: 0, issue: 0, kis: 0, cap: 0 };
   let selected = [];
   let source = 'none';
@@ -68,7 +71,13 @@ export async function onRequestGet(context) {
     if (selected.length > 0 && source === 'none') source = 'cap';
   }
 
-  const items = selected.slice(0, 20).map((item, idx) => ({ ...item, rank: idx + 1 }));
+  // ★ 우선주 제외 필터 적용
+  let finalSelected = selected.slice(0, 20);
+  if (excludePreferred) {
+    finalSelected = finalSelected.filter(i => !isPreferredStock(i.name));
+  }
+
+  const items = finalSelected.map((item, idx) => ({ ...item, rank: idx + 1 }));
 
   if (items.length === 0) {
     return new Response(JSON.stringify({ error: '모든 소스 실패', source_stats: sourceStats }), { status: 502, headers: { 'content-type': 'application/json' } });

@@ -1,8 +1,5 @@
 // assets/analysis.js
-import {
-  supabase, state, $,
-  computeHoldings
-} from './core.js';
+import { supabase, state, $, computeHoldings } from './core.js';
 import { renderAnalysisResult, renderInlineAnalysisResult } from './analysis_ui.js';
 
 let batchState = 'idle';
@@ -15,7 +12,6 @@ export function initAnalysis() {
       state.currentQuote?.ticker, state.currentQuote?.stock_name, state.currentQuote?.price, 'main'
     ));
   }
-
   const batchBtn = $('#batch-build-btn');
   if (batchBtn) {
     batchBtn.parentNode.style.position = 'relative';
@@ -30,10 +26,8 @@ export function initAnalysis() {
 async function getValidSession() {
   let { data: { session }, error } = await supabase.auth.getSession();
   if (error || !session) throw new Error('로그인 세션이 없습니다. 다시 로그인해 주세요.');
-
   const now = Math.floor(Date.now() / 1000);
   const isExpiringSoon = session.expires_at && (session.expires_at - now < 60);
-  
   if (isExpiringSoon || !session.refresh_token) {
     const { data: refreshData, error: refreshError } = await supabase.auth.refreshSession();
     if (refreshError || !refreshData.session) {
@@ -48,7 +42,6 @@ async function getValidSession() {
 export async function runAnalysis(ticker, name, price, targetType = 'main', cardElement = null) {
   if (!ticker) return;
   const isSilent = targetType === 'batch';
-
   if (!isSilent && targetType === 'inline' && !cardElement) return;
   if (!isSilent && targetType === 'main' && state.isAnalyzingMain) return;
 
@@ -133,7 +126,7 @@ export async function runAnalysis(ticker, name, price, targetType = 'main', card
         market_status: freshQuote?.market_status ?? null, price_source: priceSource,
         change_rate: actualChangeRate, return_1m: historyData?.return_1m ?? null,
         ma20_disparity: historyData?.ma20_disparity ?? null, w52_hgpr: w52Hgpr, w52_lwpr: w52Lwpr,
-        is_after_hours_quote: freshQuote?.is_after_hours_quote ?? false, quote_note: freshQuote?.quote_note ?? null,
+        is_after_hours_quote: false, quote_note: freshQuote?.quote_note ?? null,
       },
       volume_data: volumeData, news_items: newsItems, holdings_data: holdingsData
     };
@@ -142,7 +135,7 @@ export async function runAnalysis(ticker, name, price, targetType = 'main', card
       method: 'POST', headers: { 'content-type': 'application/json', authorization: `Bearer ${session.access_token}` },
       body: JSON.stringify(payload)
     });
-    
+
     if (res.status === 401) {
       console.warn('[runAnalysis] 401 Unauthorized. 토큰 갱신 시도...');
       await new Promise(r => setTimeout(r, 1000));
@@ -163,7 +156,7 @@ export async function runAnalysis(ticker, name, price, targetType = 'main', card
     }
 
     if (!res.ok) throw new Error((data.error || '분석 실패') + (Array.isArray(data.details) ? `\n${data.details.join('\n')}` : ''));
-    
+
     data.analyzed_at = new Date().toISOString();
     state.analysisCache.set(ticker, data);
 
@@ -200,7 +193,7 @@ async function runBatchAnalysis() {
   try {
     try { await getValidSession(); } catch (e) { alert('세션이 만료되었습니다. 다시 로그인해 주세요.'); await supabase.auth.signOut(); return; }
 
-    const res = await fetch('/api/popular');
+    const res = await fetch('/api/popular?exclude_preferred=1');
     const data = await res.json();
     if (!res.ok) throw new Error(data.error || '인기 종목을 불러오지 못했습니다.');
     const items = Array.isArray(data.items) ? data.items : [];
