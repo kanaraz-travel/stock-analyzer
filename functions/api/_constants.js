@@ -6,12 +6,10 @@ export const VALID_RECS_BUY = ['매수 추천', '매수 고려', '기다리기',
 // 매도 관점(보유): 매도/보유/추가매수/보류
 export const VALID_RECS_SELL = ['매도 추천', '부분 매도 고려', '보유 유지', '추가 매수 고려', '매수 추천', '판단 보류'];
 
-// ★ 모델 구성 최적화
-// - 뉴스/추세: Llama 3.1 8B Fast (가장 저렴하고 빠름)
-// - 심판: Qwen 3 30B MoE (뉴런 소모는 8B와 유사하면서 추론 능력이 우수함)
+// ★ [롤백] Qwen 30B에서 문제가 발생할 경우, 모든 에이전트를 Llama 3.1 8B Fast로 되돌립니다.
 export const MODELS = {
-  price_volume: '@cf/meta/llama-3.1-8b-instruct-fast', // 코드로 대체되어 미사용
+  price_volume: '@cf/meta/llama-3.1-8b-instruct-fast',
   news: '@cf/meta/llama-3.1-8b-instruct-fast',
   trend: '@cf/meta/llama-3.1-8b-instruct-fast',
-  judge: '@cf/qwen/qwen3-30b-a3b-fp8', 
+  judge: '@cf/meta/llama-3.1-8b-instruct-fast',
 };
