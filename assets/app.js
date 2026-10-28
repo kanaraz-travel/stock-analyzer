@@ -11,7 +11,7 @@ import {
 } from './holdings.js';
 import { initSearch, refreshQuoteSilently } from './search.js';
 import {
-  initAnalysis,
+  initAnalysis, initAutoBatchBadge, stopAutoBatchBadge,
   renderAnalysisResult, renderInlineAnalysisResult
 } from './analysis.js';
 
@@ -47,10 +47,26 @@ async function handleAuthState(session) {
     $('#screen-login').hidden = true; $('#app-shell').hidden = false;
     const name = mapEmailToName(state.currentUser.email) || state.currentUser.email || '';
     $('#current-user-name').textContent = name;
+    
+    const isBatchAllowed = (name === BATCH_ALLOWED_USER);
     const batchBtn = $('#batch-build-btn');
-    if (batchBtn) batchBtn.hidden = (name !== BATCH_ALLOWED_USER);
+    if (batchBtn) batchBtn.hidden = !isBatchAllowed;
+
+    // ★ 자동 이력 쌓기 배지 제어 (박필립 전용)
+    const autoBadge = $('#auto-batch-badge');
+    if (autoBadge) {
+      if (isBatchAllowed) {
+        autoBadge.hidden = false;
+        initAutoBatchBadge(); // 폴링 시작
+      } else {
+        autoBadge.hidden = true;
+        stopAutoBatchBadge(); // 폴링 중지
+      }
+    }
+
     switchScreen('holdings');
     updateMarketStatusBadge(getMarketStatusClient());
+    
     try { await loadHoldings(); }
     catch (e) { console.error('초기 데이터 로드 실패:', e); }
     finally { state.isInitDone = true; startCountdown(); }
@@ -87,8 +103,14 @@ function resetState() {
   $('#login-error').hidden = true; $('#login-loading').hidden = true;
   const dataBadge = $('#data-status-badge');
   if (dataBadge) { dataBadge.textContent = '데이터 상태 확인 중'; dataBadge.className = 'badge badge--muted'; }
+  
   const batchBtn = $('#batch-build-btn');
   if (batchBtn) { batchBtn.hidden = true; batchBtn.disabled = false; batchBtn.textContent = '이력 쌓기'; }
+  
+  // ★ 로그아웃 시 자동 배지 중지 및 숨김
+  stopAutoBatchBadge();
+  const autoBadge = $('#auto-batch-badge');
+  if (autoBadge) { autoBadge.hidden = true; autoBadge.textContent = '자동 대기'; autoBadge.className = 'badge badge--muted'; }
 }
 
 function renderLoginButtons() {
