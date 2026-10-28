@@ -4,8 +4,6 @@ import { VALID_RECS_BUY, VALID_RECS_SELL } from './_constants.js';
 
 export { VALID_RECS_BUY, VALID_RECS_SELL };
 
-// ... (REC_LEVEL, REC_METADATA, getRecommendationMeta, interpretConfidence, getFallbackMessage, buildPriceVolumeFacts, normalizeRecommendation, validateNewsOutput, validateTrendOutput, validateAnalyzeInput, computeDataQuality, deriveConsistencyThreshold, needsHighConfidenceForLevelJump, computeReferenceScore, cleanupOldRuns, jsonResponse, loadRecentTrendHistory, summarizeTrendHistory 함수는 이전과 동일하므로 생략하지 않고 전체 코드에 포함합니다.)
-
 const REC_LEVEL = {
   '매수 추천': 2, '추가 매수 고려': 1,
   '매수 고려': 1, '보유 유지': 0,
@@ -39,6 +37,7 @@ export function interpretConfidence(confidence) {
   return { level: 'very_low', label: `매우 낮은 확신 (${pct}%)` };
 }
 
+// ★ getFallbackMessage 함수 (이게 빠지면 500 에러가 발생합니다)
 export function getFallbackMessage(reason) {
   if (reason === 'AI_QUOTA_EXCEEDED') return '⚠️ 오늘 AI 무료 한도를 모두 사용했습니다. 한국시간 오전 9시 이후 다시 시도해 주세요.';
   if (reason === 'AI_MODEL_DEPRECATED') return '⚠️ AI 모델 설정에 문제가 있어 임시 판단을 제공합니다. 관리자에게 알려 주세요.';
@@ -222,7 +221,6 @@ export function computeReferenceScore(price) {
   return score;
 }
 
-// ★ 단순 insert만 수행하여 PGRST116 에러 원천 차단
 export async function saveAnalysisRun(supabase, payload) {
   const { error } = await supabase.from('stock_analysis_runs').insert(payload);
   if (error) throw error;

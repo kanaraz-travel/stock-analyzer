@@ -26,7 +26,7 @@ export function initAnalysis() {
   }
 }
 
-// ★ 세션 유효성 검사 및 강제 갱신 헬퍼
+// 세션 유효성 검사 및 강제 갱신 헬퍼
 async function getValidSession() {
   let { data: { session }, error } = await supabase.auth.getSession();
   
@@ -34,7 +34,6 @@ async function getValidSession() {
     throw new Error('로그인 세션이 없습니다. 다시 로그인해 주세요.');
   }
 
-  // 만료 시간이 1분 이내로 남았거나, 리프레시 토큰이 없는 경우 강제 갱신 시도
   const now = Math.floor(Date.now() / 1000);
   const isExpiringSoon = session.expires_at && (session.expires_at - now < 60);
   
@@ -82,7 +81,6 @@ export async function runAnalysis(ticker, name, price, targetType = 'main', card
   }
 
   try {
-    // ★ 세션 유효성 검사 (만료 시 갱신)
     const session = await getValidSession();
 
     let freshQuote = null;
@@ -166,7 +164,6 @@ export async function runAnalysis(ticker, name, price, targetType = 'main', card
       body: JSON.stringify(payload)
     });
     
-    // ★ 401 에러 시 토큰 갱신 후 재시도
     if (res.status === 401) {
       console.warn('[runAnalysis] 401 Unauthorized. 토큰 갱신 시도...');
       await new Promise(r => setTimeout(r, 1000));
@@ -178,12 +175,22 @@ export async function runAnalysis(ticker, name, price, targetType = 'main', card
         throw new Error('인증이 만료되었습니다. 다시 로그인해 주세요.');
       }
     }
-    
-    const data = await res.json();
+
+    // ★ HTML 응답(500 에러)으로 인한 JSON 파싱 실패 방지
+    const text = await res.text();
+    let data;
+    try {
+      data = JSON.parse(text);
+    } catch (e) {
+      console.error('서버 응답이 JSON이 아닙니다:', text.slice(0, 200));
+      throw new Error(`서버 오류가 발생했습니다. (Status: ${res.status})`);
+    }
+
     if (!res.ok) {
       const detail = Array.isArray(data.details) ? `\n${data.details.join('\n')}` : '';
       throw new Error((data.error || '분석 실패') + detail);
     }
+    
     data.analyzed_at = new Date().toISOString();
     state.analysisCache.set(ticker, data);
 
@@ -229,12 +236,9 @@ async function runBatchAnalysis() {
   failedStocks = [];
   let succeeded = 0, failed = 0;
   let consecutiveFallbacks = 0;
-  
-  // ★ 인증 에러로 배치 중단 플래그
   let authFailed = false;
 
   try {
-    // 배치 시작 전 세션 한 번 검사
     try {
       await getValidSession();
     } catch (e) {
@@ -253,7 +257,7 @@ async function runBatchAnalysis() {
     const total = items.length;
 
     for (let i = 0; i < items.length; i++) {
-      if (authFailed) break; // 인증 실패 시 즉시 탈출
+      if (authFailed) break;
 
       await waitWhileHidden(btn, i + 1, total);
       const stock = items[i];
@@ -283,7 +287,6 @@ async function runBatchAnalysis() {
       } catch (e) {
         console.warn(`[batch] ${stock.name}(${stock.ticker}) 실패:`, e.message);
         
-        // ★ 인증 에러(401, 세션 만료 등) 감지 시 즉시 중단
         if (e.message.includes('인증') || e.message.includes('세션')) {
           alert('세션이 만료되어 이력 쌓기를 중단합니다. 다시 로그인해 주세요.');
           authFailed = true;
