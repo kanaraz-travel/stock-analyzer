@@ -98,7 +98,6 @@ export function renderHoldingsSummary(holdingsData, totalCost, totalCurrentValue
   const unrealizedRate = totalCost > 0 ? (unrealizedPnl / totalCost) * 100 : 0;
   const realizedRate = totalRealizedCost > 0 ? (totalRealizedPnl / totalRealizedCost) * 100 : 0;
 
-  // ★ 이익일 경우 + 기호 추가 (금액)
   const realizedPnlSign = totalRealizedPnl > 0 ? '+' : '';
 
   $('#total-value').innerHTML = `${formatCurrency(totalCurrentValue)} <span class="summary-rate ${unrealizedRate > 0 ? 'positive' : unrealizedRate < 0 ? 'negative' : ''}">(${unrealizedRate > 0 ? '+' : ''}${unrealizedRate.toFixed(2)}%)</span>`;
@@ -219,13 +218,12 @@ function renderClosedHoldings(closedHoldings) {
   const list = document.createElement('div');
   list.id = 'closed-holdings-list';
   list.style.marginTop = '12px';
-  list.style.display = 'none'; // 기본 접힘
+  list.style.display = 'none';
 
   closedHoldings.forEach(h => {
     const card = document.createElement('div');
     card.style.cssText = 'background:#f8fafc; border:1px solid #e2e8f0; border-radius:8px; padding:12px; margin-bottom:8px;';
     
-    // ★ 이익이면 빨간색, 손해면 파란색
     const pnlColor = h.realizedPnl > 0 ? '#ef4444' : h.realizedPnl < 0 ? '#3b82f6' : '#1e293b';
     const pnlSign = h.realizedPnl > 0 ? '+' : '';
 
