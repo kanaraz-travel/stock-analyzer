@@ -34,16 +34,22 @@ function showTooltip(anchor, data) {
   
   const fmt = (iso) => iso ? new Date(iso).toLocaleString('ko-KR', { month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit' }) : '-';
   const statusLabel = { running: '진행 중', completed: '완료', failed: '실패', interrupted: '중단됨', stale: '응답 없음', idle: '대기' }[data.status] || data.status;
-  const errorHtml = data.error ? `<div style="color:#f87171; margin-top:6px; border-top:1px solid #475569; padding-top:6px;">⚠️ 사유: ${data.error}</div>` : '';
+  
+  // ★ XSS 방지: 기본 구조 생성 후 textContent로 삽입
+  const title = document.createElement('div'); title.style.cssText = 'font-weight:bold;margin-bottom:8px;border-bottom:1px solid #475569;padding-bottom:4px;'; title.textContent = '자동 이력 쌓기';
+  const statusDiv = document.createElement('div'); statusDiv.innerHTML = `상태: <span style="color:#38bdf8;">${statusLabel}</span>`;
+  const nextDiv = document.createElement('div'); nextDiv.textContent = `다음 실행: ${fmt(data.next_run_at)}`;
+  const successDiv = document.createElement('div'); successDiv.textContent = `마지막 성공: ${fmt(data.last_success_at)}`;
+  const countDiv = document.createElement('div'); countDiv.textContent = `성공 ${data.succeeded || 0} / 실패 ${data.failed || 0} / 스킵 ${data.skipped || 0}`;
 
-  tip.innerHTML = `
-    <div style="font-weight:bold;margin-bottom:8px;border-bottom:1px solid #475569;padding-bottom:4px;">자동 이력 쌓기</div>
-    <div>상태: <span style="color:#38bdf8;">${statusLabel}</span></div>
-    <div>다음 실행: ${fmt(data.next_run_at)}</div>
-    <div>마지막 성공: ${fmt(data.last_success_at)}</div>
-    <div>성공 ${data.succeeded || 0} / 실패 ${data.failed || 0} / 스킵 ${data.skipped || 0}</div>
-    ${errorHtml}
-  `;
+  tip.appendChild(title); tip.appendChild(statusDiv); tip.appendChild(nextDiv); tip.appendChild(successDiv); tip.appendChild(countDiv);
+
+  if (data.error) {
+    const errDiv = document.createElement('div');
+    errDiv.style.cssText = 'color:#f87171; margin-top:6px; border-top:1px solid #475569; padding-top:6px;';
+    errDiv.textContent = `⚠️ 사유: ${data.error}`; // ★ textContent 사용
+    tip.appendChild(errDiv);
+  }
   
   anchor.parentNode.style.position = 'relative'; anchor.parentNode.appendChild(tip);
   setTimeout(() => { 

@@ -4,8 +4,9 @@ import {
   fetchIssueStocks, isValidTicker, isExcluded, isPreferredStock, resolvedTradingDayCache
 } from './_popular_sources.js';
 
+// ★ 20개를 자르기 전에 우선주를 필터링하는 함수
 function pickTopAndRandom(sourceItems) {
-  const valid = sourceItems.filter(i => isValidTicker(i.ticker) && !isExcluded(i.name));
+  const valid = sourceItems.filter(i => isValidTicker(i.ticker) && !isExcluded(i.name) && !isPreferredStock(i.name));
   if (valid.length === 0) return [];
   const topN = valid.slice(0, 10);
   const pool = valid.slice(10, 100);
@@ -22,7 +23,6 @@ export async function onRequestGet(context) {
   let selected = [];
   let source = 'none';
 
-  // 1순위: 네이버
   if (selected.length < 20) {
     const naverPicked = pickTopAndRandom(await fetchFromNaver());
     const newItems = naverPicked.filter(d => !selected.find(i => i.ticker === d.ticker));
@@ -31,7 +31,6 @@ export async function onRequestGet(context) {
     if (selected.length > 0 && source === 'none') source = 'naver';
   }
 
-  // 2순위: 다음
   if (selected.length < 20) {
     const daumPicked = pickTopAndRandom(await fetchFromDaum());
     const newItems = daumPicked.filter(d => !selected.find(i => i.ticker === d.ticker));
@@ -40,7 +39,6 @@ export async function onRequestGet(context) {
     if (selected.length > 0 && source === 'none') source = 'daum';
   }
 
-  // 3순위: 이슈 종목
   let kisCandidates = [];
   if (selected.length < 20) {
     kisCandidates = await fetchKisCandidates(env, 100);
@@ -51,7 +49,6 @@ export async function onRequestGet(context) {
     if (selected.length > 0 && source === 'none') source = 'issue';
   }
 
-  // 4순위: KIS 거래량/등락률
   if (selected.length < 20) {
     if (kisCandidates.length === 0) kisCandidates = await fetchKisCandidates(env, 100);
     const newItems = kisCandidates.filter(d => !selected.find(i => i.ticker === d.ticker));
@@ -61,7 +58,6 @@ export async function onRequestGet(context) {
     if (selected.length > 0 && source === 'none') source = 'kis';
   }
 
-  // 5순위: 시가총액 랜덤
   if (selected.length < 20) {
     const capPicked = await fetchMarketCapRandom(env, (20 - selected.length) + 10);
     const newItems = capPicked.filter(d => !selected.find(i => i.ticker === d.ticker));
@@ -71,13 +67,8 @@ export async function onRequestGet(context) {
     if (selected.length > 0 && source === 'none') source = 'cap';
   }
 
-  // ★ 우선주 제외 필터 적용
-  let finalSelected = selected.slice(0, 20);
-  if (excludePreferred) {
-    finalSelected = finalSelected.filter(i => !isPreferredStock(i.name));
-  }
-
-  const items = finalSelected.map((item, idx) => ({ ...item, rank: idx + 1 }));
+  // ★ 더 이상 여기서 자르지 않고, 이미 필터링된 결과를 그대로 사용
+  const items = selected.slice(0, 20).map((item, idx) => ({ ...item, rank: idx + 1 }));
 
   if (items.length === 0) {
     return new Response(JSON.stringify({ error: '모든 소스 실패', source_stats: sourceStats }), { status: 502, headers: { 'content-type': 'application/json' } });

@@ -1,7 +1,7 @@
 // functions/api/cron-status.js
 import { createClient } from '@supabase/supabase-js';
 
-const STALE_RUNNING_MS = 3 * 60 * 1000; // 3분
+const STALE_RUNNING_MS = 3 * 60 * 1000;
 
 export async function onRequestGet(context) {
   const { env } = context;
@@ -20,6 +20,7 @@ export async function onRequestGet(context) {
     }
   }
 
+  // ★ 다음 실행 시간 계산 (UTC 00, 03, 06... -> KST 09, 12, 15...)
   const now = new Date();
   const utcHour = now.getUTCHours();
   const nextHour = Math.ceil((utcHour + 1) / 3) * 3;
