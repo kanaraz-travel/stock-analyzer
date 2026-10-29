@@ -1,9 +1,11 @@
 // functions/api/cron.js
 import { createClient } from '@supabase/supabase-js';
 
-const BATCH_SIZE = 1; // ★ 5 -> 1로 변경: 한 번에 1개 종목만 처리하여 30초 타임아웃 방지
-const STALE_LOCK_MS = 3 * 60 * 1000; // ★ 15분 -> 3분으로 변경: 마지막 활동 후 3분 지나면 멈춘 것으로 판단
+const BATCH_SIZE = 1; 
+const STALE_LOCK_MS = 3 * 60 * 1000; 
 const TOTAL_ITEMS = 20;
+// ★ app_cache의 expires_at 필수 조건을 만족하기 위한 가짜 만료일
+const CACHE_EXPIRES_AT = '2099-12-31T23:59:59Z'; 
 
 export async function onRequest(context) {
   const { request, env, waitUntil } = context;
@@ -26,30 +28,25 @@ export async function onRequest(context) {
       progress = await loadProgress(admin);
       const expectedRunId = request.headers.get('x-run-id');
       if (!progress || progress.run_id !== expectedRunId || progress.status !== 'running') {
-        console.log('[cron] ignored: no active run or run_id mismatch');
         return jsonResponse({ status: 'ignored', reason: 'no_active_run' }, 200);
       }
     } else {
       const existing = await loadProgress(admin);
       if (existing?.status === 'running') {
-        // ★ started_at 대신 updated_at(마지막 활동 시간)으로 락 확인
         const lastActivity = new Date(existing.updated_at || existing.started_at).getTime();
         const elapsed = Date.now() - lastActivity;
         
         if (elapsed < STALE_LOCK_MS) {
-          console.log(`[cron] already_running (elapsed: ${Math.round(elapsed/1000)}s)`);
           return jsonResponse({ status: 'already_running', processed: existing.processed, total: existing.items?.length || 0 }, 200);
         }
-        console.log('[cron] stale run detected, restarting');
+        console.warn('[cron] stale run detected, restarting');
       }
       progress = await startNewRun(admin, baseUrl);
       if (!progress) throw new Error('인기 종목을 가져오지 못했습니다.');
     }
 
-    // 백그라운드 작업 시작 전, 무조건 상태를 'running'으로 변경 (UI 즉시 반영)
     await updateStatusBadge(admin, progress);
 
-    // 백그라운드 실행 (에러 발생 시 상태 기록)
     waitUntil(processBatch(admin, baseUrl, env, progress).catch(async (err) => {
       console.error('[cron] processBatch fatal error:', err);
       progress.status = 'failed';
@@ -64,7 +61,8 @@ export async function onRequest(context) {
     await admin.from('app_cache').upsert({
       key: 'auto_batch_status',
       value: { status: 'failed', error: e.message, last_run_at: new Date().toISOString() },
-      updated_at: new Date().toISOString()
+      updated_at: new Date().toISOString(),
+      expires_at: CACHE_EXPIRES_AT // ★ 필수 컬럼 추가
     });
     return jsonResponse({ error: e.message }, 500);
   }
@@ -89,16 +87,14 @@ async function startNewRun(admin, baseUrl) {
 }
 
 async function processBatch(admin, baseUrl, env, progress) {
-  console.log(`[cron] processBatch started. run_id: ${progress.run_id}`);
   const startTime = Date.now();
-  const TIME_BUDGET_MS = 15000; // ★ 15초 안에 처리를 끝내고 다음으로 넘김
+  const TIME_BUDGET_MS = 15000; 
   let batchCount = 0;
 
   while (progress.processed < progress.items.length && batchCount < BATCH_SIZE) {
     if (Date.now() - startTime > TIME_BUDGET_MS) break;
     
     const stock = progress.items[progress.processed];
-    console.log(`[cron] analyzing ${stock.name} (${progress.processed + 1}/${progress.items.length})`);
     const result = await analyzeOne(baseUrl, env, stock);
     
     progress.results.push({ ticker: stock.ticker, name: stock.name, ...result });
@@ -109,7 +105,6 @@ async function processBatch(admin, baseUrl, env, progress) {
     else progress.failed++;
 
     await saveProgress(admin, progress);
-    // 중간중간 UI 배지 업데이트 (성공/실패 실시간 반영)
     await updateStatusBadge(admin, progress);
     
     batchCount++;
@@ -117,7 +112,6 @@ async function processBatch(admin, baseUrl, env, progress) {
   }
 
   if (progress.processed < progress.items.length) {
-    console.log(`[cron] triggering continue for next batch...`);
     await triggerContinue(baseUrl, env, progress);
   } else {
     const isFullFail = progress.succeeded === 0 && progress.failed > 0;
@@ -125,7 +119,6 @@ async function processBatch(admin, baseUrl, env, progress) {
     progress.completed_at = new Date().toISOString();
     await saveProgress(admin, progress);
     await updateStatusBadge(admin, progress);
-    console.log(`[cron] run completed. status: ${progress.status}`);
   }
 }
 
@@ -164,23 +157,17 @@ async function analyzeOne(baseUrl, env, stock) {
       body: JSON.stringify(payload),
     });
     
-    if (!aRes.ok) {
-        const errText = await aRes.text();
-        console.error(`[cron] analyze failed for ${stock.name}:`, aRes.status, errText);
-        return { ok: false, saved: false, fallback: false, reason: `http_${aRes.status}` };
-    }
+    if (!aRes.ok) return { ok: false, saved: false, fallback: false, reason: `http_${aRes.status}` };
 
     const result = await aRes.json();
     return { ok: true, saved: !!result.saved, fallback: !!result.fallback, reason: result.fallback_reason || null };
   } catch (e) {
-    console.error(`[cron] analyze exception for ${stock.name}:`, e.message);
     return { ok: false, saved: false, fallback: false, reason: `exception_${e.message?.slice(0, 40)}` };
   }
 }
 
 async function triggerContinue(baseUrl, env, progress) {
   try {
-    // ★ 현재 Worker의 수명이 끝나기 전에 다음 배치를 호출하고 응답을 기다림
     const res = await fetch(`${baseUrl}/api/cron`, {
       method: 'POST',
       headers: { 'x-cron-secret': env.CRON_SECRET, 'x-cron-continue': '1', 'x-run-id': progress.run_id },
@@ -191,7 +178,7 @@ async function triggerContinue(baseUrl, env, progress) {
     progress.status = 'interrupted';
     progress.error = e.message;
     progress.interrupted_at = new Date().toISOString();
-    await saveProgress(admin, progress); // 에러 발생 시 interrupted 상태 저장
+    await saveProgress(admin, progress);
   }
 }
 
@@ -219,7 +206,7 @@ async function updateStatusBadge(admin, progress) {
       key: 'auto_batch_status',
       value: {
         status: progress.status,
-        last_run_at: new Date().toISOString(), // ★ 시작 시간이 아닌 '현재(마지막 활동) 시간'으로 갱신
+        last_run_at: new Date().toISOString(), 
         last_success_at: successAt,
         total: progress.items.length,
         succeeded: progress.succeeded,
@@ -229,6 +216,7 @@ async function updateStatusBadge(admin, progress) {
         error: progress.error || null,
       },
       updated_at: new Date().toISOString(),
+      expires_at: CACHE_EXPIRES_AT // ★ 필수 컬럼 추가
     });
   } catch (e) {
     console.error('[cron] updateStatusBadge failed:', e.message);
