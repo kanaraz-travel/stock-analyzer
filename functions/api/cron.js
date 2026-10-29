@@ -2,7 +2,7 @@
 import { createClient } from '@supabase/supabase-js';
 
 const BATCH_SIZE = 5;
-const STALE_LOCK_MS = 15 * 60 * 1000;
+const STALE_LOCK_MS = 15 * 60 * 1000; // 15분 (진행 중인 작업 덮어쓰기 방지용 락)
 const TOTAL_ITEMS = 20;
 
 export async function onRequest(context) {
@@ -32,7 +32,9 @@ export async function onRequest(context) {
       const existing = await loadProgress(admin);
       if (existing?.status === 'running') {
         const elapsed = Date.now() - new Date(existing.started_at).getTime();
-        if (elapsed < STALE_LOCK_MS) return jsonResponse({ status: 'already_running', processed: existing.processed, total: existing.items?.length || 0 }, 200);
+        if (elapsed < STALE_LOCK_MS) {
+          return jsonResponse({ status: 'already_running', processed: existing.processed, total: existing.items?.length || 0 }, 200);
+        }
         console.warn('[cron] stale run detected, restarting', { run_id: existing.run_id, elapsed });
       }
       progress = await startNewRun(admin, baseUrl);
@@ -51,7 +53,7 @@ export async function onRequest(context) {
     return jsonResponse({ status: 'running', run_id: progress.run_id, processed: progress.processed, total: progress.items.length }, 200);
   } catch (e) {
     console.error('[cron] onRequest error:', e);
-    // ★ 시작 단계에서 에러가 나도 app_cache에 기록
+    // ★ 시작 단계에서 에러가 나도 app_cache에 기록하여 UI에 표시
     await admin.from('app_cache').upsert({
       key: 'auto_batch_status',
       value: { status: 'failed', error: e.message, last_run_at: new Date().toISOString() },
@@ -82,13 +84,15 @@ async function startNewRun(admin, baseUrl) {
 
 async function processBatch(admin, baseUrl, env, progress) {
   const startTime = Date.now();
-  const TIME_BUDGET_MS = 22000;
+  const TIME_BUDGET_MS = 22000; // Cloudflare worker 제한 고려 (22초)
   let batchCount = 0;
 
   while (progress.processed < progress.items.length && batchCount < BATCH_SIZE) {
     if (Date.now() - startTime > TIME_BUDGET_MS) break;
+    
     const stock = progress.items[progress.processed];
     const result = await analyzeOne(baseUrl, env, stock);
+    
     progress.results.push({ ticker: stock.ticker, name: stock.name, ...result });
     progress.processed++;
 
@@ -194,7 +198,7 @@ async function updateStatusBadge(admin, progress) {
     key: 'auto_batch_status',
     value: {
       status: progress.status,
-      last_run_at: progress.started_at,
+      last_run_at: new Date().toISOString(), // ★ 핵심: 시작 시간이 아닌 '현재(마지막 활동) 시간'으로 갱신
       last_success_at: successAt,
       total: progress.items.length,
       succeeded: progress.succeeded,
