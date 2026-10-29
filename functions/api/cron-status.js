@@ -1,19 +1,22 @@
 // functions/api/cron-status.js
 import { createClient } from '@supabase/supabase-js';
 
-const STALE_RUNNING_MS = 3 * 60 * 1000; // ★ 15분에서 3분으로 단축 (마지막 활동 기준)
+const STALE_RUNNING_MS = 3 * 60 * 1000; // 3분
 
 export async function onRequestGet(context) {
   const { env } = context;
   const admin = createClient(env.SUPABASE_URL, env.SUPABASE_SERVICE_ROLE_KEY);
-  const { data } = await admin.from('app_cache').select('value, updated_at').eq('key', 'auto_batch_status').maybeSingle();
+  const { data } = await admin.from('app_cache').select('value').eq('key', 'auto_batch_status').maybeSingle();
   const status = data?.value || {};
 
-  let isStale = false;
-  if (status.status === 'running' && status.last_run_at) {
-    // 마지막 활동 시간이 3분 이상 지났다면 멈춘 것으로 판단
-    if ((Date.now() - new Date(status.last_run_at).getTime()) > STALE_RUNNING_MS) {
-      isStale = true;
+  let finalStatus = status.status || 'idle';
+  let finalError = status.error || null;
+
+  if (finalStatus === 'running' && status.last_run_at) {
+    const elapsed = Date.now() - new Date(status.last_run_at).getTime();
+    if (elapsed > STALE_RUNNING_MS) {
+      finalStatus = 'failed';
+      finalError = '실행 중 응답이 3분 이상 없어 중단되었습니다. (시간 초과)';
     }
   }
 
@@ -24,15 +27,10 @@ export async function onRequestGet(context) {
   if (nextHour >= 24) next.setUTCDate(next.getUTCDate() + Math.floor(nextHour / 24));
 
   return new Response(JSON.stringify({
-    status: isStale ? 'stale' : (status.status || 'idle'),
-    last_run_at: status.last_run_at || null, 
-    last_success_at: status.last_success_at || null,
-    total: status.total || 0, 
-    succeeded: status.succeeded || 0, 
-    failed: status.failed || 0, 
-    skipped: status.skipped || 0,
-    run_id: status.run_id || null, 
-    next_run_at: next.toISOString(),
-    error: status.error || null,
+    status: finalStatus,
+    last_run_at: status.last_run_at || null, last_success_at: status.last_success_at || null,
+    total: status.total || 0, succeeded: status.succeeded || 0, failed: status.failed || 0, skipped: status.skipped || 0,
+    run_id: status.run_id || null, next_run_at: next.toISOString(),
+    error: finalError,
   }), { headers: { 'content-type': 'application/json' } });
 }
