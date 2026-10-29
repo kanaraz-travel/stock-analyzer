@@ -1,8 +1,8 @@
 // functions/api/cron.js
 import { createClient } from '@supabase/supabase-js';
 
-const BATCH_SIZE = 5;
-const STALE_LOCK_MS = 15 * 60 * 1000; // 15분 (진행 중인 작업 덮어쓰기 방지용 락)
+const BATCH_SIZE = 1; // ★ 5 -> 1로 변경 (한 번에 1개씩만 처리)
+const STALE_LOCK_MS = 3 * 60 * 1000; // ★ 15분 -> 3분으로 변경 (3분간 업데이트 없으면 멈춘 것으로 판단)
 const TOTAL_ITEMS = 20;
 
 export async function onRequest(context) {
@@ -31,7 +31,10 @@ export async function onRequest(context) {
     } else {
       const existing = await loadProgress(admin);
       if (existing?.status === 'running') {
-        const elapsed = Date.now() - new Date(existing.started_at).getTime();
+        // ★ started_at 대신 updated_at(마지막 활동 시간)으로 락 확인
+        const lastActivity = new Date(existing.updated_at || existing.started_at).getTime();
+        const elapsed = Date.now() - lastActivity;
+        
         if (elapsed < STALE_LOCK_MS) {
           return jsonResponse({ status: 'already_running', processed: existing.processed, total: existing.items?.length || 0 }, 200);
         }
@@ -41,7 +44,6 @@ export async function onRequest(context) {
       if (!progress) throw new Error('인기 종목을 가져오지 못했습니다.');
     }
 
-    // ★ waitUntil로 백그라운드 실행 (에러 발생 시 상태 기록)
     waitUntil(processBatch(admin, baseUrl, env, progress).catch(async (err) => {
       console.error('[cron] processBatch fatal error:', err);
       progress.status = 'failed';
@@ -53,7 +55,6 @@ export async function onRequest(context) {
     return jsonResponse({ status: 'running', run_id: progress.run_id, processed: progress.processed, total: progress.items.length }, 200);
   } catch (e) {
     console.error('[cron] onRequest error:', e);
-    // ★ 시작 단계에서 에러가 나도 app_cache에 기록하여 UI에 표시
     await admin.from('app_cache').upsert({
       key: 'auto_batch_status',
       value: { status: 'failed', error: e.message, last_run_at: new Date().toISOString() },
@@ -84,7 +85,7 @@ async function startNewRun(admin, baseUrl) {
 
 async function processBatch(admin, baseUrl, env, progress) {
   const startTime = Date.now();
-  const TIME_BUDGET_MS = 22000; // Cloudflare worker 제한 고려 (22초)
+  const TIME_BUDGET_MS = 15000; // ★ 15초 안에 처리를 끝내고 다음으로 넘김
   let batchCount = 0;
 
   while (progress.processed < progress.items.length && batchCount < BATCH_SIZE) {
@@ -101,11 +102,10 @@ async function processBatch(admin, baseUrl, env, progress) {
     else progress.failed++;
 
     await saveProgress(admin, progress);
-    // ★ 5개 처리 중간중간에도 UI 배지 업데이트 (성공/실패 실시간 반영)
     await updateStatusBadge(admin, progress);
     
     batchCount++;
-    if (progress.processed < progress.items.length) await sleep(1500);
+    if (progress.processed < progress.items.length) await sleep(1000); // 텀을 조금 줄임
   }
 
   if (progress.processed < progress.items.length) {
@@ -177,8 +177,9 @@ async function triggerContinue(baseUrl, env, progress) {
 }
 
 async function loadProgress(admin) {
-  const { data } = await admin.from('auto_batch_progress').select('payload').eq('id', 1).maybeSingle();
-  return data?.payload || null;
+  const { data } = await admin.from('auto_batch_progress').select('*').eq('id', 1).maybeSingle();
+  if (!data) return null;
+  return { ...data.payload, updated_at: data.updated_at }; // DB의 updated_at을 함께 넘겨줌
 }
 
 async function saveProgress(admin, progress) {
@@ -198,14 +199,14 @@ async function updateStatusBadge(admin, progress) {
     key: 'auto_batch_status',
     value: {
       status: progress.status,
-      last_run_at: new Date().toISOString(), // ★ 핵심: 시작 시간이 아닌 '현재(마지막 활동) 시간'으로 갱신
+      last_run_at: new Date().toISOString(), 
       last_success_at: successAt,
       total: progress.items.length,
       succeeded: progress.succeeded,
       failed: progress.failed,
       skipped: progress.skipped,
       run_id: progress.run_id,
-      error: progress.error || null, // ★ 에러 메시지 전달
+      error: progress.error || null,
     },
     updated_at: new Date().toISOString(),
   });
