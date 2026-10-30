@@ -1,5 +1,4 @@
 // assets/core.js
-// 전역 상태, Supabase 클라이언트, 공용 헬퍼. 이 파일은 어떤 다른 파일도 import하지 않음(순환 방지).
 import { createClient } from 'https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2/+esm';
 
 export const SUPABASE_URL = 'https://hexykwjjkkozbeaqziem.supabase.co';
@@ -25,6 +24,7 @@ export const state = {
   isInitDone: false,
 };
 
+// ★ 로그인 버튼을 생성할 때 사용하는 배열
 export const ALLOWED_NAMES = ['박필립', '윤혜영'];
 export const BATCH_ALLOWED_USER = '박필립';
 export const BATCH_TOP_COUNT = 10;
@@ -80,7 +80,6 @@ export function updateDataStatusBadge(status) {
   else { badge.textContent = '연결 원활'; badge.className = 'badge badge--status-green'; }
 }
 
-// ★ 전량 매도된 종목(closedHoldings) 반환 로직 추가
 export function computeHoldings(txs) {
   const map = new Map();
   let totalRealizedPnl = 0, totalRealizedCost = 0;
@@ -94,10 +93,7 @@ export function computeHoldings(txs) {
   });
 
   for (const tx of sorted) {
-    if (!tx.ticker || typeof tx.ticker !== 'string' || !tx.stock_name) {
-      console.warn('[computeHoldings] 유효하지 않은 거래 데이터 필터링됨:', tx);
-      continue;
-    }
+    if (!tx.ticker || typeof tx.ticker !== 'string' || !tx.stock_name) continue;
     const txType = String(tx.transaction_type || '').toUpperCase();
     if (!map.has(tx.ticker)) {
       map.set(tx.ticker, { ticker: tx.ticker, stock_name: tx.stock_name, qty: 0, avgCost: 0, totalCost: 0, transactions: [], hasOverSell: false });
@@ -133,7 +129,6 @@ export function computeHoldings(txs) {
     if (h.qty > 1e-9) {
       currentHoldings.push(h);
     } else if (!h.hasOverSell && h.transactions.length > 0) {
-      // ★ 전량 매도 완료된 종목 계산
       let totalBuy = 0, totalSell = 0, buyQ = 0, sellQ = 0;
       for (const tx of h.transactions) {
         if (tx.transaction_type === 'BUY') { totalBuy += tx.quantity * tx.unit_price; buyQ += tx.quantity; }
@@ -153,7 +148,6 @@ export function computeHoldings(txs) {
     }
   }
 
-  // 최근 매도일 기준 내림차순 정렬
   closedHoldings.sort((a, b) => {
     const lastA = a.transactions[a.transactions.length - 1].trade_date || '';
     const lastB = b.transactions[b.transactions.length - 1].trade_date || '';
