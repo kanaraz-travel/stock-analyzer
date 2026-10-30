@@ -9,6 +9,10 @@ const CACHE_TTL = 24 * 60 * 60 * 1000;
 const PARTIAL_RETRY_TTL = 5 * 60 * 1000;
 const FAIL_RETRY_MS = 30 * 1000;
 
+// ★ KIS API 호출 제한 방어를 위한 단기 시세 캐시 (30초)
+const quoteCache = new Map();
+const QUOTE_CACHE_TTL_MS = 30 * 1000;
+
 const EXCLUDE_KEYWORDS = [
   'KODEX', 'TIGER', 'KBSTAR', 'ARIRANG', 'HANARO', 'SOL', 'ACE', 'PLUS', 'RISE', 'KOSEF',
   'TIMEFOLIO', '히어로즈', '마이다스', '파워', '인버스', '레버리지', '선물', '합성', 'ETN', 'ELW',
@@ -38,6 +42,8 @@ export async function onRequestGet(context) {
 
   try {
     const isDirectCode = isValidTicker(ticker);
+    
+    // 종목 코드가 아닌 경우 마스터 파일에서 검색
     if (!isDirectCode) {
       await ensureMasterLoaded();
       if (masterCache.map.size === 0) {
@@ -53,6 +59,12 @@ export async function onRequestGet(context) {
       }
       ticker = found.code;
       stock_name = masterCache.codeMap.get(ticker) || query;
+    }
+
+    // ★ 캐시 확인: 30초 이내에 조회한 동일 종목이면 즉시 반환
+    const cached = quoteCache.get(ticker);
+    if (cached && (Date.now() - cached.timestamp < QUOTE_CACHE_TTL_MS)) {
+      return jsonResponse({ ...cached.data, stock_name: cached.data.stock_name || stock_name });
     }
 
     const accessToken = await getKisAccessToken(env, baseUrl);
@@ -109,7 +121,7 @@ export async function onRequestGet(context) {
     const dataStatus = getDataStatus();
     const isAfterHoursQuote = false;
 
-    return jsonResponse({
+    const resultData = {
       ticker, stock_name: finalName,
       price: price,
       change_rate: output.prdy_ctrt ? Number(output.prdy_ctrt) : null,
@@ -126,7 +138,12 @@ export async function onRequestGet(context) {
       quote_note: dataStatus === 'MARKET_CLOSED' || dataStatus === 'AFTER_HOURS' || dataStatus === 'AFTER_MARKET'
         ? '정규장 종가 기준 (시간외 시세 미반영)'
         : null,
-    });
+    };
+
+    // ★ 캐시에 저장
+    quoteCache.set(ticker, { data: resultData, timestamp: Date.now() });
+
+    return jsonResponse(resultData);
   } catch (err) {
     console.error('quote.js Error:', err.message);
     return jsonResponse({ error: '시세를 가져오지 못했습니다.' }, 502);

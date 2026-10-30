@@ -3,7 +3,13 @@ import { createClient } from '@supabase/supabase-js';
 import { VALID_RECS_BUY, VALID_RECS_SELL } from './_constants.js';
 export { VALID_RECS_BUY, VALID_RECS_SELL };
 
-const REC_LEVEL = { '매수 추천': 2, '추가 매수 고려': 1, '매수 고려': 1, '보유 유지': 0, '기다리기': 0, '판단 보류': 0, '매도 고려': -1, '부분 매도 고려': -1, '매도 추천': -2 };
+// ★ 추천 등급별 레벨 및 메타데이터 정의 (추가 매수, 매도 고려 포함)
+const REC_LEVEL = { 
+  '매수 추천': 2, '추가 매수 고려': 1, '매수 고려': 1, 
+  '보유 유지': 0, '기다리기': 0, '판단 보류': 0, 
+  '매도 고려': -1, '부분 매도 고려': -1, '매도 추천': -2 
+};
+
 const REC_METADATA = {
   '매수 추천': { label: '적극 매수 관점', hint: '여러 지표가 정렬된 강한 매수 신호입니다.' },
   '매수 고려': { label: '신중한 매수 검토', hint: '긍정적 신호가 있으나 확신이 완전하지 않습니다.' },
@@ -127,7 +133,6 @@ export function validateAnalyzeInput(body) {
   return { valid: errors.length === 0, errors };
 }
 
-// ★ 옵션 C 반영: quote_as_of 없어도 server_time 신선도로 OK 판정 (quote_time_verified=false로 검증 미완료 명시)
 export function computeDataQuality(price_data) {
   const marketStatus = price_data?.market_status || '';
   const quoteTimeStr = price_data?.quote_as_of || null;

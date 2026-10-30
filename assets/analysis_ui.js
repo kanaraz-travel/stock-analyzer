@@ -8,6 +8,7 @@ export function renderAnalysisResult(data, scrollTo = true) {
   badge.className = 'recommendation-badge';
   const rec = data.recommendation || '';
 
+  // 폴백 경고 엘리먼트 준비
   let warningEl = document.getElementById('fallback-warning');
   if (!warningEl) {
     warningEl = document.createElement('div');
@@ -17,6 +18,7 @@ export function renderAnalysisResult(data, scrollTo = true) {
     if (target && target.parentNode) target.parentNode.appendChild(warningEl);
   }
 
+  // 추천 등급에 따른 배지 스타일링
   if (data.fallback) {
     badge.classList.add('recommendation-badge--pending');
     badge.textContent = `임시 판단: ${rec}`;
@@ -25,7 +27,7 @@ export function renderAnalysisResult(data, scrollTo = true) {
       warningEl.style.display = 'block';
     }
   } else {
-    if (rec.includes('매수')) badge.classList.add('recommendation-badge--buy');
+    if (rec.includes('매수')) badge.classList.add('recommendation-badge--buy'); // '추가 매수 고려' 포함
     else if (rec.includes('매도')) badge.classList.add('recommendation-badge--sell');
     else if (rec.includes('기다리기') || rec.includes('보유')) badge.classList.add('recommendation-badge--hold');
     else badge.classList.add('recommendation-badge--pending');
@@ -49,8 +51,12 @@ export function renderInlineAnalysisResult(data, cardElement, scrollTo = true) {
   const rec = data.recommendation || '판단 보류';
   let badgeClass = 'recommendation-badge--pending';
   let badgeText = rec;
-  if (data.fallback) { badgeClass = 'recommendation-badge--pending'; badgeText = `임시 판단: ${rec}`; }
-  else if (rec.includes('매수')) badgeClass = 'recommendation-badge--buy';
+  
+  if (data.fallback) { 
+    badgeClass = 'recommendation-badge--pending'; 
+    badgeText = `임시 판단: ${rec}`; 
+  }
+  else if (rec.includes('매수')) badgeClass = 'recommendation-badge--buy'; // '추가 매수 고려' 포함
   else if (rec.includes('매도')) badgeClass = 'recommendation-badge--sell';
   else if (rec.includes('기다리기') || rec.includes('보유')) badgeClass = 'recommendation-badge--hold';
 
@@ -59,6 +65,7 @@ export function renderInlineAnalysisResult(data, cardElement, scrollTo = true) {
   const ts = document.createElement('div'); ts.className = 'analysis-timestamp'; ts.textContent = formatDateTime(data.analyzed_at || new Date().toISOString());
   headDiv.appendChild(badge); headDiv.appendChild(ts); container.appendChild(headDiv);
 
+  // 폴백 경고 (인라인)
   if (data.fallback) {
     const warn = document.createElement('div');
     warn.style.cssText = 'margin-top:8px; padding:8px; background:#fef3c7; color:#92400e; border:1px solid #f59e0b; border-radius:6px; font-size:11px; line-height:1.4;';

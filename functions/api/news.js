@@ -12,13 +12,11 @@ export async function onRequestGet(context) {
   }
 
   try {
-    // ★ 네이버 + Google 병렬 수집
     const [naverItems, googleItems] = await Promise.all([
       tryNaverRss(query).catch((e) => { console.warn('Naver RSS 실패:', e.message); return []; }),
       tryGoogleNewsRss(query).catch((e) => { console.warn('Google RSS 실패:', e.message); return []; }),
     ]);
 
-    // ★ URL 기준 병합 및 중복 제거
     const seen = new Set();
     const merged = [];
     for (const item of [...naverItems, ...googleItems]) {
@@ -28,7 +26,6 @@ export async function onRequestGet(context) {
       merged.push(item);
     }
 
-    // ★ 최신순 정렬 (published_at 있는 것 우선, 없으면 뒤로)
     merged.sort((a, b) => {
       if (a.published_at && b.published_at) return new Date(b.published_at) - new Date(a.published_at);
       if (a.published_at) return -1;
@@ -64,8 +61,9 @@ async function tryNaverRss(query) {
 }
 
 async function tryGoogleNewsRss(query) {
-  // Google News RSS: 종목명 + "주가"로 검색하여 주식 관련 기사 우선 수집
-  const url = `https://news.google.com/rss/search?q=${encodeURIComponent(query + ' 주가')}&hl=ko&gl=KR&ceid=KR:ko`;
+  // ★ 검색어 확장: "종목명" AND ("주가" OR "실적" OR "뉴스")
+  const searchQuery = `${query} (주가 OR 실적 OR 뉴스)`;
+  const url = `https://news.google.com/rss/search?q=${encodeURIComponent(searchQuery)}&hl=ko&gl=KR&ceid=KR:ko`;
   const res = await fetch(url, {
     headers: {
       'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
@@ -92,7 +90,6 @@ function parseRssItems(xml, defaultSource) {
     const url = linkMatch[1].replace(/<!\[CDATA\[|\]\]>/g, '').trim();
     if (!url || !/^https?:\/\//i.test(url) || url.length > MAX_URL_LENGTH) continue;
 
-    // ★ 발행 시각이 없으면 null (기사 자체는 유지)
     let publishedAt = null;
     if (pubDateMatch) {
       const d = new Date(pubDateMatch[1]);
@@ -113,16 +110,10 @@ function parseRssItems(xml, defaultSource) {
 
 function decodeHtmlEntities(str) {
   return str
-    .replace(/&amp;/g, '&')
-    .replace(/&lt;/g, '<')
-    .replace(/&gt;/g, '>')
-    .replace(/&quot;/g, '"')
-    .replace(/&#39;/g, "'");
+    .replace(/&amp;/g, '&').replace(/&lt;/g, '<').replace(/&gt;/g, '>')
+    .replace(/&quot;/g, '"').replace(/&#39;/g, "'");
 }
 
 function jsonResponse(body, status = 200) {
-  return new Response(JSON.stringify(body), {
-    status,
-    headers: { 'content-type': 'application/json; charset=utf-8' },
-  });
+  return new Response(JSON.stringify(body), { status, headers: { 'content-type': 'application/json; charset=utf-8' } });
 }

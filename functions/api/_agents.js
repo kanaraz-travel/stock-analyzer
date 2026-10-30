@@ -23,17 +23,8 @@ async function callAiWithRetry(env, modelKey, messages, maxTokens, temperature) 
     } catch (e) {
       lastError = e;
       console.error(`[AI Error] Model: ${modelId}, Attempt: ${attempt + 1}, Error:`, e.message, JSON.stringify(e));
-
-      if (isQuotaError(e)) {
-        const err = new Error('AI_QUOTA_EXCEEDED');
-        err.code = 'AI_QUOTA_EXCEEDED';
-        throw err;
-      }
-      if (isDeprecatedModelError(e)) {
-        const err = new Error('AI_MODEL_DEPRECATED');
-        err.code = 'AI_MODEL_DEPRECATED';
-        throw err;
-      }
+      if (isQuotaError(e)) { const err = new Error('AI_QUOTA_EXCEEDED'); err.code = 'AI_QUOTA_EXCEEDED'; throw err; }
+      if (isDeprecatedModelError(e)) { const err = new Error('AI_MODEL_DEPRECATED'); err.code = 'AI_MODEL_DEPRECATED'; throw err; }
       if (attempt < 1) await new Promise(r => setTimeout(r, 1000));
     }
   }
@@ -43,9 +34,7 @@ async function callAiWithRetry(env, modelKey, messages, maxTokens, temperature) 
 function extractAiText(response) {
   if (!response) return '';
   if (typeof response.response === 'string' && response.response) return response.response;
-  if (Array.isArray(response.choices) && response.choices[0]?.message?.content) {
-    return response.choices[0].message.content;
-  }
+  if (Array.isArray(response.choices) && response.choices[0]?.message?.content) return response.choices[0].message.content;
   if (typeof response.result === 'string') return response.result;
   return '';
 }
@@ -55,16 +44,25 @@ export async function runNewsAgent(env, payload) {
   if (prompts.isEmpty) return { news_analysis: '관련 뉴스 없음.', news_sentiment: '중립', news_direction: '중립', news_impact: '약', key_theme: '-', status: 'success' };
 
   try {
+    // ★ 토큰을 250 -> 300으로 늘려 더 자세한 요약 유도
     const response = await callAiWithRetry(env, 'news', [
       { role: 'system', content: prompts.system },
       { role: 'user', content: prompts.user }
-    ], 250, 0.3);
+    ], 300, 0.3);
 
     const parsed = extractJSON(extractAiText(response));
     let newsText = typeof parsed.news_analysis === 'string' ? parsed.news_analysis : '';
+    
+    // ★ AI가 "없다"고 답해도, 뉴스는 수집되었으므로 더 상세한 대체 텍스트 제공
     if (!newsText || isNegativeNewsResponse(newsText)) {
-      newsText = `수집된 ${prompts.itemCount}건의 기사에서 뚜렷한 주가 영향 요인은 확인되지 않았음.`;
+      const newsCount = prompts.itemCount || 0;
+      if (newsCount > 0) {
+        newsText = `총 ${newsCount}건의 관련 기사가 수집되었으나, AI가 뚜렷한 단일 촉매를 도출하지 못했음. 중립적 접근이 필요함.`;
+      } else {
+        newsText = '관련 뉴스가 수집되지 않았음.';
+      }
     }
+    
     return {
       news_analysis: newsText,
       news_sentiment: normalizeNewsSentiment(parsed.news_sentiment),
@@ -99,7 +97,7 @@ export async function runJudgeAgent(env, payload) {
     const response = await callAiWithRetry(env, 'judge', [
       { role: 'system', content: system },
       { role: 'user', content: user }
-    ], 800, 0.1); // ★ 토큰을 600에서 800으로 늘려 응답 잘림 방지
+    ], 800, 0.1);
 
     const rawText = extractAiText(response);
     const parsed = extractJSON(rawText);
@@ -146,6 +144,7 @@ function extractJSON(text) {
   return {};
 }
 
+// ★ 필터 완화: "없음" 같은 단순 거부만 걸러냄 ("주가 영향 불명"은 통과)
 function isNegativeNewsResponse(text) {
   if (!text || typeof text !== 'string') return true;
   const t = text.trim();

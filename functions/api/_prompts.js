@@ -4,7 +4,7 @@ import { VALID_RECS_BUY, VALID_RECS_SELL } from './_constants.js';
 const MAX_NEWS_FOR_AI = 8;
 const MAX_NEWS_TITLE_LENGTH = 80;
 
-// ─── [2] 뉴스 분석가 ───
+// ─── [2] 뉴스 분석가 (뉴스 필터링 완화 및 촉매 도출 강화) ───
 export function buildNewsPrompts(payload) {
   if (!payload.news_items || payload.news_items.length === 0) {
     return { isEmpty: true, itemCount: 0, newsJson: null, system: null, user: null };
@@ -13,6 +13,7 @@ export function buildNewsPrompts(payload) {
     title: typeof n.title === 'string' ? n.title.slice(0, MAX_NEWS_TITLE_LENGTH) : '',
     date: (typeof n.published_at === 'string' && n.published_at.length >= 10) ? n.published_at.slice(0, 10) : null,
   })).filter(n => n.title);
+  
   if (itemsForAI.length === 0) return { isEmpty: true, itemCount: 0, newsJson: null, system: null, user: null };
   const newsJson = JSON.stringify(itemsForAI);
 
@@ -28,16 +29,17 @@ export function buildNewsPrompts(payload) {
 - 뉴스 내용 요약 + 뉴스 자체의 성질(감성·방향·영향력·테마) 판단.
 - 미래 주가 예측, 매수/매도 판단은 다른 에이전트가 담당합니다. 절대 하지 마세요.
 
-[뉴스 포함 원칙]
-1. 대상 종목 또는 그 산업/시장/경쟁사/규제/정책 관련 내용이 하나라도 있으면 요약하세요.
-2. 제외 대상: 스포츠·연예·정치인 개인사, 단순 홍보.
-3. 뉴스가 1건이라도 있으면 가장 관련성 높은 관점을 1~3문장으로 뽑아내세요.
-4. 단순히 종목 뉴스만 요약하지 말고, 최근 업종 전반의 트렌드(예: 금융주 밸류업, 반도체 호황 등)와 연결 지어 해석할 수 있다면 news_analysis에 한 줄 언급하세요.
-5. 관련성이 명백히 부족하거나 무관한 기사만 있으면 "주가 영향 불명" 또는 "중립"으로 응답해도 됩니다. 억지로 추측하지 마세요.
+[★ 뉴스 포함 원칙 - 매우 중요 ★]
+1. 대상 종목 또는 그 산업/시장/경쟁사/규제/정책 관련 내용이 **단 1건이라도 있으면** 반드시 요약하고 주가 촉매(Catalyst)를 찾아내세요.
+2. 제외 대상: 스포츠·연예·정치인 개인사, 단순 홍보. (오직 이것들만 있을 때만 "중립" 응답)
+3. 뉴스가 1건이라도 있으면 절대 "뉴스 없음"이라고 하지 마세요. 가장 관련성 높은 관점을 1~3문장으로 뽑아내세요.
+4. 뉴스에 "실적", "수주", "신제품", "규제", "투자", "매출", "영업이익", "계약" 등의 단어가 포함되어 있다면 반드시 그 내용을 추출하여 촉매로 분석하세요.
+5. 단순히 종목 뉴스만 요약하지 말고, 최근 업종 전반의 트렌드(예: 금융주 밸류업, 반도체 호황 등)와 연결 지어 해석할 수 있다면 news_analysis에 한 줄 언급하세요.
+6. 정말로 모든 기사가 무관(연예/스포츠/단순홍보)한 경우에만 "주가 영향 불명"으로 응답하세요. 억지로 추측하지는 마세요.
 
 [응답 형식]
 유효한 JSON 객체 하나만 출력. 필드:
-- "news_analysis": 문자열 (1~3문장)
+- "news_analysis": 문자열 (1~3문장, 최소 1개 이상의 구체적 사실 포함)
 - "news_sentiment": "긍정" | "중립" | "부정"
 - "news_direction": "호재" | "악재" | "중립"
 - "news_impact": "강" | "중" | "약"
@@ -157,7 +159,7 @@ JSON으로만 응답하세요.`;
   return { system, user };
 }
 
-// ─── [4] 심판 에이전트 ───
+// ─── [4] 심판 에이전트 (추가 매수 판정 로직 강화) ───
 export function buildJudgePrompts(payload) {
   const isSell = payload.analysis_type === 'sell';
   const prevRec = payload.previous_recommendation;
@@ -239,9 +241,9 @@ export function buildJudgePrompts(payload) {
   const examples = isSell
     ? `[응답 예시 - 매도 관점]
 {"recommendation": "매도 추천", "confidence": 0.85, "overall_summary": "가격 흐름이 20일선을 하회하며 하락 신호가 뚜렷함. 뉴스에서도 규제 리스크가 부각됨. 추세는 단기·중기 모두 하락으로 방향이 일치함. 손실 확대 가능성이 있어 리스크 관리가 시급함. 보유 중이라면 비중 축소를 우선 검토할 필요가 있음."}
+{"recommendation": "추가 매수 고려", "confidence": 0.75, "overall_summary": "가격이 20일선을 강하게 상회하며 거래량이 급증하고 있음. 실적 개선 뉴스가 호재로 작용함. 추세는 단기·중기 모두 상승으로 일치함. 현재 수익률이 -2%로 낮아 비중 확대 기회가 있음. 추세가 꺾이지 않았다면 추가 매수를 고려할 만함."}
 {"recommendation": "부분 매도 고려", "confidence": 0.68, "overall_summary": "가격은 횡보이나 거래량이 감소하고 있음. 뉴스는 중립적이나 산업 심리가 약화되는 신호가 있음. 추세는 단기 하락이나 중기는 아직 유지 중임. 보유 수익률이 15%로 일부 이익실현을 고려할 만함. 절반 정도 매도 후 잔량은 지켜보는 전략이 적절함."}
-{"recommendation": "보유 유지", "confidence": 0.58, "overall_summary": "가격 흐름이 완만한 상승세를 유지하고 있음. 뉴스는 특별한 악재 없이 중립적임. 추세는 단기 횡보이나 중기 상승이 유지됨. 변동성 확대 가능성이 있으나 펀더멘털 훼손 신호는 없음. 현 포지션을 유지하며 추가 신호를 기다리는 것이 합리적임."}
-{"recommendation": "판단 보류", "confidence": 0.45, "overall_summary": "가격 흐름이 애매한 구간에 머물고 있음. 뉴스는 특별한 악재 없이 중립적이나 산업 심리가 혼재됨. 추세는 단기 상승이나 중기 횡보로 방향성이 불명확함. 거래량도 평균 수준으로 확신 있는 판단이 어려움. 추가 신호 확인 후 재분석을 권장함."}`
+{"recommendation": "보유 유지", "confidence": 0.58, "overall_summary": "가격 흐름이 완만한 상승세를 유지하고 있음. 뉴스는 특별한 악재 없이 중립적임. 추세는 단기 횡보이나 중기 상승이 유지됨. 변동성 확대 가능성이 있으나 펀더멘털 훼손 신호는 없음. 현 포지션을 유지하며 추가 신호를 기다리는 것이 합리적임."}`
     : `[응답 예시 - 매수 관점 (미보유)]
 {"recommendation": "매수 추천", "confidence": 0.85, "overall_summary": "가격이 20일선을 상회하며 거래량도 증가하고 있음. 실적 개선 뉴스가 확인되어 긍정적임. 추세는 단기·중기 모두 상승으로 일치함. 다만 단기 과열 가능성은 리스크 요인임. 분할 매수로 진입하는 전략이 바람직함."}
 {"recommendation": "매수 고려", "confidence": 0.65, "overall_summary": "가격 흐름은 완만한 상승이나 거래량은 평균 수준임. 뉴스는 중립적이나 산업 전망이 개선되는 신호가 있음. 추세는 단기 상승이나 중기는 횡보로 방향성 혼재함. 외국인 순매도와 환율 변동이 리스크 요인임. 소액으로 진입 후 추세 확인을 권장함."}
@@ -280,7 +282,14 @@ export function buildJudgePrompts(payload) {
 
 [사용자 상황에 따른 관점 일치 원칙]
 - 현재 사용자는 이 종목을 ${isSell ? '보유 중(매도 관점)' : '보유하지 않음(매수 관점)'}입니다.
-- ${isSell ? '매도/보유' : '매수/관망'}에 관한 판단만 내려야 하며, ${isSell ? '추가 매수 추천' : '매도 추천이나 매도 고려'}는 절대 내리지 마세요.
+- ${isSell ? '매도/보유/추가매수' : '매수/관망'}에 관한 판단만 내려야 하며, ${isSell ? '매수 추천' : '매도 추천이나 매도 고려'}는 절대 내리지 마세요.
+
+[★ 추가 매수 판단 원칙 (매우 중요) ★]
+- 사용자가 종목을 보유 중이고(매도 관점), 아래 조건을 모두 만족하면 **"추가 매수 고려"**를 선택하세요.
+  1. 추세 분석 결과: 단기/중기 모두 '상승'이거나 강도가 '강'일 것.
+  2. 뉴스 분석 결과: '호재'이거나 긍정적 촉매가 있을 것.
+  3. 현재 수익률: **-10% ~ +5% 사이**일 것. (이미 수익률이 15% 이상이면 추가 매수보다는 '보유 유지'나 '부분 매도'가 적절함)
+- 만약 위 조건이 맞지 않거나 수익률이 20% 이상이면 **"보유 유지"** 또는 **"부분 매도 고려"**를 선택하세요.
 
 [추세 이력 활용]
 - 안정성 'stable' + 현재 추세 방향 일치 → confidence 상향.

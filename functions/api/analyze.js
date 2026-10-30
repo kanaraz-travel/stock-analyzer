@@ -10,7 +10,7 @@ import {
 import { runNewsAgent, runTrendAgent, runJudgeAgent } from './_agents.js';
 import { buildRuleBasedFallback } from './_fallback.js';
 
-const RULESET_VERSION = 'RULESET_AI_V25_13_OPTIMIZED';
+const RULESET_VERSION = 'RULESET_AI_V25_14_ADVANCED';
 const MAX_BODY_BYTES = 100 * 1024;
 
 export async function onRequestPost(context) {
@@ -28,6 +28,7 @@ async function handleAnalyze(context) {
   const cronSecret = request.headers.get('x-cron-secret');
   let userId = null;
   const supabase = createClient(env.SUPABASE_URL, env.SUPABASE_SERVICE_ROLE_KEY, { auth: { persistSession: false, autoRefreshToken: false, detectSessionInUrl: false } });
+  
   if (cronSecret && cronSecret === env.CRON_SECRET) {
     if (!env.CRON_USER_ID) return jsonResponse({ error: 'CRON_USER_ID 미설정' }, 500);
     userId = env.CRON_USER_ID;
@@ -50,10 +51,7 @@ async function handleAnalyze(context) {
 
   const { ticker, stock_name, price_data, volume_data, news_items, holdings_data } = body;
   let analysis_type = body.analysis_type === 'sell' ? 'sell' : 'buy';
-  if (analysis_type === 'sell' && (!holdings_data || holdings_data.quantity <= 0)) {
-    console.warn(`[analyze] sell 관점 요청이지만 보유 데이터가 없음. buy로 강제 전환 (${ticker})`);
-    analysis_type = 'buy';
-  }
+  if (analysis_type === 'sell' && (!holdings_data || holdings_data.quantity <= 0)) analysis_type = 'buy';
 
   const dataQuality = computeDataQuality(price_data);
   const allowSave = dataQuality.status === 'OK' || dataQuality.status === 'DELAYED';
@@ -62,7 +60,7 @@ async function handleAnalyze(context) {
     const fb = buildRuleBasedFallback({ price_data, volume_data, analysis_type, trendResult: null });
     return jsonResponse({
       recommendation: fb.recommendation, overall_summary: fb.overall_summary, fallback: true, fallback_reason: 'DATA_INSUFFICIENT',
-      fallback_message: '⚠️ 시세 기준 시각을 검증할 수 없어 임시 판단을 제공합니다. 정상 분석으로 저장되지 않았습니다.', saved: false, data_quality: dataQuality.status,
+      fallback_message: '⚠️ 시세 기준 시각을 검증할 수 없어 임시 판단을 제공합니다.', saved: false, data_quality: dataQuality.status,
     });
   }
 
@@ -87,9 +85,7 @@ async function handleAnalyze(context) {
     if (newsRaw.code === 'AI_QUOTA_EXCEEDED') quotaExceeded = true;
     else if (newsRaw.code === 'AI_MODEL_DEPRECATED') modelDeprecated = true;
     else if (newsRaw.status === 'success' && validateNewsOutput(newsRaw).valid) { newsResult = newsRaw; agentStatus.news = { ok: true }; }
-    else if (newsRaw.status === 'error') agentStatus.news = { ok: false, reason: 'AGENT_ERROR' };
-    else agentStatus.news = { ok: false, reason: 'INVALID_OUTPUT' };
-
+    
     if (!quotaExceeded && !modelDeprecated) {
       const trendRaw = await runTrendAgent(env, { ticker, stock_name, analysis_type, price_data, volume_data, price_volume_result: pvResult, news_result: newsResult, trend_history_summary: trendSummary });
       if (trendRaw.code === 'AI_QUOTA_EXCEEDED') quotaExceeded = true;
@@ -97,8 +93,7 @@ async function handleAnalyze(context) {
       else if (!trendRaw.__exception) {
         const tv = validateTrendOutput(trendRaw);
         if (tv.valid) { trendResult = trendRaw; agentStatus.trend = { ok: true }; }
-        else agentStatus.trend = { ok: false, reason: tv.reason };
-      } else agentStatus.trend = { ok: false, reason: trendRaw.message || 'EXCEPTION' };
+      }
     }
 
     const criticalAgentsFailed = (!newsResult && !trendResult);
@@ -108,25 +103,39 @@ async function handleAnalyze(context) {
     else {
       const judgeRaw = await runJudgeAgent(env, { ticker, stock_name, analysis_type, holdings_data, price_data, price_volume_result: pvResult, news_result: newsResult, trend_result: trendResult, trend_history_summary: trendSummary, previous_recommendation: previousRec?.recommendation || null });
       if (judgeRaw.code === 'AI_QUOTA_EXCEEDED') quotaExceeded = true;
-      else if (judgeRaw.code === 'AI_MODEL_DEPRECATED') modelDeprecated = true;
       else if (!judgeRaw.__exception) { judgeResult = judgeRaw; agentStatus.judge = { ok: true }; }
-      else agentStatus.judge = { ok: false, reason: judgeRaw.message || 'EXCEPTION' };
 
       if (quotaExceeded) { isFallback = true; fallbackReason = 'AI_QUOTA_EXCEEDED'; finalData = buildRuleBasedFallback({ price_data, volume_data, analysis_type, trendResult }); }
-      else if (modelDeprecated) { isFallback = true; fallbackReason = 'AI_MODEL_DEPRECATED'; finalData = buildRuleBasedFallback({ price_data, volume_data, analysis_type, trendResult }); }
       else if (!judgeResult) { isFallback = true; fallbackReason = 'JUDGE_FAILED'; finalData = buildRuleBasedFallback({ price_data, volume_data, analysis_type, trendResult }); }
       else {
         const normalizedRec = normalizeRecommendation(judgeResult.recommendation, analysis_type);
         if (!normalizedRec) { isFallback = true; fallbackReason = 'JUDGE_INVALID_REC'; finalData = buildRuleBasedFallback({ price_data, volume_data, analysis_type, trendResult }); }
         else {
           let finalRec = normalizedRec; let judgeConfidence = Number(judgeResult.confidence); if (!Number.isFinite(judgeConfidence)) judgeConfidence = 0.5;
-          if (trendResult?.trend_strength === '약') { if (finalRec === '매수 추천') finalRec = '매수 고려'; else if (finalRec === '매도 추천') finalRec = '매도 고려'; }
+
+          // ★ [가드레일 1] 추세가 '약'이면 강한 추천을 '고려'로 다운그레이드
+          if (trendResult?.trend_strength === '약') {
+            if (finalRec === '매수 추천') finalRec = '매수 고려';
+            else if (finalRec === '매도 추천') finalRec = '매도 고려';
+          }
+
+          // ★ [가드레일 2] 추세와 상충되는 판단 강제 조정
+          if (finalRec.includes('매수') && trendResult?.short_term_trend === '하락' && trendResult?.medium_term_trend === '하락') {
+            finalRec = '기다리기'; judgeConfidence = Math.min(judgeConfidence, 0.5);
+            judgeResult.overall_summary += ' [시스템: 단기/중기 추세가 모두 하락하여 매수 판단을 보류합니다.]';
+          }
+          if (finalRec.includes('매도') && trendResult?.short_term_trend === '상승' && trendResult?.medium_term_trend === '상승') {
+            finalRec = analysis_type === 'sell' ? '보유 유지' : '기다리기'; judgeConfidence = Math.min(judgeConfidence, 0.5);
+            judgeResult.overall_summary += ' [시스템: 추세가 강하게 상승 중이므로 매도 판단을 보류합니다.]';
+          }
+
           let consistencyNote = '';
           if (previousRec?.recommendation) {
             const threshold = deriveConsistencyThreshold(previousRec.analyzed_at, trendSummary?.flips_short || 0);
             if (needsHighConfidenceForLevelJump(previousRec.recommendation, finalRec) && judgeConfidence < threshold) { finalRec = previousRec.recommendation; consistencyNote = '[판단 유지] '; }
             else if (finalRec === previousRec.recommendation) consistencyNote = '[판단 유지] ';
           }
+
           finalData = { recommendation: finalRec, overall_summary: consistencyNote + (judgeResult.overall_summary || '-'), confidence: judgeConfidence, original_judge_recommendation: normalizedRec };
         }
       }
@@ -137,18 +146,11 @@ async function handleAnalyze(context) {
         await saveAnalysisRun(supabase, {
           user_id: userId, ticker, stock_name, analysis_type, analyzed_at: new Date().toISOString(), recommendation: finalData.recommendation, overall_summary: finalData.overall_summary, ruleset_version: RULESET_VERSION,
           market_facts: {
-            price_data, volume_data,
-            holdings_data: holdings_data || null,
+            price_data, volume_data, holdings_data: holdings_data || null,
             agent_outputs: { price_volume: pvResult, news: newsResult, trend: trendResult, judge: judgeResult },
-            agent_status: agentStatus,
-            data_quality_note: dataQuality.status,
-            quote_time_verified: dataQuality.quote_time_verified ?? false,
+            agent_status: agentStatus, data_quality_note: dataQuality.status, quote_time_verified: dataQuality.quote_time_verified ?? false,
             judge_confidence: finalData.confidence ?? null,
-            trend_history_summary: {
-              count: trendSummary.count, distinct_days: trendSummary.distinct_days,
-              stability: trendSummary.stability, flips_short: trendSummary.flips_short,
-              flips_medium: trendSummary.flips_medium, sample_mode: trendSummary.sample_mode,
-            },
+            trend_history_summary: { count: trendSummary.count, distinct_days: trendSummary.distinct_days, stability: trendSummary.stability, flips_short: trendSummary.flips_short, flips_medium: trendSummary.flips_medium, sample_mode: trendSummary.sample_mode },
           },
         });
         saved = true;
@@ -156,14 +158,19 @@ async function handleAnalyze(context) {
     }
   } catch (e) {
     console.error('[analyze] Unhandled exception:', e);
-    isFallback = true; fallbackReason = e.message === 'AI_QUOTA_EXCEEDED' ? 'AI_QUOTA_EXCEEDED' : 'AI_ERROR';
+    isFallback = true; fallbackReason = 'AI_ERROR';
     finalData = buildRuleBasedFallback({ price_data, volume_data, analysis_type, trendResult });
   }
 
+  // ★ [고도화] 프론트엔드에서 상세 분석을 렌더링할 수 있도록 agent_outputs 반환
   return jsonResponse({
     recommendation: finalData?.recommendation || '판단 보류', overall_summary: finalData?.overall_summary || '-', fallback: isFallback, fallback_reason: fallbackReason,
-    fallback_message: isFallback ? getFallbackMessage(fallbackReason) : undefined, retry_hint: quotaExceeded ? '한국시간 오전 9시 이후 다시 시도해 주세요.' : undefined,
+    fallback_message: isFallback ? getFallbackMessage(fallbackReason) : undefined,
     agent_status: agentStatus, saved: saved, data_quality: dataQuality.status,
+    agent_outputs: { // 프론트엔드 노출용
+      news: newsResult ? { text: newsResult.news_analysis, sentiment: newsResult.news_sentiment, impact: newsResult.news_impact } : null,
+      trend: trendResult ? { short: trendResult.short_term_trend, medium: trendResult.medium_term_trend, strength: trendResult.trend_strength } : null
+    }
   });
 }
 
