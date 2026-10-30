@@ -1,3 +1,4 @@
+// assets/app.js
 import {
   supabase, state, $, $$,
   ALLOWED_NAMES, BATCH_ALLOWED_USER,
@@ -94,12 +95,23 @@ function resetState() {
 }
 
 function renderLoginButtons() {
-  const container = $('#login-buttons'); if (!container) return;
+  const container = $('#login-buttons');
+  if (!container) {
+    console.error('[app.js] #login-buttons 엘리먼트를 찾을 수 없습니다. index.html을 확인하세요.');
+    return;
+  }
   container.innerHTML = '';
+
   const passwordWrap = $('#login-password-wrap');
   const passwordInput = $('#login-password');
   const submitBtn = $('#login-submit');
   let selectedName = null;
+
+  // ALLOWED_NAMES가 정상적으로 로드되었는지 확인
+  if (!ALLOWED_NAMES || !Array.isArray(ALLOWED_NAMES)) {
+    console.error('[app.js] ALLOWED_NAMES가 유효하지 않습니다.');
+    return;
+  }
 
   ALLOWED_NAMES.forEach((name) => {
     const btn = document.createElement('button');

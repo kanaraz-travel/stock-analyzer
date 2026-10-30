@@ -9,7 +9,7 @@
   <meta name="theme-color" content="#f3f4f6" />
   <title>주식 초보 AI분석기</title>
   <link rel="manifest" href="/public/manifest.webmanifest" />
-  <link rel="stylesheet" href="/assets/styles.css?v=1.4.0" />
+  <link rel="stylesheet" href="/assets/styles.css?v=1.4.1" />
 </head>
 <body>
   <main id="screen-login" class="login-screen">
@@ -20,8 +20,10 @@
         <p class="login-subtitle">이름을 선택해 주세요</p>
       </div>
       <div class="login-card">
+        <!-- ★ 여기에 이름 버튼이 동적으로 생성됩니다. -->
         <div id="login-buttons" class="login-buttons"></div>
-        <!-- 비밀번호 입력 영역 추가 -->
+        
+        <!-- 비밀번호 입력 영역 -->
         <div id="login-password-wrap" hidden style="margin-top:16px;">
           <label class="label">비밀번호
             <input type="password" id="login-password" autocomplete="current-password" placeholder="비밀번호 입력" />
@@ -70,17 +72,13 @@
 
       <section id="quote-card" class="card" hidden>
         <div class="quote-head">
-          <div>
-            <h2 id="stock-name" class="stock-name">-</h2>
-          </div>
+          <div><h2 id="stock-name" class="stock-name">-</h2></div>
           <div class="quote-price-wrap">
             <div id="current-price" class="current-price">-</div>
             <div id="change-rate" class="change-rate">-</div>
           </div>
         </div>
-        <div class="quote-meta">
-          <span id="quote-as-of">시세 시각: -</span>
-        </div>
+        <div class="quote-meta"><span id="quote-as-of">시세 시각: -</span></div>
         <button id="analyze-btn" class="btn btn--primary btn--block" type="button">AI 분석하기</button>
       </section>
 
@@ -89,7 +87,6 @@
           <div id="recommendation-badge" class="recommendation-badge">-</div>
           <div id="analysis-timestamp" class="analysis-timestamp">분석 시각: -</div>
         </div>
-
         <div class="analysis-block">
           <h4 class="analysis-block-title">종합 분석</h4>
           <p id="overall-summary" class="overall-summary-text">-</p>
@@ -181,6 +178,6 @@
     </div>
   </div>
 
-  <script src="/assets/app.js?v=1.4.0" type="module"></script>
+  <script src="/assets/app.js?v=1.4.1" type="module"></script>
 </body>
 </html>
