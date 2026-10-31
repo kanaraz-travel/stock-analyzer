@@ -1,7 +1,7 @@
 // functions/api/cron-status.js
 import { createClient } from '@supabase/supabase-js';
 
-const STALE_RUNNING_MS = 3 * 60 * 1000;
+const STALE_RUNNING_MS = 5 * 60 * 1000; // 5분으로 연장
 
 export async function onRequestGet(context) {
   const { env } = context;
@@ -16,11 +16,10 @@ export async function onRequestGet(context) {
     const elapsed = Date.now() - new Date(status.last_run_at).getTime();
     if (elapsed > STALE_RUNNING_MS) {
       finalStatus = 'failed';
-      finalError = '실행 중 응답이 3분 이상 없어 중단되었습니다. (시간 초과)';
+      finalError = '실행 중 응답이 5분 이상 없어 중단되었습니다. (시간 초과)';
     }
   }
 
-  // ★ 다음 실행 시간 계산 (UTC 00, 03, 06... -> KST 09, 12, 15...)
   const now = new Date();
   const utcHour = now.getUTCHours();
   const nextHour = Math.ceil((utcHour + 1) / 3) * 3;

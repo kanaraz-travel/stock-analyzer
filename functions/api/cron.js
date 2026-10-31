@@ -2,20 +2,18 @@
 import { createClient } from '@supabase/supabase-js';
 
 const BATCH_SIZE = 1; 
-const STALE_LOCK_MS = 3 * 60 * 1000; 
+const STALE_LOCK_MS = 5 * 60 * 1000; // 5분으로 여유 있게 설정
 const TOTAL_ITEMS = 20;
-const TIME_BUDGET_MS = 10000; 
+const TIME_BUDGET_MS = 8000; // 8초 (안전하게 다음 배치 호출)
 const CACHE_EXPIRES_AT = '2099-12-31T23:59:59Z'; 
 
 export async function onRequest(context) {
-  const { request, env } = context;
+  const { request, env, waitUntil } = context;
   if (request.method === 'OPTIONS') return corsOk();
   if (request.method !== 'POST') return jsonResponse({ error: 'POST만 허용됩니다.' }, 405);
   
   const secret = request.headers.get('x-cron-secret');
-  if (!env.CRON_SECRET || secret !== env.CRON_SECRET) {
-    return jsonResponse({ error: 'Unauthorized (비밀키 불일치)' }, 401);
-  }
+  if (!env.CRON_SECRET || secret !== env.CRON_SECRET) return jsonResponse({ error: 'Unauthorized' }, 401);
 
   const admin = createClient(env.SUPABASE_URL, env.SUPABASE_SERVICE_ROLE_KEY);
   const baseUrl = new URL(request.url).origin;
@@ -31,7 +29,6 @@ export async function onRequest(context) {
         return jsonResponse({ status: 'ignored', reason: 'no_active_run' }, 200);
       }
     } else {
-      // ★ 원자적 락(Atomic Lock): 동시 요청 방지
       const existing = await loadProgress(admin);
       if (existing?.status === 'running') {
         const lastActivity = new Date(existing.updated_at || existing.started_at).getTime();
@@ -43,21 +40,11 @@ export async function onRequest(context) {
       const newProgress = await createNewProgress(baseUrl);
       if (!newProgress) throw new Error('인기 종목을 가져오지 못했습니다.');
 
-      // DB 업데이트를 통해 락 획득 시도 (status가 running이 아닐 때만 성공)
       const { data: locked, error } = await admin.from('auto_batch_progress')
-        .update({ 
-          status: 'running', 
-          run_id: newProgress.run_id, 
-          started_at: newProgress.started_at, 
-          updated_at: new Date().toISOString(), 
-          payload: newProgress 
-        })
-        .eq('id', 1)
-        .neq('status', 'running')
-        .select();
+        .update({ status: 'running', run_id: newProgress.run_id, started_at: newProgress.started_at, updated_at: new Date().toISOString(), payload: newProgress })
+        .eq('id', 1).neq('status', 'running').select();
 
       if (error || !locked || locked.length === 0) {
-        console.warn('[cron] Failed to acquire lock:', error?.message || 'Another process is running');
         return jsonResponse({ status: 'already_running' }, 200);
       }
       progress = newProgress;
@@ -65,13 +52,10 @@ export async function onRequest(context) {
 
     await updateStatusBadge(admin, progress);
 
-    // ★ context.waitUntil 사용
-    context.waitUntil(processBatch(admin, baseUrl, env, progress).catch(async (err) => {
+    waitUntil(processBatch(admin, baseUrl, env, progress).catch(async (err) => {
       console.error('[cron] processBatch fatal error:', err);
-      progress.status = 'failed';
-      progress.error = err.message;
-      await saveProgress(admin, progress);
-      await updateStatusBadge(admin, progress);
+      progress.status = 'failed'; progress.error = err.message;
+      await saveProgress(admin, progress); await updateStatusBadge(admin, progress);
     }));
 
     return jsonResponse({ status: 'running', run_id: progress.run_id }, 200);
@@ -113,7 +97,6 @@ async function processBatch(admin, baseUrl, env, progress) {
     progress.results.push({ ticker: stock.ticker, name: stock.name, ...result });
     progress.processed++;
 
-    // ★ 실제 저장 성공 여부와 스킵/실패 명확히 구분
     if (result.saved) progress.succeeded++;
     else if (result.fallback_reason === 'DATA_INSUFFICIENT' || result.data_quality === 'UNKNOWN') progress.skipped++;
     else progress.failed++;
@@ -126,7 +109,8 @@ async function processBatch(admin, baseUrl, env, progress) {
   }
 
   if (progress.processed < progress.items.length) {
-    await triggerContinue(baseUrl, env, admin, progress); // ★ admin 전달
+    // ★ await를 붙여서 다음 배치가 안전하게 시작되었는지 확인
+    await triggerContinue(baseUrl, env, admin, progress);
   } else {
     const isFullFail = progress.succeeded === 0 && progress.failed > 0;
     progress.status = isFullFail ? 'failed' : 'completed';
@@ -138,7 +122,6 @@ async function processBatch(admin, baseUrl, env, progress) {
 
 async function analyzeOne(baseUrl, env, stock) {
   try {
-    // ★ history 응답 검증
     const [qRes, nRes, hRes] = await Promise.all([
       fetch(`${baseUrl}/api/quote?ticker=${encodeURIComponent(stock.ticker)}`),
       fetch(`${baseUrl}/api/news?ticker=${encodeURIComponent(stock.name)}`),
@@ -148,9 +131,7 @@ async function analyzeOne(baseUrl, env, stock) {
     const hData = hRes.ok ? await hRes.json() : {};
     if (!qData?.price) return { ok: false, saved: false, fallback: false, reason: 'no_price' };
     
-    // 과거 데이터 부족 여부 확인
     const historyAvailable = hData.data_available !== false;
-
     const nData = nRes.ok ? await nRes.json() : { items: [] };
 
     const payload = {
@@ -172,37 +153,29 @@ async function analyzeOne(baseUrl, env, stock) {
     if (!aRes.ok) return { ok: false, saved: false, fallback: false, reason: `http_${aRes.status}` };
 
     const result = await aRes.json();
-    return { 
-      ok: true, saved: !!result.saved, fallback: !!result.fallback, 
-      fallback_reason: result.fallback_reason || null, data_quality: result.data_quality 
-    };
+    return { ok: true, saved: !!result.saved, fallback: !!result.fallback, fallback_reason: result.fallback_reason || null, data_quality: result.data_quality };
   } catch (e) {
     return { ok: false, saved: false, fallback: false, reason: `exception_${e.message?.slice(0, 40)}` };
   }
 }
 
-async function triggerContinue(baseUrl, env, admin, progress) { // ★ admin 추가
+async function triggerContinue(baseUrl, env, admin, progress) {
   try {
     const res = await fetch(`${baseUrl}/api/cron`, {
       method: 'POST', headers: { 'x-cron-secret': env.CRON_SECRET, 'x-cron-continue': '1', 'x-run-id': progress.run_id },
     });
     if (!res.ok) throw new Error(`HTTP ${res.status}`);
-    
-    // ★ 응답 본문 검증
     const data = await res.json();
-    if (data.status !== 'running' && data.status !== 'already_running') {
-      throw new Error(`Invalid continue response: ${data.status}`);
-    }
+    if (data.status !== 'running' && data.status !== 'already_running') throw new Error(`Invalid response: ${data.status}`);
   } catch (e) {
     console.error('[cron] triggerContinue failed:', e.message);
-    progress.status = 'interrupted'; progress.error = e.message;
-    await saveProgress(admin, progress); // ★ admin 사용
+    progress.status = 'interrupted'; progress.error = `이어달리기 실패: ${e.message}`;
+    await saveProgress(admin, progress); await updateStatusBadge(admin, progress);
   }
 }
 
 async function loadProgress(admin) {
-  const { data, error } = await admin.from('auto_batch_progress').select('*').eq('id', 1).maybeSingle();
-  if (error) { console.error('[cron] loadProgress error:', error.message); return null; }
+  const { data } = await admin.from('auto_batch_progress').select('*').eq('id', 1).maybeSingle();
   return data ? { ...data.payload, updated_at: data.updated_at } : null; 
 }
 
@@ -211,7 +184,7 @@ async function saveProgress(admin, progress) {
     id: 1, run_id: progress.run_id, status: progress.status,
     started_at: progress.started_at, updated_at: new Date().toISOString(), payload: progress,
   });
-  if (error) console.error('[cron] saveProgress error:', error.message); // ★ 에러 확인
+  if (error) console.error('[cron] saveProgress error:', error.message);
 }
 
 async function updateStatusBadge(admin, progress) {
@@ -219,11 +192,8 @@ async function updateStatusBadge(admin, progress) {
     const { data: existing } = await admin.from('app_cache').select('value').eq('key', 'auto_batch_status').maybeSingle();
     const prevSuccess = existing?.value?.last_success_at || null;
     
-    // ★ 실제 성공한 건이 있을 때만 last_success_at 갱신
     let successAt = prevSuccess;
-    if (progress.succeeded > 0) {
-      successAt = new Date().toISOString();
-    }
+    if (progress.succeeded > 0) successAt = new Date().toISOString();
 
     await admin.from('app_cache').upsert({
       key: 'auto_batch_status',
