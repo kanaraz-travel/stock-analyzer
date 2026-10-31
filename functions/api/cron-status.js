@@ -1,7 +1,7 @@
 // functions/api/cron-status.js
 import { createClient } from '@supabase/supabase-js';
 
-const STALE_RUNNING_MS = 5 * 60 * 1000; // 5분으로 연장
+const STALE_RUNNING_MS = 5 * 60 * 1000; // 5분
 
 export async function onRequestGet(context) {
   const { env } = context;
@@ -15,8 +15,14 @@ export async function onRequestGet(context) {
   if (finalStatus === 'running' && status.last_run_at) {
     const elapsed = Date.now() - new Date(status.last_run_at).getTime();
     if (elapsed > STALE_RUNNING_MS) {
-      finalStatus = 'failed';
-      finalError = '실행 중 응답이 5분 이상 없어 중단되었습니다. (시간 초과)';
+      // ★ 성공이 1개라도 있으면 '일부 완료(interrupted)', 없으면 '전체 실패(failed)'
+      if ((status.succeeded || 0) > 0) {
+        finalStatus = 'interrupted';
+        finalError = `5분 이상 응답이 없어 중단됨. (${status.succeeded}개 성공 / ${status.failed || 0}개 실패)`;
+      } else {
+        finalStatus = 'failed';
+        finalError = '실행 중 응답이 5분 이상 없어 전체 실패했습니다.';
+      }
     }
   }
 
@@ -28,9 +34,14 @@ export async function onRequestGet(context) {
 
   return new Response(JSON.stringify({
     status: finalStatus,
-    last_run_at: status.last_run_at || null, last_success_at: status.last_success_at || null,
-    total: status.total || 0, succeeded: status.succeeded || 0, failed: status.failed || 0, skipped: status.skipped || 0,
-    run_id: status.run_id || null, next_run_at: next.toISOString(),
+    last_run_at: status.last_run_at || null, 
+    last_success_at: status.last_success_at || null,
+    total: status.total || 0, 
+    succeeded: status.succeeded || 0, 
+    failed: status.failed || 0, 
+    skipped: status.skipped || 0,
+    run_id: status.run_id || null, 
+    next_run_at: next.toISOString(),
     error: finalError,
   }), { headers: { 'content-type': 'application/json' } });
 }

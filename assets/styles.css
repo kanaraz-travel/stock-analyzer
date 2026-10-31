@@ -1,3 +1,4 @@
+/* assets/styles.css */
 :root {
   --bg: #f3f4f6; --surface: #ffffff; --surface-2: #f9fafb; --text: #111827; --text-muted: #6b7280;
   --primary: #2563eb; --primary-dim: #93c5fd; --color-up: #ef4444; --color-down: #3b82f6;
@@ -16,7 +17,20 @@ body { max-width: 480px; margin: 0 auto; min-height: 100vh; }
 .header-meta { display: flex; justify-content: space-between; align-items: center; gap: 6px; margin-top: 8px; flex-wrap: wrap; }
 .header-badges { display: flex; gap: 6px; flex-wrap: wrap; }
 .header-actions { display: flex; gap: 6px; align-items: center; }
-.badge { font-size: 11px; padding: 3px 8px; border-radius: 999px; background: var(--surface-2); color: var(--text-muted); border: 1px solid var(--border); }
+
+/* ★ 배지 스타일 보완 (줄바꿈 방지 및 정렬) */
+.badge { 
+  font-size: 11px; 
+  padding: 3px 8px; 
+  border-radius: 999px; 
+  background: var(--surface-2); 
+  color: var(--text-muted); 
+  border: 1px solid var(--border); 
+  white-space: nowrap; 
+  display: inline-flex; 
+  align-items: center; 
+  gap: 4px;
+}
 .badge--muted { opacity: 0.8; }
 .badge--status-green { background: #ecfdf5; color: var(--status-green); border-color: #a7f3d0; }
 .badge--status-orange { background: #fffbeb; color: var(--status-orange); border-color: #fde68a; }
