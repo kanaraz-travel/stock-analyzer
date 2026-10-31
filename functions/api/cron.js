@@ -2,9 +2,9 @@
 import { createClient } from '@supabase/supabase-js';
 
 const BATCH_SIZE = 1; 
-const STALE_LOCK_MS = 5 * 60 * 1000; // 5분으로 여유 있게 설정
+const STALE_LOCK_MS = 5 * 60 * 1000;
 const TOTAL_ITEMS = 20;
-const TIME_BUDGET_MS = 8000; // 8초 (안전하게 다음 배치 호출)
+const TIME_BUDGET_MS = 8000;
 const CACHE_EXPIRES_AT = '2099-12-31T23:59:59Z'; 
 
 export async function onRequest(context) {
@@ -54,8 +54,10 @@ export async function onRequest(context) {
 
     waitUntil(processBatch(admin, baseUrl, env, progress).catch(async (err) => {
       console.error('[cron] processBatch fatal error:', err);
-      progress.status = 'failed'; progress.error = err.message;
-      await saveProgress(admin, progress); await updateStatusBadge(admin, progress);
+      progress.status = 'failed'; 
+      progress.error = `배치 처리 중 오류가 발생했습니다. (${err.message.slice(0, 60)})`;
+      await saveProgress(admin, progress); 
+      await updateStatusBadge(admin, progress);
     }));
 
     return jsonResponse({ status: 'running', run_id: progress.run_id }, 200);
@@ -63,7 +65,7 @@ export async function onRequest(context) {
     console.error('[cron] onRequest error:', e);
     await admin.from('app_cache').upsert({
       key: 'auto_batch_status',
-      value: { status: 'failed', error: e.message, last_run_at: new Date().toISOString() },
+      value: { status: 'failed', error: `시작 단계 오류: ${e.message.slice(0, 60)}`, last_run_at: new Date().toISOString() },
       updated_at: new Date().toISOString(), expires_at: CACHE_EXPIRES_AT
     });
     return jsonResponse({ error: e.message }, 500);
@@ -109,7 +111,6 @@ async function processBatch(admin, baseUrl, env, progress) {
   }
 
   if (progress.processed < progress.items.length) {
-    // ★ await를 붙여서 다음 배치가 안전하게 시작되었는지 확인
     await triggerContinue(baseUrl, env, admin, progress);
   } else {
     const isFullFail = progress.succeeded === 0 && progress.failed > 0;
@@ -159,18 +160,39 @@ async function analyzeOne(baseUrl, env, stock) {
   }
 }
 
+// ★ 이어달리기 에러 처리를 사용자 친화적으로 변경
 async function triggerContinue(baseUrl, env, admin, progress) {
   try {
     const res = await fetch(`${baseUrl}/api/cron`, {
       method: 'POST', headers: { 'x-cron-secret': env.CRON_SECRET, 'x-cron-continue': '1', 'x-run-id': progress.run_id },
     });
-    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    
+    if (!res.ok) {
+      throw new Error(`HTTP ${res.status}`);
+    }
+    
     const data = await res.json();
-    if (data.status !== 'running' && data.status !== 'already_running') throw new Error(`Invalid response: ${data.status}`);
+    
+    // ★ 'ignored' 응답은 "이미 처리가 완료됨"을 의미하므로 정상 흐름으로 처리
+    if (data.status === 'ignored') {
+      console.log('[cron] 이어달리기가 무시되었습니다. (이미 다른 배치가 처리를 완료함)');
+      return; // 정상 종료
+    }
+    
+    // 'already_running'은 다른 요청이 이미 이어받은 것으로 정상
+    if (data.status === 'already_running' || data.status === 'running') {
+      return;
+    }
+    
+    // 예상치 못한 상태값
+    throw new Error(`예상치 못한 응답 (${data.status})`);
   } catch (e) {
     console.error('[cron] triggerContinue failed:', e.message);
-    progress.status = 'interrupted'; progress.error = `이어달리기 실패: ${e.message}`;
-    await saveProgress(admin, progress); await updateStatusBadge(admin, progress);
+    progress.status = 'interrupted';
+    // ★ 사용자 친화적 메시지로 변환
+    progress.error = `다음 종목으로 넘어가는 중 문제가 발생했습니다. (사유: ${e.message})`;
+    await saveProgress(admin, progress); 
+    await updateStatusBadge(admin, progress);
   }
 }
 
