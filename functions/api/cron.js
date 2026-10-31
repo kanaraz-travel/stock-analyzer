@@ -160,37 +160,32 @@ async function analyzeOne(baseUrl, env, stock) {
   }
 }
 
-// ★ 이어달리기 에러 처리를 사용자 친화적으로 변경
+// ★ 이어달리기 로직 (ignored 시 정상 종료)
 async function triggerContinue(baseUrl, env, admin, progress) {
   try {
     const res = await fetch(`${baseUrl}/api/cron`, {
       method: 'POST', headers: { 'x-cron-secret': env.CRON_SECRET, 'x-cron-continue': '1', 'x-run-id': progress.run_id },
     });
     
-    if (!res.ok) {
-      throw new Error(`HTTP ${res.status}`);
-    }
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
     
     const data = await res.json();
     
-    // ★ 'ignored' 응답은 "이미 처리가 완료됨"을 의미하므로 정상 흐름으로 처리
+    // 'ignored'는 이미 처리가 완료되었음을 의미하므로 정상 종료
     if (data.status === 'ignored') {
-      console.log('[cron] 이어달리기가 무시되었습니다. (이미 다른 배치가 처리를 완료함)');
-      return; // 정상 종료
+      console.log('[cron] 이어달리기 무시됨 (이미 완료)');
+      return; 
     }
     
-    // 'already_running'은 다른 요청이 이미 이어받은 것으로 정상
     if (data.status === 'already_running' || data.status === 'running') {
       return;
     }
     
-    // 예상치 못한 상태값
     throw new Error(`예상치 못한 응답 (${data.status})`);
   } catch (e) {
     console.error('[cron] triggerContinue failed:', e.message);
     progress.status = 'interrupted';
-    // ★ 사용자 친화적 메시지로 변환
-    progress.error = `다음 종목으로 넘어가는 중 문제가 발생했습니다. (사유: ${e.message})`;
+    progress.error = `다음 종목으로 넘어가는 중 문제가 발생했습니다. (${e.message})`;
     await saveProgress(admin, progress); 
     await updateStatusBadge(admin, progress);
   }
