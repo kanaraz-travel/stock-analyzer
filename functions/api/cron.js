@@ -4,7 +4,7 @@ import { createClient } from '@supabase/supabase-js';
 const BATCH_SIZE = 1; 
 const STALE_LOCK_MS = 5 * 60 * 1000;
 const TOTAL_ITEMS = 20;
-const TIME_BUDGET_MS = 8000;
+const TIME_BUDGET_MS = 5000; // ★ 5초로 단축하여 안전하게 다음 배치 호출
 const CACHE_EXPIRES_AT = '2099-12-31T23:59:59Z'; 
 
 export async function onRequest(context) {
@@ -160,20 +160,18 @@ async function analyzeOne(baseUrl, env, stock) {
   }
 }
 
-// ★ 이어달리기 로직 (ignored 시 정상 종료)
 async function triggerContinue(baseUrl, env, admin, progress) {
   try {
     const res = await fetch(`${baseUrl}/api/cron`, {
       method: 'POST', headers: { 'x-cron-secret': env.CRON_SECRET, 'x-cron-continue': '1', 'x-run-id': progress.run_id },
     });
-    
     if (!res.ok) throw new Error(`HTTP ${res.status}`);
     
     const data = await res.json();
     
-    // 'ignored'는 이미 처리가 완료되었음을 의미하므로 정상 종료
+    // ★ 'ignored' 응답은 "이미 처리가 완료됨"을 의미하므로 정상 흐름으로 처리
     if (data.status === 'ignored') {
-      console.log('[cron] 이어달리기 무시됨 (이미 완료)');
+      console.log('[cron] 이어달리기가 무시되었습니다. (이미 다른 배치가 처리를 완료함)');
       return; 
     }
     
@@ -185,7 +183,7 @@ async function triggerContinue(baseUrl, env, admin, progress) {
   } catch (e) {
     console.error('[cron] triggerContinue failed:', e.message);
     progress.status = 'interrupted';
-    progress.error = `다음 종목으로 넘어가는 중 문제가 발생했습니다. (${e.message})`;
+    progress.error = `다음 종목으로 넘어가는 중 문제가 발생했습니다. (사유: ${e.message})`;
     await saveProgress(admin, progress); 
     await updateStatusBadge(admin, progress);
   }
