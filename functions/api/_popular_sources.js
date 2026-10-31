@@ -1,12 +1,14 @@
 // functions/api/_popular_sources.js
 import { getKisAccessToken } from './_kis_token.js';
 
+// ★ 스팩(SPAC) 관련 키워드 추가 ('스팩', 'SPAC', '기업인수목적')
 const EXCLUDE_KEYWORDS = [
   'KODEX', 'TIGER', 'KBSTAR', 'ARIRANG', 'HANARO', 'SOL', 'ACE', 'PLUS', 'RISE', 'KOSEF',
   'TIMEFOLIO', '히어로즈', '마이다스', '파워', '인버스', '레버리지', '선물', '합성', 'ETN', 'ELW',
   'UNICORN', '액티브', '밸류체인', '인덱스',
   '채권', '국채', '지방채', '특수채', '회사채', 'CP', '전단채', '수익증권',
-  '리츠', '부동산투자회사', '인프라', '선박', '펀드', 'MMF'
+  '리츠', '부동산투자회사', '인프라', '선박', '펀드', 'MMF',
+  '스팩', 'SPAC', '기업인수목적'
 ];
 
 export function isExcluded(name) {
@@ -106,7 +108,7 @@ export async function fetchKisCandidates(env, limit = 100) {
   if (!env.KIS_APP_KEY || !env.KIS_APP_SECRET) return [];
 
   const now = Date.now();
-  let startYmd = (resolvedTradingDayCache.ymd && (now - resolvedTradingDayCache.resolvedAt) < RESOLVED_CACHE_TTL_MS)
+  let startYmd = (resolvedTradingDayCache.ymd && (now - resolvedTradingDayCache.resolvedAt) < RESOLVED_CACHE_TTL_MS) 
     ? resolvedTradingDayCache.ymd : getCandidateStartDate();
 
   try {
@@ -131,6 +133,7 @@ async function tryFetchKisForDate(env, baseUrl, accessToken, ymd, limit) {
     for (const row of rows || []) {
       const ticker = row[tickerField], name = row.hts_kor_isnm;
       if (!ticker || !name) continue;
+      // ★ isExcluded에 스팩 키워드가 추가되어 여기서 자동으로 걸러집니다.
       if (!isValidTicker(ticker) || seen.has(ticker) || isExcluded(name) || isPreferredStock(name)) continue;
       const mkt = String(row.rprs_mrkt_kor_name || row.bstp_kor_isnm || '').toUpperCase();
       if (mkt && !/유가증권|코스피|코스닥|KOSPI|KOSDAQ/.test(mkt)) continue;
