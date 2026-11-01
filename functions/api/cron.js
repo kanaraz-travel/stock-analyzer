@@ -4,7 +4,7 @@ import { createClient } from '@supabase/supabase-js';
 const BATCH_SIZE = 1; 
 const STALE_LOCK_MS = 5 * 60 * 1000;
 const TOTAL_ITEMS = 20;
-const TIME_BUDGET_MS = 5000; // ★ 5초로 단축하여 안전하게 다음 배치 호출
+const TIME_BUDGET_MS = 5000; // 5초 예산
 const CACHE_EXPIRES_AT = '2099-12-31T23:59:59Z'; 
 
 export async function onRequest(context) {
@@ -40,11 +40,16 @@ export async function onRequest(context) {
       const newProgress = await createNewProgress(baseUrl);
       if (!newProgress) throw new Error('인기 종목을 가져오지 못했습니다.');
 
+      // ★ 핵심 수정: 5분이 지난 오래된 락(Stale Lock)은 무시하고 강제로 새로 시작
+      const staleTime = new Date(Date.now() - STALE_LOCK_MS).toISOString();
       const { data: locked, error } = await admin.from('auto_batch_progress')
         .update({ status: 'running', run_id: newProgress.run_id, started_at: newProgress.started_at, updated_at: new Date().toISOString(), payload: newProgress })
-        .eq('id', 1).neq('status', 'running').select();
+        .eq('id', 1)
+        .or(`status.neq.running,updated_at.lt.${staleTime}`) // running 상태이더라도 오래되었으면 덮어씀
+        .select();
 
       if (error || !locked || locked.length === 0) {
+        console.warn('[cron] 락 획득 실패 (다른 프로세스 실행 중)');
         return jsonResponse({ status: 'already_running' }, 200);
       }
       progress = newProgress;
@@ -168,22 +173,18 @@ async function triggerContinue(baseUrl, env, admin, progress) {
     if (!res.ok) throw new Error(`HTTP ${res.status}`);
     
     const data = await res.json();
-    
-    // ★ 'ignored' 응답은 "이미 처리가 완료됨"을 의미하므로 정상 흐름으로 처리
     if (data.status === 'ignored') {
-      console.log('[cron] 이어달리기가 무시되었습니다. (이미 다른 배치가 처리를 완료함)');
+      console.log('[cron] 이어달리기 무시됨 (이미 완료)');
       return; 
     }
-    
     if (data.status === 'already_running' || data.status === 'running') {
       return;
     }
-    
     throw new Error(`예상치 못한 응답 (${data.status})`);
   } catch (e) {
     console.error('[cron] triggerContinue failed:', e.message);
     progress.status = 'interrupted';
-    progress.error = `다음 종목으로 넘어가는 중 문제가 발생했습니다. (사유: ${e.message})`;
+    progress.error = `다음 종목으로 넘어가는 중 문제가 발생했습니다. (${e.message})`;
     await saveProgress(admin, progress); 
     await updateStatusBadge(admin, progress);
   }
