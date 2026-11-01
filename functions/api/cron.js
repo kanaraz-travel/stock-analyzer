@@ -7,7 +7,7 @@ const TOTAL_ITEMS = 20;
 const TIME_BUDGET_MS = 5000; 
 const CACHE_EXPIRES_AT = '2099-12-31T23:59:59Z'; 
 
-// ★ 타임아웃 시 한글 에러 반환
+// ★ 안전한 타임아웃 fetch
 async function fetchWithTimeout(url, options = {}, timeoutMs = 10000) {
   const controller = new AbortController();
   const id = setTimeout(() => controller.abort(), timeoutMs);
@@ -17,10 +17,8 @@ async function fetchWithTimeout(url, options = {}, timeoutMs = 10000) {
     return response;
   } catch (e) {
     clearTimeout(id);
-    if (e.name === 'AbortError') {
-      throw new Error('요청 시간이 초과되었습니다. (10초)');
-    }
-    throw new Error(`네트워크 오류: ${e.message}`);
+    const msg = e?.name === 'AbortError' ? '요청 시간 초과' : (e?.message || String(e));
+    throw new Error(msg);
   }
 }
 
@@ -54,6 +52,7 @@ export async function onRequest(context) {
         }
       }
       
+      // ★ 인기 종목 수집은 시간이 걸리므로 15초로 타임아웃 연장
       const newProgress = await createNewProgress(baseUrl);
       if (!newProgress) throw new Error('인기 종목을 가져오지 못했습니다.');
 
@@ -74,36 +73,43 @@ export async function onRequest(context) {
 
     waitUntil(processBatch(admin, baseUrl, env, progress).catch(async (err) => {
       console.error('[cron] processBatch fatal error:', err);
+      const errMsg = err?.message || String(err);
       progress.status = 'failed'; 
-      progress.error = `배치 처리 중 오류가 발생했습니다. (${err.message.slice(0, 60)})`;
+      progress.error = `배치 처리 중 오류: ${errMsg.slice(0, 60)}`;
       await saveProgress(admin, progress); 
       await updateStatusBadge(admin, progress);
     }));
 
     return jsonResponse({ status: 'running', run_id: progress.run_id }, 200);
   } catch (e) {
-    console.error('[cron] onRequest error:', e);
+    const errMsg = e?.message || String(e);
+    console.error('[cron] onRequest error:', errMsg);
     
-    // ★ 기존 last_success_at 유지
-    const { data: existing } = await admin.from('app_cache').select('value').eq('key', 'auto_batch_status').maybeSingle();
-    const prevSuccess = existing?.value?.last_success_at || null;
+    // ★ 에러 처리 블록도 이중으로 보호하여 500 에러 방지
+    try {
+      const { data: existing } = await admin.from('app_cache').select('value').eq('key', 'auto_batch_status').maybeSingle();
+      const prevSuccess = existing?.value?.last_success_at || null;
 
-    await admin.from('app_cache').upsert({
-      key: 'auto_batch_status',
-      value: { 
-        status: 'failed', 
-        error: `시작 단계 오류: ${e.message.slice(0, 60)}`, 
-        last_run_at: new Date().toISOString(),
-        last_success_at: prevSuccess // ★ 필드 유지
-      },
-      updated_at: new Date().toISOString(), expires_at: CACHE_EXPIRES_AT
-    });
-    return jsonResponse({ error: e.message }, 500);
+      await admin.from('app_cache').upsert({
+        key: 'auto_batch_status',
+        value: { 
+          status: 'failed', 
+          error: `시작 단계 오류: ${errMsg.slice(0, 60)}`, 
+          last_run_at: new Date().toISOString(),
+          last_success_at: prevSuccess
+        },
+        updated_at: new Date().toISOString(), expires_at: CACHE_EXPIRES_AT
+      });
+    } catch (dbError) {
+      console.error('[cron] Failed to save error status to DB:', dbError);
+    }
+    
+    return jsonResponse({ error: errMsg }, 200); // ★ 무조건 200 OK로 응답하여 크론 중단 방지
   }
 }
 
 async function createNewProgress(baseUrl) {
-  const popRes = await fetchWithTimeout(`${baseUrl}/api/popular?exclude_preferred=1`);
+  const popRes = await fetchWithTimeout(`${baseUrl}/api/popular?exclude_preferred=1`, {}, 15000);
   if (!popRes.ok) return null;
   const popData = await popRes.json();
   const items = (popData.items || []).slice(0, TOTAL_ITEMS);
@@ -187,8 +193,8 @@ async function analyzeOne(baseUrl, env, stock) {
     const result = await aRes.json();
     return { ok: true, saved: !!result.saved, fallback: !!result.fallback, fallback_reason: result.fallback_reason || null, data_quality: result.data_quality };
   } catch (e) {
-    console.error(`[cron] analyze exception for ${stock.name}:`, e.message);
-    return { ok: false, saved: false, fallback: false, reason: e.message.includes('시간이 초과') ? 'timeout' : 'exception' };
+    const errMsg = e?.message || String(e);
+    return { ok: false, saved: false, fallback: false, reason: errMsg.includes('초과') ? 'timeout' : 'exception' };
   }
 }
 
@@ -205,9 +211,10 @@ async function triggerContinue(baseUrl, env, admin, progress) {
     
     throw new Error(`예상치 못한 응답 (${data.status})`);
   } catch (e) {
-    console.error('[cron] triggerContinue failed:', e.message);
+    const errMsg = e?.message || String(e);
+    console.error('[cron] triggerContinue failed:', errMsg);
     progress.status = 'interrupted';
-    progress.error = `다음 종목으로 넘어가는 중 문제가 발생했습니다. (${e.message})`;
+    progress.error = `다음 종목으로 넘어가는 중 문제가 발생했습니다. (${errMsg})`;
     await saveProgress(admin, progress); 
     await updateStatusBadge(admin, progress);
   }
