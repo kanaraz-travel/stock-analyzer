@@ -4,8 +4,22 @@ import { createClient } from '@supabase/supabase-js';
 const BATCH_SIZE = 1; 
 const STALE_LOCK_MS = 5 * 60 * 1000;
 const TOTAL_ITEMS = 20;
-const TIME_BUDGET_MS = 5000; // 5초 예산
+const TIME_BUDGET_MS = 5000; 
 const CACHE_EXPIRES_AT = '2099-12-31T23:59:59Z'; 
+
+// ★ 타임아웃이 적용된 fetch 함수 (10초 제한)
+async function fetchWithTimeout(url, options = {}, timeoutMs = 10000) {
+  const controller = new AbortController();
+  const id = setTimeout(() => controller.abort(), timeoutMs);
+  try {
+    const response = await fetch(url, { ...options, signal: controller.signal });
+    clearTimeout(id);
+    return response;
+  } catch (e) {
+    clearTimeout(id);
+    throw new Error(`Timeout/Network error: ${e.message}`);
+  }
+}
 
 export async function onRequest(context) {
   const { request, env, waitUntil } = context;
@@ -40,16 +54,14 @@ export async function onRequest(context) {
       const newProgress = await createNewProgress(baseUrl);
       if (!newProgress) throw new Error('인기 종목을 가져오지 못했습니다.');
 
-      // ★ 핵심 수정: 5분이 지난 오래된 락(Stale Lock)은 무시하고 강제로 새로 시작
       const staleTime = new Date(Date.now() - STALE_LOCK_MS).toISOString();
       const { data: locked, error } = await admin.from('auto_batch_progress')
         .update({ status: 'running', run_id: newProgress.run_id, started_at: newProgress.started_at, updated_at: new Date().toISOString(), payload: newProgress })
         .eq('id', 1)
-        .or(`status.neq.running,updated_at.lt.${staleTime}`) // running 상태이더라도 오래되었으면 덮어씀
+        .or(`status.neq.running,updated_at.lt.${staleTime}`)
         .select();
 
       if (error || !locked || locked.length === 0) {
-        console.warn('[cron] 락 획득 실패 (다른 프로세스 실행 중)');
         return jsonResponse({ status: 'already_running' }, 200);
       }
       progress = newProgress;
@@ -78,7 +90,7 @@ export async function onRequest(context) {
 }
 
 async function createNewProgress(baseUrl) {
-  const popRes = await fetch(`${baseUrl}/api/popular?exclude_preferred=1`);
+  const popRes = await fetchWithTimeout(`${baseUrl}/api/popular?exclude_preferred=1`);
   if (!popRes.ok) return null;
   const popData = await popRes.json();
   const items = (popData.items || []).slice(0, TOTAL_ITEMS);
@@ -99,6 +111,7 @@ async function processBatch(admin, baseUrl, env, progress) {
     if (Date.now() - startTime > TIME_BUDGET_MS) break;
     
     const stock = progress.items[progress.processed];
+    // ★ analyzeOne에서 타임아웃이 걸리면 실패로 반환됨
     const result = await analyzeOne(baseUrl, env, stock);
     
     progress.results.push({ ticker: stock.ticker, name: stock.name, ...result });
@@ -128,10 +141,11 @@ async function processBatch(admin, baseUrl, env, progress) {
 
 async function analyzeOne(baseUrl, env, stock) {
   try {
+    // ★ 각 API 요청에 10초 타임아웃 적용
     const [qRes, nRes, hRes] = await Promise.all([
-      fetch(`${baseUrl}/api/quote?ticker=${encodeURIComponent(stock.ticker)}`),
-      fetch(`${baseUrl}/api/news?ticker=${encodeURIComponent(stock.name)}`),
-      fetch(`${baseUrl}/api/history?ticker=${encodeURIComponent(stock.ticker)}`),
+      fetchWithTimeout(`${baseUrl}/api/quote?ticker=${encodeURIComponent(stock.ticker)}`, {}, 10000),
+      fetchWithTimeout(`${baseUrl}/api/news?ticker=${encodeURIComponent(stock.name)}`, {}, 10000),
+      fetchWithTimeout(`${baseUrl}/api/history?ticker=${encodeURIComponent(stock.ticker)}`, {}, 10000),
     ]);
     const qData = qRes.ok ? await qRes.json() : null;
     const hData = hRes.ok ? await hRes.json() : {};
@@ -153,33 +167,32 @@ async function analyzeOne(baseUrl, env, stock) {
       news_items: nData.items || [], holdings_data: null,
     };
 
-    const aRes = await fetch(`${baseUrl}/api/analyze`, {
+    // ★ AI 분석 요청에도 15초 타임아웃 적용 (AI가 가장 오래 걸림)
+    const aRes = await fetchWithTimeout(`${baseUrl}/api/analyze`, {
       method: 'POST', headers: { 'content-type': 'application/json', 'x-cron-secret': env.CRON_SECRET }, body: JSON.stringify(payload),
-    });
+    }, 15000);
+
     if (!aRes.ok) return { ok: false, saved: false, fallback: false, reason: `http_${aRes.status}` };
 
     const result = await aRes.json();
     return { ok: true, saved: !!result.saved, fallback: !!result.fallback, fallback_reason: result.fallback_reason || null, data_quality: result.data_quality };
   } catch (e) {
-    return { ok: false, saved: false, fallback: false, reason: `exception_${e.message?.slice(0, 40)}` };
+    console.error(`[cron] analyze exception for ${stock.name}:`, e.message);
+    return { ok: false, saved: false, fallback: false, reason: `exception_timeout` };
   }
 }
 
 async function triggerContinue(baseUrl, env, admin, progress) {
   try {
-    const res = await fetch(`${baseUrl}/api/cron`, {
+    const res = await fetchWithTimeout(`${baseUrl}/api/cron`, {
       method: 'POST', headers: { 'x-cron-secret': env.CRON_SECRET, 'x-cron-continue': '1', 'x-run-id': progress.run_id },
     });
     if (!res.ok) throw new Error(`HTTP ${res.status}`);
     
     const data = await res.json();
-    if (data.status === 'ignored') {
-      console.log('[cron] 이어달리기 무시됨 (이미 완료)');
-      return; 
-    }
-    if (data.status === 'already_running' || data.status === 'running') {
-      return;
-    }
+    if (data.status === 'ignored') return; 
+    if (data.status === 'already_running' || data.status === 'running') return;
+    
     throw new Error(`예상치 못한 응답 (${data.status})`);
   } catch (e) {
     console.error('[cron] triggerContinue failed:', e.message);
