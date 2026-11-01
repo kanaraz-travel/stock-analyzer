@@ -52,7 +52,7 @@ export async function onRequest(context) {
         }
       }
       
-      // ★ 인기 종목 수집은 시간이 걸리므로 15초로 타임아웃 연장
+      // ★ 인기 종목 수집 타임아웃을 25초로 연장
       const newProgress = await createNewProgress(baseUrl);
       if (!newProgress) throw new Error('인기 종목을 가져오지 못했습니다.');
 
@@ -85,7 +85,6 @@ export async function onRequest(context) {
     const errMsg = e?.message || String(e);
     console.error('[cron] onRequest error:', errMsg);
     
-    // ★ 에러 처리 블록도 이중으로 보호하여 500 에러 방지
     try {
       const { data: existing } = await admin.from('app_cache').select('value').eq('key', 'auto_batch_status').maybeSingle();
       const prevSuccess = existing?.value?.last_success_at || null;
@@ -104,12 +103,13 @@ export async function onRequest(context) {
       console.error('[cron] Failed to save error status to DB:', dbError);
     }
     
-    return jsonResponse({ error: errMsg }, 200); // ★ 무조건 200 OK로 응답하여 크론 중단 방지
+    return jsonResponse({ error: errMsg }, 200); 
   }
 }
 
 async function createNewProgress(baseUrl) {
-  const popRes = await fetchWithTimeout(`${baseUrl}/api/popular?exclude_preferred=1`, {}, 15000);
+  // ★ 타임아웃 15초 -> 25초로 연장
+  const popRes = await fetchWithTimeout(`${baseUrl}/api/popular?exclude_preferred=1`, {}, 25000);
   if (!popRes.ok) return null;
   const popData = await popRes.json();
   const items = (popData.items || []).slice(0, TOTAL_ITEMS);

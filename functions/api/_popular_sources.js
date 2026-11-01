@@ -1,14 +1,13 @@
 // functions/api/_popular_sources.js
 import { getKisAccessToken } from './_kis_token.js';
 
-// ★ 스팩(SPAC) 관련 키워드 추가 ('스팩', 'SPAC', '기업인수목적')
 const EXCLUDE_KEYWORDS = [
   'KODEX', 'TIGER', 'KBSTAR', 'ARIRANG', 'HANARO', 'SOL', 'ACE', 'PLUS', 'RISE', 'KOSEF',
   'TIMEFOLIO', '히어로즈', '마이다스', '파워', '인버스', '레버리지', '선물', '합성', 'ETN', 'ELW',
   'UNICORN', '액티브', '밸류체인', '인덱스',
   '채권', '국채', '지방채', '특수채', '회사채', 'CP', '전단채', '수익증권',
   '리츠', '부동산투자회사', '인프라', '선박', '펀드', 'MMF',
-  '스팩', 'SPAC', '기업인수목적'
+  '스팩', 'SPAC', '기업인수목적' // ★ 스팩 제외 추가
 ];
 
 export function isExcluded(name) {
@@ -30,6 +29,20 @@ function decodeHtmlEntities(str) {
   return String(str)
     .replace(/&amp;/g, '&').replace(/&lt;/g, '<').replace(/&gt;/g, '>')
     .replace(/&quot;/g, '"').replace(/&#39;/g, "'").replace(/&nbsp;/g, ' ');
+}
+
+// ★ 외부 요청 4초 타임아웃 유틸리티
+async function fetchWithTimeout(url, options = {}, timeoutMs = 4000) {
+  const controller = new AbortController();
+  const id = setTimeout(() => controller.abort(), timeoutMs);
+  try {
+    const response = await fetch(url, { ...options, signal: controller.signal });
+    clearTimeout(id);
+    return response;
+  } catch (e) {
+    clearTimeout(id);
+    return null; // 타임아웃 또는 에러 발생 시 null 반환
+  }
 }
 
 function getKstNow() { return new Date(Date.now() + 9 * 60 * 60 * 1000); }
@@ -59,10 +72,11 @@ const RESOLVED_CACHE_TTL_MS = 5 * 60 * 1000;
 
 export async function fetchFromNaver() {
   try {
-    const res = await fetch('https://finance.naver.com/sise/lastsearch2.naver', {
+    const res = await fetchWithTimeout('https://finance.naver.com/sise/lastsearch2.naver', {
       headers: { 'User-Agent': 'stock-analyzer/1.0', 'Referer': 'https://finance.naver.com/' }
-    });
-    if (!res.ok) return [];
+    }, 4000); // 4초 제한
+
+    if (!res || !res.ok) return [];
     const html = new TextDecoder('euc-kr').decode(await res.arrayBuffer());
     const items = [], seen = new Set();
     const rowRegex = /<tr[^>]*>([\s\S]*?)<\/tr>/g;
@@ -85,10 +99,11 @@ export async function fetchFromNaver() {
 
 export async function fetchFromDaum() {
   try {
-    const res = await fetch('https://finance.daum.net/api/trend/price_performance?intervalType=TODAY&perPage=100&page=1', {
+    const res = await fetchWithTimeout('https://finance.daum.net/api/trend/price_performance?intervalType=TODAY&perPage=100&page=1', {
       headers: { 'User-Agent': 'stock-analyzer/1.0', 'Referer': 'https://finance.daum.net/' }
-    });
-    if (!res.ok) return [];
+    }, 4000); // 4초 제한
+
+    if (!res || !res.ok) return [];
     const json = await res.json();
     const items = [], seen = new Set();
     for (const row of (json.data || [])) {
@@ -114,7 +129,8 @@ export async function fetchKisCandidates(env, limit = 100) {
   try {
     const accessToken = await getKisAccessToken(env, baseUrl);
     let currentYmd = startYmd;
-    for (let attempt = 0; attempt < 7; attempt++) {
+    // 타임아웃 방지를 위해 시도 횟수를 2회로 줄임 (기존 7회)
+    for (let attempt = 0; attempt < 2; attempt++) {
       const results = await tryFetchKisForDate(env, baseUrl, accessToken, currentYmd, limit);
       if (results.length > 0) {
         resolvedTradingDayCache = { ymd: currentYmd, resolvedAt: Date.now() };
@@ -133,7 +149,6 @@ async function tryFetchKisForDate(env, baseUrl, accessToken, ymd, limit) {
     for (const row of rows || []) {
       const ticker = row[tickerField], name = row.hts_kor_isnm;
       if (!ticker || !name) continue;
-      // ★ isExcluded에 스팩 키워드가 추가되어 여기서 자동으로 걸러집니다.
       if (!isValidTicker(ticker) || seen.has(ticker) || isExcluded(name) || isPreferredStock(name)) continue;
       const mkt = String(row.rprs_mrkt_kor_name || row.bstp_kor_isnm || '').toUpperCase();
       if (mkt && !/유가증권|코스피|코스닥|KOSPI|KOSDAQ/.test(mkt)) continue;
@@ -143,18 +158,20 @@ async function tryFetchKisForDate(env, baseUrl, accessToken, ymd, limit) {
   };
 
   const qVol = new URLSearchParams({ FID_COND_MRKT_DIV_CODE: 'J', FID_COND_SCR_DIV_CODE: '20171', FID_INPUT_ISCD: '0000', FID_DIV_CLS_CODE: '0', FID_BLNG_CLS_CODE: '0', FID_TRGT_CLS_CODE: '111111111', FID_TRGT_EXLS_CLS_CODE: '000000', FID_INPUT_PRICE_1: '0', FID_INPUT_PRICE_2: '0', FID_VOL_CNT: '0', FID_INPUT_DATE_1: ymd, FID_INPUT_CNT_1: '50' });
-  const resVol = await fetch(`${baseUrl}/uapi/domestic-stock/v1/quotations/volume-rank?${qVol}`, {
+  const resVol = await fetchWithTimeout(`${baseUrl}/uapi/domestic-stock/v1/quotations/volume-rank?${qVol}`, {
     headers: { 'content-type': 'application/json', authorization: `Bearer ${accessToken}`, appkey: env.KIS_APP_KEY, appsecret: env.KIS_APP_SECRET, tr_id: 'FHPST01710000' }
-  });
-  if (resVol.ok) { const data = await resVol.json(); if (data.rt_cd === '0') addFromRows(data.output, 'mksc_shrn_iscd'); }
+  }, 4000); // 4초 제한
+
+  if (resVol && resVol.ok) { const data = await resVol.json(); if (data.rt_cd === '0') addFromRows(data.output, 'mksc_shrn_iscd'); }
 
   if (results.length < limit) {
     await new Promise(r => setTimeout(r, 200));
     const qChg = new URLSearchParams({ FID_COND_MRKT_DIV_CODE: 'J', FID_COND_SCR_DIV_CODE: '20170', FID_INPUT_ISCD: '0000', FID_DIV_CLS_CODE: '0', FID_BLNG_CLS_CODE: '0', FID_TRGT_CLS_CODE: '111111111', FID_TRGT_EXLS_CLS_CODE: '000000', FID_INPUT_PRICE_1: '0', FID_INPUT_PRICE_2: '0', FID_VOL_CNT: '0', FID_INPUT_DATE_1: ymd, FID_INPUT_CNT_1: '50' });
-    const resChg = await fetch(`${baseUrl}/uapi/domestic-stock/v1/ranking/fluctuation?${qChg}`, {
+    const resChg = await fetchWithTimeout(`${baseUrl}/uapi/domestic-stock/v1/ranking/fluctuation?${qChg}`, {
       headers: { 'content-type': 'application/json', authorization: `Bearer ${accessToken}`, appkey: env.KIS_APP_KEY, appsecret: env.KIS_APP_SECRET, tr_id: 'FHPST01700000' }
-    });
-    if (resChg.ok) { const data = await resChg.json(); if (data.rt_cd === '0') addFromRows(data.output, 'stck_shrn_iscd'); }
+    }, 4000); // 4초 제한
+
+    if (resChg && resChg.ok) { const data = await resChg.json(); if (data.rt_cd === '0') addFromRows(data.output, 'stck_shrn_iscd'); }
   }
   return results;
 }
@@ -169,12 +186,14 @@ export async function fetchMarketCapRandom(env, neededCount) {
     const collected = [], seen = new Set();
     let trCont = '';
 
-    for (let page = 0; page < 7; page++) {
+    // 시간 단축을 위해 최대 2페이지까지만 조회
+    for (let page = 0; page < 2; page++) {
       const q = new URLSearchParams({ FID_COND_MRKT_DIV_CODE: 'J', FID_COND_SCR_DIV_CODE: '20174', FID_INPUT_ISCD: '0000', FID_DIV_CLS_CODE: '1', FID_TRGT_CLS_CODE: '0', FID_TRGT_EXLS_CLS_CODE: '0', FID_INPUT_PRICE_1: '', FID_INPUT_PRICE_2: '', FID_VOL_CNT: '', FID_INPUT_DATE_1: startYmd });
-      const res = await fetch(`${baseUrl}/uapi/domestic-stock/v1/ranking/market-cap?${q}`, {
+      const res = await fetchWithTimeout(`${baseUrl}/uapi/domestic-stock/v1/ranking/market-cap?${q}`, {
         headers: { 'content-type': 'application/json', authorization: `Bearer ${accessToken}`, appkey: env.KIS_APP_KEY, appsecret: env.KIS_APP_SECRET, tr_id: 'FHPST01740000', tr_cont: trCont },
-      });
-      if (!res.ok) break;
+      }, 4000); // 4초 제한
+
+      if (!res || !res.ok) break;
       const data = await res.json();
       if (data.rt_cd !== '0') break;
 
@@ -197,10 +216,11 @@ export async function fetchIssueStocks(kisCandidates) {
   if (!kisCandidates || kisCandidates.length === 0) return [];
   try {
     const query = encodeURIComponent('특징주 OR 급등주 OR 상한가 when:7d');
-    const res = await fetch(`https://news.google.com/rss/search?q=${query}&hl=ko&gl=KR&ceid=KR:ko`, {
+    const res = await fetchWithTimeout(`https://news.google.com/rss/search?q=${query}&hl=ko&gl=KR&ceid=KR:ko`, {
       headers: { 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36', 'Accept': 'application/rss+xml, application/xml, text/xml' }
-    });
-    if (!res.ok) return [];
+    }, 4000); // 4초 제한
+
+    if (!res || !res.ok) return [];
     const xml = await res.text();
     const titles = [];
     const itemRegex = /<item>([\s\S]*?)<\/item>/g;
