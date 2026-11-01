@@ -7,7 +7,7 @@ const TOTAL_ITEMS = 20;
 const TIME_BUDGET_MS = 5000; 
 const CACHE_EXPIRES_AT = '2099-12-31T23:59:59Z'; 
 
-// ★ 타임아웃이 적용된 fetch 함수 (10초 제한)
+// ★ 타임아웃 시 한글 에러 반환
 async function fetchWithTimeout(url, options = {}, timeoutMs = 10000) {
   const controller = new AbortController();
   const id = setTimeout(() => controller.abort(), timeoutMs);
@@ -17,7 +17,10 @@ async function fetchWithTimeout(url, options = {}, timeoutMs = 10000) {
     return response;
   } catch (e) {
     clearTimeout(id);
-    throw new Error(`Timeout/Network error: ${e.message}`);
+    if (e.name === 'AbortError') {
+      throw new Error('요청 시간이 초과되었습니다. (10초)');
+    }
+    throw new Error(`네트워크 오류: ${e.message}`);
   }
 }
 
@@ -80,9 +83,19 @@ export async function onRequest(context) {
     return jsonResponse({ status: 'running', run_id: progress.run_id }, 200);
   } catch (e) {
     console.error('[cron] onRequest error:', e);
+    
+    // ★ 기존 last_success_at 유지
+    const { data: existing } = await admin.from('app_cache').select('value').eq('key', 'auto_batch_status').maybeSingle();
+    const prevSuccess = existing?.value?.last_success_at || null;
+
     await admin.from('app_cache').upsert({
       key: 'auto_batch_status',
-      value: { status: 'failed', error: `시작 단계 오류: ${e.message.slice(0, 60)}`, last_run_at: new Date().toISOString() },
+      value: { 
+        status: 'failed', 
+        error: `시작 단계 오류: ${e.message.slice(0, 60)}`, 
+        last_run_at: new Date().toISOString(),
+        last_success_at: prevSuccess // ★ 필드 유지
+      },
       updated_at: new Date().toISOString(), expires_at: CACHE_EXPIRES_AT
     });
     return jsonResponse({ error: e.message }, 500);
@@ -111,7 +124,6 @@ async function processBatch(admin, baseUrl, env, progress) {
     if (Date.now() - startTime > TIME_BUDGET_MS) break;
     
     const stock = progress.items[progress.processed];
-    // ★ analyzeOne에서 타임아웃이 걸리면 실패로 반환됨
     const result = await analyzeOne(baseUrl, env, stock);
     
     progress.results.push({ ticker: stock.ticker, name: stock.name, ...result });
@@ -141,7 +153,6 @@ async function processBatch(admin, baseUrl, env, progress) {
 
 async function analyzeOne(baseUrl, env, stock) {
   try {
-    // ★ 각 API 요청에 10초 타임아웃 적용
     const [qRes, nRes, hRes] = await Promise.all([
       fetchWithTimeout(`${baseUrl}/api/quote?ticker=${encodeURIComponent(stock.ticker)}`, {}, 10000),
       fetchWithTimeout(`${baseUrl}/api/news?ticker=${encodeURIComponent(stock.name)}`, {}, 10000),
@@ -167,7 +178,6 @@ async function analyzeOne(baseUrl, env, stock) {
       news_items: nData.items || [], holdings_data: null,
     };
 
-    // ★ AI 분석 요청에도 15초 타임아웃 적용 (AI가 가장 오래 걸림)
     const aRes = await fetchWithTimeout(`${baseUrl}/api/analyze`, {
       method: 'POST', headers: { 'content-type': 'application/json', 'x-cron-secret': env.CRON_SECRET }, body: JSON.stringify(payload),
     }, 15000);
@@ -178,7 +188,7 @@ async function analyzeOne(baseUrl, env, stock) {
     return { ok: true, saved: !!result.saved, fallback: !!result.fallback, fallback_reason: result.fallback_reason || null, data_quality: result.data_quality };
   } catch (e) {
     console.error(`[cron] analyze exception for ${stock.name}:`, e.message);
-    return { ok: false, saved: false, fallback: false, reason: `exception_timeout` };
+    return { ok: false, saved: false, fallback: false, reason: e.message.includes('시간이 초과') ? 'timeout' : 'exception' };
   }
 }
 
