@@ -1,5 +1,5 @@
 // functions/api/_auth.js
-const ITERATIONS = 100000; // ★ 100,000회로 강화
+const ITERATIONS = 100000; // ★ 100,000회
 const SALT_BYTES = 16;
 const HASH_BITS = 256;
 

@@ -95,22 +95,12 @@ function resetState() {
 }
 
 function renderLoginButtons() {
-  const container = $('#login-buttons');
-  if (!container) {
-    console.error('[app.js] #login-buttons 엘리먼트를 찾을 수 없습니다.');
-    return;
-  }
+  const container = $('#login-buttons'); if (!container) return;
   container.innerHTML = '';
-
   const passwordWrap = $('#login-password-wrap');
   const passwordInput = $('#login-password');
   const submitBtn = $('#login-submit');
   let selectedName = null;
-
-  if (!ALLOWED_NAMES || !Array.isArray(ALLOWED_NAMES)) {
-    console.error('[app.js] ALLOWED_NAMES가 유효하지 않습니다.');
-    return;
-  }
 
   ALLOWED_NAMES.forEach((name) => {
     const btn = document.createElement('button');

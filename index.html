@@ -9,9 +9,10 @@
   <meta name="theme-color" content="#f3f4f6" />
   <title>주식 초보 AI분석기</title>
   <!-- <link rel="manifest" href="/public/manifest.webmanifest" /> -->
-  <link rel="stylesheet" href="/assets/styles.css?v=1.4.2" />
+  <link rel="stylesheet" href="/assets/styles.css?v=1.4.5" />
 </head>
 <body>
+  <!-- 1. 로그인 화면 -->
   <main id="screen-login" class="login-screen">
     <div class="login-wrap">
       <div class="login-header">
@@ -20,7 +21,6 @@
         <p class="login-subtitle">이름을 선택해 주세요</p>
       </div>
       <div class="login-card">
-        <!-- ★ 여기에 이름 버튼이 동적으로 생성됩니다. -->
         <div id="login-buttons" class="login-buttons"></div>
         
         <!-- 비밀번호 입력 영역 -->
@@ -37,6 +37,7 @@
     </div>
   </main>
 
+  <!-- 2. 메인 앱 화면 -->
   <div id="app-shell" hidden>
     <header class="app-header">
       <div class="header-row">
@@ -60,6 +61,7 @@
       </div>
     </header>
 
+    <!-- 주식 분석 화면 -->
     <main id="screen-analysis" class="screen">
       <section class="card search-card">
         <label for="ticker-input" class="label">종목 검색</label>
@@ -94,6 +96,7 @@
       </section>
     </main>
 
+    <!-- 내 보유 주식 화면 -->
     <main id="screen-holdings" class="screen screen--active">
       <section class="card">
         <h2 class="section-title">보유 요약</h2>
@@ -141,6 +144,7 @@
       </section>
     </main>
 
+    <!-- 하단 네비게이션 바 -->
     <nav class="bottom-nav">
       <button class="nav-btn nav-btn--active" data-screen="analysis" type="button">
         <span class="nav-icon">📊</span><span>주식 분석</span>
@@ -151,7 +155,7 @@
     </nav>
   </div>
 
-  <!-- ⚙️ 계정 설정 모달 -->
+  <!-- 3. 계정 설정 모달 (비밀번호 변경) -->
   <div id="settings-modal" hidden style="position:fixed;inset:0;background:rgba(0,0,0,.5);display:flex;align-items:center;justify-content:center;z-index:1000;padding:16px;">
     <div style="background:#fff;border-radius:16px;padding:24px;max-width:400px;width:100%;box-shadow:0 4px 12px rgba(0,0,0,.15);">
       <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:16px;">
@@ -178,6 +182,6 @@
     </div>
   </div>
 
-  <script src="/assets/app.js?v=1.4.2" type="module"></script>
+  <script src="/assets/app.js?v=1.4.5" type="module"></script>
 </body>
 </html>
