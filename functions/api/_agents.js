@@ -2,15 +2,8 @@
 import { buildNewsPrompts, buildTrendPrompts, buildJudgePrompts } from './_prompts.js';
 import { MODELS } from './_constants.js';
 
-function isQuotaError(e) {
-  const msg = String(e?.message || e);
-  return msg.includes('4006') || msg.includes('daily free allocation') || msg.includes('quota');
-}
-
-function isDeprecatedModelError(e) {
-  const msg = String(e?.message || e);
-  return msg.includes('5028') || msg.includes('410') || msg.toLowerCase().includes('deprecated');
-}
+function isQuotaError(e) { const msg = String(e?.message || e); return msg.includes('4006') || msg.includes('daily free allocation') || msg.includes('quota'); }
+function isDeprecatedModelError(e) { const msg = String(e?.message || e); return msg.includes('5028') || msg.includes('410') || msg.toLowerCase().includes('deprecated'); }
 
 async function callAiWithRetry(env, modelKey, messages, maxTokens, temperature) {
   const modelId = MODELS[modelKey] || MODELS.judge;
@@ -22,7 +15,7 @@ async function callAiWithRetry(env, modelKey, messages, maxTokens, temperature) 
       return response;
     } catch (e) {
       lastError = e;
-      console.error(`[AI Error] Model: ${modelId}, Attempt: ${attempt + 1}, Error:`, e.message, JSON.stringify(e));
+      console.error(`[AI Error] Model: ${modelId}, Attempt: ${attempt + 1}, Error:`, e.message);
       if (isQuotaError(e)) { const err = new Error('AI_QUOTA_EXCEEDED'); err.code = 'AI_QUOTA_EXCEEDED'; throw err; }
       if (isDeprecatedModelError(e)) { const err = new Error('AI_MODEL_DEPRECATED'); err.code = 'AI_MODEL_DEPRECATED'; throw err; }
       if (attempt < 1) await new Promise(r => setTimeout(r, 1000));
@@ -44,7 +37,6 @@ export async function runNewsAgent(env, payload) {
   if (prompts.isEmpty) return { news_analysis: '관련 뉴스 없음.', news_sentiment: '중립', news_direction: '중립', news_impact: '약', key_theme: '-', status: 'success' };
 
   try {
-    // ★ 토큰을 250 -> 300으로 늘려 더 자세한 요약 유도
     const response = await callAiWithRetry(env, 'news', [
       { role: 'system', content: prompts.system },
       { role: 'user', content: prompts.user }
@@ -53,11 +45,11 @@ export async function runNewsAgent(env, payload) {
     const parsed = extractJSON(extractAiText(response));
     let newsText = typeof parsed.news_analysis === 'string' ? parsed.news_analysis : '';
     
-    // ★ AI가 "없다"고 답해도, 뉴스는 수집되었으므로 더 상세한 대체 텍스트 제공
+    // ★ 뉴스가 수집되었는데 AI가 "없음"이라고 하면, 수집된 기사 수를 언급하도록 강제
     if (!newsText || isNegativeNewsResponse(newsText)) {
       const newsCount = prompts.itemCount || 0;
       if (newsCount > 0) {
-        newsText = `총 ${newsCount}건의 관련 기사가 수집되었으나, AI가 뚜렷한 단일 촉매를 도출하지 못했음. 중립적 접근이 필요함.`;
+        newsText = `총 ${newsCount}건의 관련 기사가 수집되었음. 시장 심리는 중립적이며 뚜렷한 단일 촉매는 확인되지 않음.`;
       } else {
         newsText = '관련 뉴스가 수집되지 않았음.';
       }
@@ -97,7 +89,7 @@ export async function runJudgeAgent(env, payload) {
     const response = await callAiWithRetry(env, 'judge', [
       { role: 'system', content: system },
       { role: 'user', content: user }
-    ], 800, 0.1);
+    ], 1200, 0.1);
 
     const rawText = extractAiText(response);
     const parsed = extractJSON(rawText);
@@ -144,38 +136,18 @@ function extractJSON(text) {
   return {};
 }
 
-// ★ 필터 완화: "없음" 같은 단순 거부만 걸러냄 ("주가 영향 불명"은 통과)
+// ★ 필터 완화: 명시적인 거절 표현만 걸러냄
 function isNegativeNewsResponse(text) {
   if (!text || typeof text !== 'string') return true;
   const t = text.trim();
-  if (t.length < 10) return true;
+  if (t.length < 5) return true;
   if (/^(없음|없습니다|모르겠|알 수 없|판단 불가|분석 불가)\.?$/.test(t)) return true;
   return false;
 }
 
-function normalizeNewsSentiment(v) {
-  if (v === '긍정' || v === '중립' || v === '부정') return v;
-  const s = String(v || '').trim();
-  if (/긍정|호재|좋/.test(s)) return '긍정';
-  if (/부정|악재|나쁘/.test(s)) return '부정';
-  return '중립';
-}
-
-function normalizeNewsDirection(v) {
-  if (v === '호재' || v === '악재' || v === '중립') return v;
-  const s = String(v || '').trim();
-  if (/호재|긍정/.test(s)) return '호재';
-  if (/악재|부정/.test(s)) return '악재';
-  return '중립';
-}
-
-function normalizeNewsImpact(v) {
-  if (v === '강' || v === '중' || v === '약') return v;
-  const s = String(v || '').trim();
-  if (/강/.test(s)) return '강';
-  if (/약/.test(s)) return '약';
-  return '중';
-}
+function normalizeNewsSentiment(v) { if (v === '긍정' || v === '중립' || v === '부정') return v; const s = String(v || '').trim(); if (/긍정|호재|좋/.test(s)) return '긍정'; if (/부정|악재|나쁘/.test(s)) return '부정'; return '중립'; }
+function normalizeNewsDirection(v) { if (v === '호재' || v === '악재' || v === '중립') return v; const s = String(v || '').trim(); if (/호재|긍정/.test(s)) return '호재'; if (/악재|부정/.test(s)) return '악재'; return '중립'; }
+function normalizeNewsImpact(v) { if (v === '강' || v === '중' || v === '약') return v; const s = String(v || '').trim(); if (/강/.test(s)) return '강'; if (/약/.test(s)) return '약'; return '중'; }
 
 function normalizeTrendResult(parsed) {
   if (!parsed || typeof parsed !== 'object') return { __exception: true, message: 'INVALID_TREND_FORMAT' };
@@ -185,14 +157,10 @@ function normalizeTrendResult(parsed) {
   let confidence = Number(parsed.trend_confidence);
   if (!Number.isFinite(confidence) || confidence < 0 || confidence > 1) confidence = null;
 
-  if (!shortTerm || !mediumTerm || !strength || confidence == null) {
-    return { __exception: true, message: 'INVALID_TREND_FIELDS' };
-  }
+  if (!shortTerm || !mediumTerm || !strength || confidence == null) return { __exception: true, message: 'INVALID_TREND_FIELDS' };
+  
   return {
-    short_term_trend: shortTerm,
-    medium_term_trend: mediumTerm,
-    trend_strength: strength,
-    trend_confidence: confidence,
+    short_term_trend: shortTerm, medium_term_trend: mediumTerm, trend_strength: strength, trend_confidence: confidence,
     trend_reasoning: typeof parsed.trend_reasoning === 'string' ? parsed.trend_reasoning : '-',
     key_drivers: Array.isArray(parsed.key_drivers) ? parsed.key_drivers.slice(0, 5) : [],
     risk_factors: Array.isArray(parsed.risk_factors) ? parsed.risk_factors.slice(0, 3) : [],
