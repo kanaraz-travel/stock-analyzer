@@ -4,11 +4,11 @@ import { createClient } from '@supabase/supabase-js';
 const BATCH_SIZE = 1; 
 const STALE_LOCK_MS = 5 * 60 * 1000;
 const TOTAL_ITEMS = 20;
-const TIME_BUDGET_MS = 5000; 
+const TIME_BUDGET_MS = 5000; // 5초
 const CACHE_EXPIRES_AT = '2099-12-31T23:59:59Z'; 
 
-// ★ 안전한 타임아웃 fetch
-async function fetchWithTimeout(url, options = {}, timeoutMs = 10000) {
+// ★ 타임아웃을 단축하여 30초 제한 회피 (API는 5초, AI는 10초)
+async function fetchWithTimeout(url, options = {}, timeoutMs = 5000) {
   const controller = new AbortController();
   const id = setTimeout(() => controller.abort(), timeoutMs);
   try {
@@ -17,8 +17,8 @@ async function fetchWithTimeout(url, options = {}, timeoutMs = 10000) {
     return response;
   } catch (e) {
     clearTimeout(id);
-    const msg = e?.name === 'AbortError' ? '요청 시간 초과' : (e?.message || String(e));
-    throw new Error(msg);
+    if (e.name === 'AbortError') throw new Error('요청 시간 초과');
+    throw new Error(`네트워크 오류: ${e.message}`);
   }
 }
 
@@ -52,7 +52,6 @@ export async function onRequest(context) {
         }
       }
       
-      // ★ 인기 종목 수집 타임아웃을 25초로 연장
       const newProgress = await createNewProgress(baseUrl);
       if (!newProgress) throw new Error('인기 종목을 가져오지 못했습니다.');
 
@@ -73,43 +72,31 @@ export async function onRequest(context) {
 
     waitUntil(processBatch(admin, baseUrl, env, progress).catch(async (err) => {
       console.error('[cron] processBatch fatal error:', err);
-      const errMsg = err?.message || String(err);
       progress.status = 'failed'; 
-      progress.error = `배치 처리 중 오류: ${errMsg.slice(0, 60)}`;
+      progress.error = `배치 처리 중 오류: ${err.message.slice(0, 60)}`;
       await saveProgress(admin, progress); 
       await updateStatusBadge(admin, progress);
     }));
 
     return jsonResponse({ status: 'running', run_id: progress.run_id }, 200);
   } catch (e) {
-    const errMsg = e?.message || String(e);
-    console.error('[cron] onRequest error:', errMsg);
-    
+    console.error('[cron] onRequest error:', e);
     try {
       const { data: existing } = await admin.from('app_cache').select('value').eq('key', 'auto_batch_status').maybeSingle();
       const prevSuccess = existing?.value?.last_success_at || null;
-
       await admin.from('app_cache').upsert({
         key: 'auto_batch_status',
-        value: { 
-          status: 'failed', 
-          error: `시작 단계 오류: ${errMsg.slice(0, 60)}`, 
-          last_run_at: new Date().toISOString(),
-          last_success_at: prevSuccess
-        },
+        value: { status: 'failed', error: `시작 오류: ${e.message.slice(0, 60)}`, last_run_at: new Date().toISOString(), last_success_at: prevSuccess },
         updated_at: new Date().toISOString(), expires_at: CACHE_EXPIRES_AT
       });
-    } catch (dbError) {
-      console.error('[cron] Failed to save error status to DB:', dbError);
-    }
-    
-    return jsonResponse({ error: errMsg }, 200); 
+    } catch (dbError) { console.error('[cron] Failed to save error status:', dbError); }
+    return jsonResponse({ error: e.message }, 200); 
   }
 }
 
 async function createNewProgress(baseUrl) {
-  // ★ 타임아웃 15초 -> 25초로 연장
-  const popRes = await fetchWithTimeout(`${baseUrl}/api/popular?exclude_preferred=1`, {}, 25000);
+  // 인기 종목은 넉넉하게 20초까지 기다림
+  const popRes = await fetchWithTimeout(`${baseUrl}/api/popular?exclude_preferred=1`, {}, 20000);
   if (!popRes.ok) return null;
   const popData = await popRes.json();
   const items = (popData.items || []).slice(0, TOTAL_ITEMS);
@@ -137,7 +124,12 @@ async function processBatch(admin, baseUrl, env, progress) {
 
     if (result.saved) progress.succeeded++;
     else if (result.fallback_reason === 'DATA_INSUFFICIENT' || result.data_quality === 'UNKNOWN') progress.skipped++;
-    else progress.failed++;
+    else {
+      progress.failed++;
+      // ★ 실패 사유를 로그에 남기고 DB에 누적 (UI 툴팁에서 확인 가능)
+      progress.error = `${stock.name} 분석 실패 (사유: ${result.reason || '알 수 없음'})`;
+      console.warn(`[cron] ${stock.name} 실패:`, result.reason);
+    }
 
     await saveProgress(admin, progress);
     await updateStatusBadge(admin, progress); 
@@ -159,17 +151,20 @@ async function processBatch(admin, baseUrl, env, progress) {
 
 async function analyzeOne(baseUrl, env, stock) {
   try {
+    // ★ 외부 API는 5초 제한
     const [qRes, nRes, hRes] = await Promise.all([
-      fetchWithTimeout(`${baseUrl}/api/quote?ticker=${encodeURIComponent(stock.ticker)}`, {}, 10000),
-      fetchWithTimeout(`${baseUrl}/api/news?ticker=${encodeURIComponent(stock.name)}`, {}, 10000),
-      fetchWithTimeout(`${baseUrl}/api/history?ticker=${encodeURIComponent(stock.ticker)}`, {}, 10000),
+      fetchWithTimeout(`${baseUrl}/api/quote?ticker=${encodeURIComponent(stock.ticker)}`, {}, 5000),
+      fetchWithTimeout(`${baseUrl}/api/news?ticker=${encodeURIComponent(stock.name)}`, {}, 5000),
+      fetchWithTimeout(`${baseUrl}/api/history?ticker=${encodeURIComponent(stock.ticker)}`, {}, 5000),
     ]);
+    
     const qData = qRes.ok ? await qRes.json() : null;
     const hData = hRes.ok ? await hRes.json() : {};
-    if (!qData?.price) return { ok: false, saved: false, fallback: false, reason: 'no_price' };
+    const nData = nRes.ok ? await nRes.json() : { items: [] };
+
+    if (!qData?.price) return { ok: false, saved: false, fallback: false, reason: '시세 없음' };
     
     const historyAvailable = hData.data_available !== false;
-    const nData = nRes.ok ? await nRes.json() : { items: [] };
 
     const payload = {
       ticker: stock.ticker, stock_name: stock.name, analysis_type: 'buy',
@@ -184,17 +179,22 @@ async function analyzeOne(baseUrl, env, stock) {
       news_items: nData.items || [], holdings_data: null,
     };
 
+    // ★ AI 분석은 10초 제한 (30초 하드 리밋 회피)
     const aRes = await fetchWithTimeout(`${baseUrl}/api/analyze`, {
       method: 'POST', headers: { 'content-type': 'application/json', 'x-cron-secret': env.CRON_SECRET }, body: JSON.stringify(payload),
-    }, 15000);
+    }, 10000);
 
-    if (!aRes.ok) return { ok: false, saved: false, fallback: false, reason: `http_${aRes.status}` };
+    if (!aRes.ok) return { ok: false, saved: false, fallback: false, reason: `HTTP ${aRes.status}` };
 
     const result = await aRes.json();
-    return { ok: true, saved: !!result.saved, fallback: !!result.fallback, fallback_reason: result.fallback_reason || null, data_quality: result.data_quality };
+    return { 
+      ok: true, saved: !!result.saved, fallback: !!result.fallback, 
+      fallback_reason: result.fallback_reason || null, data_quality: result.data_quality,
+      reason: result.fallback_reason || '알 수 없음'
+    };
   } catch (e) {
     const errMsg = e?.message || String(e);
-    return { ok: false, saved: false, fallback: false, reason: errMsg.includes('초과') ? 'timeout' : 'exception' };
+    return { ok: false, saved: false, fallback: false, reason: errMsg.includes('초과') ? '시간 초과' : errMsg.slice(0, 30) };
   }
 }
 
@@ -202,19 +202,17 @@ async function triggerContinue(baseUrl, env, admin, progress) {
   try {
     const res = await fetchWithTimeout(`${baseUrl}/api/cron`, {
       method: 'POST', headers: { 'x-cron-secret': env.CRON_SECRET, 'x-cron-continue': '1', 'x-run-id': progress.run_id },
-    });
-    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    }, 3000); // 다음 배치 호출은 3초 제한
     
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
     const data = await res.json();
     if (data.status === 'ignored') return; 
     if (data.status === 'already_running' || data.status === 'running') return;
-    
     throw new Error(`예상치 못한 응답 (${data.status})`);
   } catch (e) {
-    const errMsg = e?.message || String(e);
-    console.error('[cron] triggerContinue failed:', errMsg);
+    console.error('[cron] triggerContinue failed:', e.message);
     progress.status = 'interrupted';
-    progress.error = `다음 종목으로 넘어가는 중 문제가 발생했습니다. (${errMsg})`;
+    progress.error = `다음 종목으로 넘어가는 중 문제가 발생했습니다. (${e.message})`;
     await saveProgress(admin, progress); 
     await updateStatusBadge(admin, progress);
   }
