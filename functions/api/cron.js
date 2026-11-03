@@ -7,18 +7,33 @@ const TOTAL_ITEMS = 20;
 const TIME_BUDGET_MS = 5000; 
 const CACHE_EXPIRES_AT = '2099-12-31T23:59:59Z'; 
 
-// ★ cron.js 내부 폴백 종목 (popular.js 마저 실패할 경우 대비)
+// ★ 요청하신 네이버 거래대금 상위 종목 기반 폴백 리스트 (우선주/스팩/ETF 제외)
 const FALLBACK_ITEMS = [
-  { ticker: '005930', name: '삼성전자' }, { ticker: '000660', name: 'SK하이닉스' },
-  { ticker: '373220', name: 'LG에너지솔루션' }, { ticker: '207940', name: '삼성바이오로직스' },
-  { ticker: '005380', name: '현대차' }, { ticker: '000270', name: '기아' },
-  { ticker: '068270', name: '셀트리온' }, { ticker: '005490', name: 'POSCO홀딩스' },
-  { ticker: '035420', name: 'NAVER' }, { ticker: '051910', name: 'LG화학' },
-  { ticker: '006400', name: '삼성SDI' }, { ticker: '035720', name: '카카오' },
-  { ticker: '105560', name: 'KB금융' }, { ticker: '055550', name: '신한지주' },
-  { ticker: '012330', name: '현대모비스' }, { ticker: '028260', name: '삼성물산' },
-  { ticker: '066570', name: 'LG전자' }, { ticker: '003670', name: '포스코퓨처엠' },
-  { ticker: '015760', name: '한국전력' }, { ticker: '032830', name: '삼성생명' }
+  { ticker: '000660', name: 'SK하이닉스' },
+  { ticker: '005930', name: '삼성전자' },
+  { ticker: '180640', name: '한진칼' },
+  { ticker: '009150', name: '삼성전기' },
+  { ticker: '028300', name: 'HLB' },
+  { ticker: '222800', name: '심텍' },
+  { ticker: '402340', name: 'SK스퀘어' },
+  { ticker: '007810', name: '코리아써키트' },
+  { ticker: '006400', name: '삼성SDI' },
+  { ticker: '046890', name: '서울반도체' },
+  { ticker: '298040', name: '효성중공업' },
+  { ticker: '010060', name: 'OCI홀딩스' },
+  { ticker: '053800', name: '안랩' },
+  { ticker: '042660', name: '한화오션' },
+  { ticker: '047920', name: 'HLB제약' },
+  { ticker: '034020', name: '두산에너빌리티' },
+  { ticker: '356860', name: '티엘비' },
+  { ticker: '002320', name: '한진' },
+  { ticker: '196170', name: '알테오젠' },
+  { ticker: '000990', name: 'DB하이텍' },
+  { ticker: '007660', name: '이수페타시스' },
+  { ticker: '042700', name: '한미반도체' },
+  { ticker: '010140', name: '삼성중공업' },
+  { ticker: '328130', name: '루닛' },
+  { ticker: '066570', name: 'LG전자' }
 ];
 
 async function fetchWithTimeout(url, options = {}, timeoutMs = 10000) {
@@ -68,10 +83,10 @@ export async function onRequest(context) {
         }
       }
       
-      // ★ 인기 종목 수집 시도 (실패하면 기본 종목으로 폴백)
+      // 인기 종목 수집 시도 (실패하면 FALLBACK_ITEMS 사용)
       let newProgress = await createNewProgress(baseUrl);
       if (!newProgress) {
-        console.warn('[cron] 인기 종목 수집 실패. 기본 종목(Fallback)으로 대체합니다.');
+        console.warn('[cron] 인기 종목 수집 실패. 최신 거래대금 상위 종목(Fallback)으로 대체합니다.');
         newProgress = getFallbackProgress();
       }
 
@@ -137,9 +152,12 @@ async function createNewProgress(baseUrl) {
 }
 
 function getFallbackProgress() {
+  // FALLBACK_ITEMS에서 무작위로 20개를 뽑아 진행 (모두 상위 종목이므로 안전)
+  const shuffled = [...FALLBACK_ITEMS].sort(() => Math.random() - 0.5).slice(0, TOTAL_ITEMS);
+  
   return {
     run_id: crypto.randomUUID(), status: 'running', started_at: new Date().toISOString(),
-    items: FALLBACK_ITEMS.map((item, idx) => ({ ...item, rank: idx + 1 })),
+    items: shuffled.map((item, idx) => ({ ...item, rank: idx + 1 })),
     processed: 0, succeeded: 0, failed: 0, skipped: 0, results: [],
   };
 }
@@ -233,7 +251,7 @@ async function triggerContinue(baseUrl, env, admin, progress) {
   try {
     const res = await fetchWithTimeout(`${baseUrl}/api/cron`, {
       method: 'POST', headers: { 'x-cron-secret': env.CRON_SECRET, 'x-cron-continue': '1', 'x-run-id': progress.run_id },
-    }, 5000);
+    }, 20000); // 이어달리기 타임아웃 20초
     
     if (!res.ok) throw new Error(`HTTP ${res.status}`);
     const data = await res.json();
@@ -241,11 +259,8 @@ async function triggerContinue(baseUrl, env, admin, progress) {
     if (data.status === 'already_running' || data.status === 'running') return;
     throw new Error(`예상치 못한 응답 (${data.status})`);
   } catch (e) {
-    console.error('[cron] triggerContinue failed:', e.message);
-    progress.status = 'interrupted';
-    progress.error = `다음 종목으로 넘어가는 중 문제가 발생했습니다. (${e.message})`;
-    await saveProgress(admin, progress); 
-    await updateStatusBadge(admin, progress);
+    console.warn('[cron] triggerContinue failed:', e.message);
+    // ★ 타임아웃 시 상태를 강제로 중단시키지 않음 (자연스럽게 다음 요청 대기)
   }
 }
 
