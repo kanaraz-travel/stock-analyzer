@@ -1,255 +1,95 @@
-// functions/api/cron.js
-import { createClient } from '@supabase/supabase-js';
+// functions/api/popular.js
+import {
+  fetchFromNaver, fetchFromDaum, fetchKisCandidates, fetchMarketCapRandom,
+  fetchIssueStocks, isValidTicker, isExcluded, isPreferredStock, resolvedTradingDayCache
+} from './_popular_sources.js';
 
-const BATCH_SIZE = 1; 
-const STALE_LOCK_MS = 5 * 60 * 1000;
-const TOTAL_ITEMS = 20;
-const TIME_BUDGET_MS = 5000; // 5초
-const CACHE_EXPIRES_AT = '2099-12-31T23:59:59Z'; 
+const FALLBACK_ITEMS = [
+  { ticker: '005930', name: '삼성전자' }, { ticker: '000660', name: 'SK하이닉스' },
+  { ticker: '373220', name: 'LG에너지솔루션' }, { ticker: '207940', name: '삼성바이오로직스' },
+  { ticker: '005380', name: '현대차' }, { ticker: '000270', name: '기아' },
+  { ticker: '068270', name: '셀트리온' }, { ticker: '005490', name: 'POSCO홀딩스' },
+  { ticker: '035420', name: 'NAVER' }, { ticker: '051910', name: 'LG화학' },
+  { ticker: '006400', name: '삼성SDI' }, { ticker: '035720', name: '카카오' },
+  { ticker: '105560', name: 'KB금융' }, { ticker: '055550', name: '신한지주' },
+  { ticker: '012330', name: '현대모비스' }, { ticker: '028260', name: '삼성물산' },
+  { ticker: '066570', name: 'LG전자' }, { ticker: '003670', name: '포스코퓨처엠' },
+  { ticker: '015760', name: '한국전력' }, { ticker: '032830', name: '삼성생명' }
+];
 
-// ★ 타임아웃을 단축하여 30초 제한 회피 (API는 5초, AI는 10초)
-async function fetchWithTimeout(url, options = {}, timeoutMs = 5000) {
-  const controller = new AbortController();
-  const id = setTimeout(() => controller.abort(), timeoutMs);
-  try {
-    const response = await fetch(url, { ...options, signal: controller.signal });
-    clearTimeout(id);
-    return response;
-  } catch (e) {
-    clearTimeout(id);
-    if (e.name === 'AbortError') throw new Error('요청 시간 초과');
-    throw new Error(`네트워크 오류: ${e.message}`);
-  }
+function pickTopAndRandom(sourceItems) {
+  const valid = sourceItems.filter(i => isValidTicker(i.ticker) && !isExcluded(i.name) && !isPreferredStock(i.name));
+  if (valid.length === 0) return [];
+  const topN = valid.slice(0, 10);
+  const pool = valid.slice(10, 100);
+  const shuffled = [...pool].sort(() => Math.random() - 0.5);
+  return [...topN, ...shuffled.slice(0, 10)];
 }
 
-export async function onRequest(context) {
-  const { request, env, waitUntil } = context;
-  if (request.method === 'OPTIONS') return corsOk();
-  if (request.method !== 'POST') return jsonResponse({ error: 'POST만 허용됩니다.' }, 405);
+export async function onRequestGet(context) {
+  const { env, request } = context;
+  const url = new URL(request.url);
+  const excludePreferred = url.searchParams.get('exclude_preferred') === '1';
   
-  const secret = request.headers.get('x-cron-secret');
-  if (!env.CRON_SECRET || secret !== env.CRON_SECRET) return jsonResponse({ error: 'Unauthorized' }, 401);
-
-  const admin = createClient(env.SUPABASE_URL, env.SUPABASE_SERVICE_ROLE_KEY);
-  const baseUrl = new URL(request.url).origin;
+  const sourceStats = { naver: 0, daum: 0, issue: 0, kis: 0, cap: 0, fallback: 0 };
 
   try {
-    const isContinue = request.headers.get('x-cron-continue') === '1';
-    let progress;
-
-    if (isContinue) {
-      progress = await loadProgress(admin);
-      const expectedRunId = request.headers.get('x-run-id');
-      if (!progress || progress.run_id !== expectedRunId || progress.status !== 'running') {
-        return jsonResponse({ status: 'ignored', reason: 'no_active_run' }, 200);
-      }
-    } else {
-      const existing = await loadProgress(admin);
-      if (existing?.status === 'running') {
-        const lastActivity = new Date(existing.updated_at || existing.started_at).getTime();
-        if ((Date.now() - lastActivity) < STALE_LOCK_MS) {
-          return jsonResponse({ status: 'already_running', processed: existing.processed }, 200);
-        }
-      }
-      
-      const newProgress = await createNewProgress(baseUrl);
-      if (!newProgress) throw new Error('인기 종목을 가져오지 못했습니다.');
-
-      const staleTime = new Date(Date.now() - STALE_LOCK_MS).toISOString();
-      const { data: locked, error } = await admin.from('auto_batch_progress')
-        .update({ status: 'running', run_id: newProgress.run_id, started_at: newProgress.started_at, updated_at: new Date().toISOString(), payload: newProgress })
-        .eq('id', 1)
-        .or(`status.neq.running,updated_at.lt.${staleTime}`)
-        .select();
-
-      if (error || !locked || locked.length === 0) {
-        return jsonResponse({ status: 'already_running' }, 200);
-      }
-      progress = newProgress;
-    }
-
-    await updateStatusBadge(admin, progress);
-
-    waitUntil(processBatch(admin, baseUrl, env, progress).catch(async (err) => {
-      console.error('[cron] processBatch fatal error:', err);
-      progress.status = 'failed'; 
-      progress.error = `배치 처리 중 오류: ${err.message.slice(0, 60)}`;
-      await saveProgress(admin, progress); 
-      await updateStatusBadge(admin, progress);
-    }));
-
-    return jsonResponse({ status: 'running', run_id: progress.run_id }, 200);
-  } catch (e) {
-    console.error('[cron] onRequest error:', e);
-    try {
-      const { data: existing } = await admin.from('app_cache').select('value').eq('key', 'auto_batch_status').maybeSingle();
-      const prevSuccess = existing?.value?.last_success_at || null;
-      await admin.from('app_cache').upsert({
-        key: 'auto_batch_status',
-        value: { status: 'failed', error: `시작 오류: ${e.message.slice(0, 60)}`, last_run_at: new Date().toISOString(), last_success_at: prevSuccess },
-        updated_at: new Date().toISOString(), expires_at: CACHE_EXPIRES_AT
-      });
-    } catch (dbError) { console.error('[cron] Failed to save error status:', dbError); }
-    return jsonResponse({ error: e.message }, 200); 
-  }
-}
-
-async function createNewProgress(baseUrl) {
-  // 인기 종목은 넉넉하게 20초까지 기다림
-  const popRes = await fetchWithTimeout(`${baseUrl}/api/popular?exclude_preferred=1`, {}, 20000);
-  if (!popRes.ok) return null;
-  const popData = await popRes.json();
-  const items = (popData.items || []).slice(0, TOTAL_ITEMS);
-  if (items.length === 0) return null;
-
-  return {
-    run_id: crypto.randomUUID(), status: 'running', started_at: new Date().toISOString(),
-    items: items.map(i => ({ ticker: i.ticker, name: i.name, rank: i.rank })),
-    processed: 0, succeeded: 0, failed: 0, skipped: 0, results: [],
-  };
-}
-
-async function processBatch(admin, baseUrl, env, progress) {
-  const startTime = Date.now();
-  let batchCount = 0;
-
-  while (progress.processed < progress.items.length && batchCount < BATCH_SIZE) {
-    if (Date.now() - startTime > TIME_BUDGET_MS) break;
-    
-    const stock = progress.items[progress.processed];
-    const result = await analyzeOne(baseUrl, env, stock);
-    
-    progress.results.push({ ticker: stock.ticker, name: stock.name, ...result });
-    progress.processed++;
-
-    if (result.saved) progress.succeeded++;
-    else if (result.fallback_reason === 'DATA_INSUFFICIENT' || result.data_quality === 'UNKNOWN') progress.skipped++;
-    else {
-      progress.failed++;
-      // ★ 실패 사유를 로그에 남기고 DB에 누적 (UI 툴팁에서 확인 가능)
-      progress.error = `${stock.name} 분석 실패 (사유: ${result.reason || '알 수 없음'})`;
-      console.warn(`[cron] ${stock.name} 실패:`, result.reason);
-    }
-
-    await saveProgress(admin, progress);
-    await updateStatusBadge(admin, progress); 
-    
-    batchCount++;
-    if (progress.processed < progress.items.length) await new Promise(r => setTimeout(r, 1000));
-  }
-
-  if (progress.processed < progress.items.length) {
-    await triggerContinue(baseUrl, env, admin, progress);
-  } else {
-    const isFullFail = progress.succeeded === 0 && progress.failed > 0;
-    progress.status = isFullFail ? 'failed' : 'completed';
-    progress.completed_at = new Date().toISOString();
-    await saveProgress(admin, progress);
-    await updateStatusBadge(admin, progress);
-  }
-}
-
-async function analyzeOne(baseUrl, env, stock) {
-  try {
-    // ★ 외부 API는 5초 제한
-    const [qRes, nRes, hRes] = await Promise.all([
-      fetchWithTimeout(`${baseUrl}/api/quote?ticker=${encodeURIComponent(stock.ticker)}`, {}, 5000),
-      fetchWithTimeout(`${baseUrl}/api/news?ticker=${encodeURIComponent(stock.name)}`, {}, 5000),
-      fetchWithTimeout(`${baseUrl}/api/history?ticker=${encodeURIComponent(stock.ticker)}`, {}, 5000),
+    const [naverRaw, daumRaw, kisRaw] = await Promise.all([
+      fetchFromNaver().catch(() => []),
+      fetchFromDaum().catch(() => []),
+      fetchKisCandidates(env, 100).catch(() => [])
     ]);
-    
-    const qData = qRes.ok ? await qRes.json() : null;
-    const hData = hRes.ok ? await hRes.json() : {};
-    const nData = nRes.ok ? await nRes.json() : { items: [] };
 
-    if (!qData?.price) return { ok: false, saved: false, fallback: false, reason: '시세 없음' };
-    
-    const historyAvailable = hData.data_available !== false;
+    const issueRaw = await fetchIssueStocks(kisRaw).catch(() => []);
 
-    const payload = {
-      ticker: stock.ticker, stock_name: stock.name, analysis_type: 'buy',
-      price_data: {
-        current_price: qData.price, change_rate: qData.change_rate, w52_hgpr: qData.w52_hgpr, w52_lwpr: qData.w52_lwpr,
-        market_status: qData.market_status, quote_as_of: qData.quote_as_of, server_time: qData.server_time,
-        return_1m: historyAvailable ? (hData.return_1m ?? null) : null, 
-        ma20_disparity: historyAvailable ? (hData.ma20_disparity ?? null) : null, 
-        price_source: 'FRESH',
-      },
-      volume_data: historyAvailable ? { current_volume: qData.volume, avg_volume_20: hData.avg_volume_20 ?? null } : null,
-      news_items: nData.items || [], holdings_data: null,
+    let selected = [];
+    let source = 'none';
+
+    const addItems = (items, sourceName) => {
+      const valid = pickTopAndRandom(items);
+      const newItems = valid.filter(d => !selected.find(i => i.ticker === d.ticker));
+      const fillCount = 20 - selected.length;
+      const fill = newItems.slice(0, fillCount);
+      selected = [...selected, ...fill];
+      sourceStats[sourceName] = fill.length;
+      if (fill.length > 0 && source === 'none') source = sourceName;
     };
 
-    // ★ AI 분석은 10초 제한 (30초 하드 리밋 회피)
-    const aRes = await fetchWithTimeout(`${baseUrl}/api/analyze`, {
-      method: 'POST', headers: { 'content-type': 'application/json', 'x-cron-secret': env.CRON_SECRET }, body: JSON.stringify(payload),
-    }, 10000);
+    if (selected.length < 20) addItems(naverRaw, 'naver');
+    if (selected.length < 20) addItems(daumRaw, 'daum');
+    if (selected.length < 20) addItems(issueRaw, 'issue');
+    if (selected.length < 20) addItems(kisRaw, 'kis');
+    
+    if (selected.length < 20) {
+      const capRaw = await fetchMarketCapRandom(env, (20 - selected.length) + 10).catch(() => []);
+      addItems(capRaw, 'cap');
+    }
 
-    if (!aRes.ok) return { ok: false, saved: false, fallback: false, reason: `HTTP ${aRes.status}` };
+    // ★ 외부 API가 실패해서 20개를 못 채우면 기본 종목으로 즉시 채움
+    if (selected.length < 20) {
+      const remaining = 20 - selected.length;
+      const fallbackFill = FALLBACK_ITEMS
+        .filter(item => !selected.find(i => i.ticker === item.ticker))
+        .slice(0, remaining);
+      selected = [...selected, ...fallbackFill];
+      sourceStats.fallback = fallbackFill.length;
+      source = source === 'none' ? 'fallback' : `${source}+fallback`;
+    }
 
-    const result = await aRes.json();
-    return { 
-      ok: true, saved: !!result.saved, fallback: !!result.fallback, 
-      fallback_reason: result.fallback_reason || null, data_quality: result.data_quality,
-      reason: result.fallback_reason || '알 수 없음'
-    };
-  } catch (e) {
-    const errMsg = e?.message || String(e);
-    return { ok: false, saved: false, fallback: false, reason: errMsg.includes('초과') ? '시간 초과' : errMsg.slice(0, 30) };
+    const items = selected.slice(0, 20).map((item, idx) => ({ ...item, rank: idx + 1 }));
+
+    return new Response(JSON.stringify({
+      items, total: items.length, source, source_stats: sourceStats,
+      resolved_trading_day: resolvedTradingDayCache.ymd || null,
+      fetched_at: new Date().toISOString(),
+    }), { headers: { 'content-type': 'application/json; charset=utf-8' } });
+
+  } catch (err) {
+    console.error('[popular.js] Unhandled error:', err.message);
+    // 예기치 못한 에러가 나도 20개 기본 종목 반환
+    return new Response(JSON.stringify({
+      items: FALLBACK_ITEMS.map((item, idx) => ({ ...item, rank: idx + 1 })),
+      total: 20, source: 'fallback', error: err.message
+    }), { status: 200, headers: { 'content-type': 'application/json; charset=utf-8' } });
   }
 }
-
-async function triggerContinue(baseUrl, env, admin, progress) {
-  try {
-    const res = await fetchWithTimeout(`${baseUrl}/api/cron`, {
-      method: 'POST', headers: { 'x-cron-secret': env.CRON_SECRET, 'x-cron-continue': '1', 'x-run-id': progress.run_id },
-    }, 3000); // 다음 배치 호출은 3초 제한
-    
-    if (!res.ok) throw new Error(`HTTP ${res.status}`);
-    const data = await res.json();
-    if (data.status === 'ignored') return; 
-    if (data.status === 'already_running' || data.status === 'running') return;
-    throw new Error(`예상치 못한 응답 (${data.status})`);
-  } catch (e) {
-    console.error('[cron] triggerContinue failed:', e.message);
-    progress.status = 'interrupted';
-    progress.error = `다음 종목으로 넘어가는 중 문제가 발생했습니다. (${e.message})`;
-    await saveProgress(admin, progress); 
-    await updateStatusBadge(admin, progress);
-  }
-}
-
-async function loadProgress(admin) {
-  const { data } = await admin.from('auto_batch_progress').select('*').eq('id', 1).maybeSingle();
-  return data ? { ...data.payload, updated_at: data.updated_at } : null; 
-}
-
-async function saveProgress(admin, progress) {
-  const { error } = await admin.from('auto_batch_progress').upsert({
-    id: 1, run_id: progress.run_id, status: progress.status,
-    started_at: progress.started_at, updated_at: new Date().toISOString(), payload: progress,
-  });
-  if (error) console.error('[cron] saveProgress error:', error.message);
-}
-
-async function updateStatusBadge(admin, progress) {
-  try {
-    const { data: existing } = await admin.from('app_cache').select('value').eq('key', 'auto_batch_status').maybeSingle();
-    const prevSuccess = existing?.value?.last_success_at || null;
-    
-    let successAt = prevSuccess;
-    if (progress.succeeded > 0) successAt = new Date().toISOString();
-
-    await admin.from('app_cache').upsert({
-      key: 'auto_batch_status',
-      value: {
-        status: progress.status, last_run_at: new Date().toISOString(), last_success_at: successAt,
-        total: progress.items.length, succeeded: progress.succeeded, failed: progress.failed, skipped: progress.skipped,
-        run_id: progress.run_id, error: progress.error || null,
-      },
-      updated_at: new Date().toISOString(), expires_at: CACHE_EXPIRES_AT
-    });
-  } catch (e) { console.error('[cron] updateStatusBadge failed:', e.message); }
-}
-
-function corsOk() { return new Response(null, { headers: { 'Access-Control-Allow-Origin': '*', 'Access-Control-Allow-Methods': 'POST, OPTIONS', 'Access-Control-Allow-Headers': 'Content-Type, x-cron-secret, x-cron-continue, x-run-id' } }); }
-function jsonResponse(body, status = 200) { return new Response(JSON.stringify(body), { status, headers: { 'content-type': 'application/json; charset=utf-8' } }); }
