@@ -10,7 +10,7 @@ import {
 import { runNewsAgent, runTrendAgent, runJudgeAgent } from './_agents.js';
 import { buildRuleBasedFallback } from './_fallback.js';
 
-const RULESET_VERSION = 'RULESET_AI_V25_14_ADVANCED';
+const RULESET_VERSION = 'RULESET_AI_V25_15_STABLE';
 const MAX_BODY_BYTES = 100 * 1024;
 
 export async function onRequestPost(context) {
@@ -113,20 +113,9 @@ async function handleAnalyze(context) {
         else {
           let finalRec = normalizedRec; let judgeConfidence = Number(judgeResult.confidence); if (!Number.isFinite(judgeConfidence)) judgeConfidence = 0.5;
 
-          // ★ [가드레일 1] 추세가 '약'이면 강한 추천을 '고려'로 다운그레이드
           if (trendResult?.trend_strength === '약') {
             if (finalRec === '매수 추천') finalRec = '매수 고려';
             else if (finalRec === '매도 추천') finalRec = '매도 고려';
-          }
-
-          // ★ [가드레일 2] 추세와 상충되는 판단 강제 조정
-          if (finalRec.includes('매수') && trendResult?.short_term_trend === '하락' && trendResult?.medium_term_trend === '하락') {
-            finalRec = '기다리기'; judgeConfidence = Math.min(judgeConfidence, 0.5);
-            judgeResult.overall_summary += ' [시스템: 단기/중기 추세가 모두 하락하여 매수 판단을 보류합니다.]';
-          }
-          if (finalRec.includes('매도') && trendResult?.short_term_trend === '상승' && trendResult?.medium_term_trend === '상승') {
-            finalRec = analysis_type === 'sell' ? '보유 유지' : '기다리기'; judgeConfidence = Math.min(judgeConfidence, 0.5);
-            judgeResult.overall_summary += ' [시스템: 추세가 강하게 상승 중이므로 매도 판단을 보류합니다.]';
           }
 
           let consistencyNote = '';
@@ -135,7 +124,6 @@ async function handleAnalyze(context) {
             if (needsHighConfidenceForLevelJump(previousRec.recommendation, finalRec) && judgeConfidence < threshold) { finalRec = previousRec.recommendation; consistencyNote = '[판단 유지] '; }
             else if (finalRec === previousRec.recommendation) consistencyNote = '[판단 유지] ';
           }
-
           finalData = { recommendation: finalRec, overall_summary: consistencyNote + (judgeResult.overall_summary || '-'), confidence: judgeConfidence, original_judge_recommendation: normalizedRec };
         }
       }
@@ -154,7 +142,13 @@ async function handleAnalyze(context) {
           },
         });
         saved = true;
-      } catch (e) { console.error('[analyze] save failed:', e.message); saved = false; }
+      } catch (e) { 
+        // ★ DB 저장 실패 시 사유 명확화
+        console.error('[analyze] save failed:', e.message); 
+        saved = false;
+        fallbackReason = 'DB_SAVE_FAILED';
+        isFallback = true; // 저장 실패는 실패로 간주
+      }
     }
   } catch (e) {
     console.error('[analyze] Unhandled exception:', e);
@@ -162,15 +156,10 @@ async function handleAnalyze(context) {
     finalData = buildRuleBasedFallback({ price_data, volume_data, analysis_type, trendResult });
   }
 
-  // ★ [고도화] 프론트엔드에서 상세 분석을 렌더링할 수 있도록 agent_outputs 반환
   return jsonResponse({
     recommendation: finalData?.recommendation || '판단 보류', overall_summary: finalData?.overall_summary || '-', fallback: isFallback, fallback_reason: fallbackReason,
-    fallback_message: isFallback ? getFallbackMessage(fallbackReason) : undefined,
+    fallback_message: isFallback ? getFallbackMessage(fallbackReason) : undefined, retry_hint: quotaExceeded ? '한국시간 오전 9시 이후 다시 시도해 주세요.' : undefined,
     agent_status: agentStatus, saved: saved, data_quality: dataQuality.status,
-    agent_outputs: { // 프론트엔드 노출용
-      news: newsResult ? { text: newsResult.news_analysis, sentiment: newsResult.news_sentiment, impact: newsResult.news_impact } : null,
-      trend: trendResult ? { short: trendResult.short_term_trend, medium: trendResult.medium_term_trend, strength: trendResult.trend_strength } : null
-    }
   });
 }
 

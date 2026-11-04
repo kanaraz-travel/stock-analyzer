@@ -7,32 +7,19 @@ const TOTAL_ITEMS = 20;
 const TIME_BUDGET_MS = 5000; 
 const CACHE_EXPIRES_AT = '2099-12-31T23:59:59Z'; 
 
-// ★ 요청하신 네이버 거래대금 상위 종목 기반 폴백 리스트 (우선주/스팩/ETF 제외)
 const FALLBACK_ITEMS = [
-  { ticker: '000660', name: 'SK하이닉스' },
-  { ticker: '005930', name: '삼성전자' },
-  { ticker: '180640', name: '한진칼' },
-  { ticker: '009150', name: '삼성전기' },
-  { ticker: '028300', name: 'HLB' },
-  { ticker: '222800', name: '심텍' },
-  { ticker: '402340', name: 'SK스퀘어' },
-  { ticker: '007810', name: '코리아써키트' },
-  { ticker: '006400', name: '삼성SDI' },
-  { ticker: '046890', name: '서울반도체' },
-  { ticker: '298040', name: '효성중공업' },
-  { ticker: '010060', name: 'OCI홀딩스' },
-  { ticker: '053800', name: '안랩' },
-  { ticker: '042660', name: '한화오션' },
-  { ticker: '047920', name: 'HLB제약' },
-  { ticker: '034020', name: '두산에너빌리티' },
-  { ticker: '356860', name: '티엘비' },
-  { ticker: '002320', name: '한진' },
-  { ticker: '196170', name: '알테오젠' },
-  { ticker: '000990', name: 'DB하이텍' },
-  { ticker: '007660', name: '이수페타시스' },
-  { ticker: '042700', name: '한미반도체' },
-  { ticker: '010140', name: '삼성중공업' },
-  { ticker: '328130', name: '루닛' },
+  { ticker: '000660', name: 'SK하이닉스' }, { ticker: '005930', name: '삼성전자' },
+  { ticker: '180640', name: '한진칼' }, { ticker: '009150', name: '삼성전기' },
+  { ticker: '028300', name: 'HLB' }, { ticker: '222800', name: '심텍' },
+  { ticker: '402340', name: 'SK스퀘어' }, { ticker: '007810', name: '코리아써키트' },
+  { ticker: '006400', name: '삼성SDI' }, { ticker: '046890', name: '서울반도체' },
+  { ticker: '298040', name: '효성중공업' }, { ticker: '010060', name: 'OCI홀딩스' },
+  { ticker: '053800', name: '안랩' }, { ticker: '042660', name: '한화오션' },
+  { ticker: '047920', name: 'HLB제약' }, { ticker: '034020', name: '두산에너빌리티' },
+  { ticker: '356860', name: '티엘비' }, { ticker: '002320', name: '한진' },
+  { ticker: '196170', name: '알테오젠' }, { ticker: '000990', name: 'DB하이텍' },
+  { ticker: '007660', name: '이수페타시스' }, { ticker: '042700', name: '한미반도체' },
+  { ticker: '010140', name: '삼성중공업' }, { ticker: '328130', name: '루닛' },
   { ticker: '066570', name: 'LG전자' }
 ];
 
@@ -83,7 +70,6 @@ export async function onRequest(context) {
         }
       }
       
-      // 인기 종목 수집 시도 (실패하면 FALLBACK_ITEMS 사용)
       let newProgress = await createNewProgress(baseUrl);
       if (!newProgress) {
         console.warn('[cron] 인기 종목 수집 실패. 최신 거래대금 상위 종목(Fallback)으로 대체합니다.');
@@ -152,9 +138,7 @@ async function createNewProgress(baseUrl) {
 }
 
 function getFallbackProgress() {
-  // FALLBACK_ITEMS에서 무작위로 20개를 뽑아 진행 (모두 상위 종목이므로 안전)
   const shuffled = [...FALLBACK_ITEMS].sort(() => Math.random() - 0.5).slice(0, TOTAL_ITEMS);
-  
   return {
     run_id: crypto.randomUUID(), status: 'running', started_at: new Date().toISOString(),
     items: shuffled.map((item, idx) => ({ ...item, rank: idx + 1 })),
@@ -179,6 +163,7 @@ async function processBatch(admin, baseUrl, env, progress) {
     else if (result.fallback_reason === 'DATA_INSUFFICIENT' || result.data_quality === 'UNKNOWN') progress.skipped++;
     else {
       progress.failed++;
+      // ★ 명확한 실패 사유 기록
       progress.error = `${stock.name} 분석 실패 (사유: ${result.reason || '알 수 없음'})`;
     }
 
@@ -236,10 +221,18 @@ async function analyzeOne(baseUrl, env, stock) {
     if (!aRes.ok) return { ok: false, saved: false, fallback: false, reason: `HTTP ${aRes.status}` };
 
     const result = await aRes.json();
+    
+    // ★ saved 여부와 fallback 여부에 따라 명확하게 reason 분기
+    let reason = '정상 처리됨';
+    if (!result.saved) {
+      if (result.fallback) reason = result.fallback_reason || '폴백 판단';
+      else reason = 'DB 저장 실패';
+    }
+
     return { 
       ok: true, saved: !!result.saved, fallback: !!result.fallback, 
       fallback_reason: result.fallback_reason || null, data_quality: result.data_quality,
-      reason: result.fallback_reason || '알 수 없음'
+      reason
     };
   } catch (e) {
     const errMsg = e?.message || String(e);
@@ -251,7 +244,7 @@ async function triggerContinue(baseUrl, env, admin, progress) {
   try {
     const res = await fetchWithTimeout(`${baseUrl}/api/cron`, {
       method: 'POST', headers: { 'x-cron-secret': env.CRON_SECRET, 'x-cron-continue': '1', 'x-run-id': progress.run_id },
-    }, 20000); // 이어달리기 타임아웃 20초
+    }, 20000);
     
     if (!res.ok) throw new Error(`HTTP ${res.status}`);
     const data = await res.json();
@@ -260,7 +253,6 @@ async function triggerContinue(baseUrl, env, admin, progress) {
     throw new Error(`예상치 못한 응답 (${data.status})`);
   } catch (e) {
     console.warn('[cron] triggerContinue failed:', e.message);
-    // ★ 타임아웃 시 상태를 강제로 중단시키지 않음 (자연스럽게 다음 요청 대기)
   }
 }
 
