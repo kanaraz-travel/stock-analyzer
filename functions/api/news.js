@@ -2,8 +2,8 @@
 const MAX_URL_LENGTH = 2048;
 const MAX_RETURN = 15;
 
-// ★ 외부 뉴스 사이트 응답 지연 대비 4초 타임아웃 유틸리티
-async function fetchWithTimeout(url, options = {}, timeoutMs = 4000) {
+// ★ 타임아웃을 8초로 넉넉하게 늘림
+async function fetchWithTimeout(url, options = {}, timeoutMs = 8000) {
   const controller = new AbortController();
   const id = setTimeout(() => controller.abort(), timeoutMs);
   try {
@@ -12,7 +12,7 @@ async function fetchWithTimeout(url, options = {}, timeoutMs = 4000) {
     return response;
   } catch (e) {
     clearTimeout(id);
-    return null; // 타임아웃 또는 에러 시 null 반환
+    return null;
   }
 }
 
@@ -26,13 +26,11 @@ export async function onRequestGet(context) {
   }
 
   try {
-    // 네이버와 구글 뉴스를 병렬로 수집
     const [naverItems, googleItems] = await Promise.all([
       tryNaverRss(query).catch(() => []),
       tryGoogleNewsRss(query).catch(() => []),
     ]);
 
-    // URL 기준 중복 제거
     const seen = new Set();
     const merged = [];
     for (const item of [...naverItems, ...googleItems]) {
@@ -42,7 +40,6 @@ export async function onRequestGet(context) {
       merged.push(item);
     }
 
-    // 최신순 정렬
     merged.sort((a, b) => {
       if (a.published_at && b.published_at) return new Date(b.published_at) - new Date(a.published_at);
       if (a.published_at) return -1;
@@ -67,18 +64,18 @@ async function tryNaverRss(query) {
       'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36', 
       'Accept': 'application/rss+xml, application/xml, text/xml' 
     },
-  }, 4000);
+  });
 
   if (!res || !res.ok) return [];
   return parseRssItems(await res.text(), '네이버 금융');
 }
 
 async function tryGoogleNewsRss(query) {
-  // 검색어 확장: "종목명 주가"로 검색하여 관련 기사 우선 수집
-  const url = `https://news.google.com/rss/search?q=${encodeURIComponent(query + ' 주가')}&hl=ko&gl=KR&ceid=KR:ko`;
+  // ★ 검색어 제한 해제: "종목명 주가" -> "종목명" 만 검색해도 관련 뉴스가 나오도록 확장
+  const url = `https://news.google.com/rss/search?q=${encodeURIComponent(query)}&hl=ko&gl=KR&ceid=KR:ko`;
   const res = await fetchWithTimeout(url, { 
     headers: { 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36' } 
-  }, 4000);
+  });
 
   if (!res || !res.ok) return [];
   return parseRssItems(await res.text(), 'Google News');
@@ -95,7 +92,6 @@ function parseRssItems(xml, defaultSource) {
     const pubDateMatch = content.match(/<pubDate>(.*?)<\/pubDate>/);
     const sourceMatch = content.match(/<source[^>]*>(.*?)<\/source>/);
     
-    // ★ 뉴스 본문 요약(description) 파싱
     const descMatch = content.match(/<description>(.*?)<\/description>/);
 
     if (!titleMatch || !linkMatch) continue;
@@ -109,14 +105,13 @@ function parseRssItems(xml, defaultSource) {
       if (!isNaN(d.getTime())) publishedAt = d.toISOString();
     }
 
-    // ★ HTML 태그 제거 및 텍스트만 추출 (최대 200자)
     const summary = descMatch 
       ? decodeHtmlEntities(descMatch[1].replace(/<[^>]*>/g, '')).slice(0, 200) 
       : '';
 
     items.push({
       title: decodeHtmlEntities(titleMatch[1].replace(/<!\[CDATA\[|\]\]>/g, '')).slice(0, 500),
-      summary, // ★ 본문 요약 추가
+      summary,
       url,
       published_at: publishedAt,
       source_name: sourceMatch ? decodeHtmlEntities(sourceMatch[1]) : defaultSource,
