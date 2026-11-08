@@ -2,7 +2,7 @@
 import { createClient } from '@supabase/supabase-js';
 
 const BATCH_SIZE = 1; 
-const STALE_LOCK_MS = 10 * 60 * 1000; // ★ 락 대기 시간 5분 -> 10분으로 연장
+const STALE_LOCK_MS = 10 * 60 * 1000;
 const TOTAL_ITEMS = 20;
 const TIME_BUDGET_MS = 5000; 
 const CACHE_EXPIRES_AT = '2099-12-31T23:59:59Z'; 
@@ -46,7 +46,7 @@ export async function onRequest(context) {
   }
   
   const secret = request.headers.get('x-cron-secret');
-  if (!env.CRON_SECRET || secret !== env.CRON_SECRET) return jsonResponse({ error: 'Unauthorized (비밀키 불일치)' }, 401);
+  if (!env.CRON_SECRET || secret !== env.CRON_SECRET) return jsonResponse({ error: 'Unauthorized' }, 401);
 
   const admin = createClient(env.SUPABASE_URL, env.SUPABASE_SERVICE_ROLE_KEY);
   const baseUrl = new URL(request.url).origin;
@@ -72,7 +72,7 @@ export async function onRequest(context) {
       
       let newProgress = await createNewProgress(baseUrl);
       if (!newProgress) {
-        console.warn('[cron] 인기 종목 수집 실패. 최신 거래대금 상위 종목(Fallback)으로 대체합니다.');
+        console.warn('[cron] 인기 종목 수집 실패. 폴백 리스트로 대체합니다.');
         newProgress = getFallbackProgress();
       }
 
@@ -111,9 +111,7 @@ export async function onRequest(context) {
         value: { status: 'failed', error: `시작 오류: ${e.message.slice(0, 60)}`, last_run_at: new Date().toISOString(), last_success_at: prevSuccess },
         updated_at: new Date().toISOString(), expires_at: CACHE_EXPIRES_AT
       });
-    } catch (dbError) { 
-      console.error('[cron] Failed to save error status:', dbError); 
-    }
+    } catch (dbError) { console.error('[cron] Failed to save error status:', dbError); }
     return jsonResponse({ error: e.message }, 200); 
   }
 }
@@ -131,10 +129,7 @@ async function createNewProgress(baseUrl) {
       items: items.map(i => ({ ticker: i.ticker, name: i.name, rank: i.rank })),
       processed: 0, succeeded: 0, failed: 0, skipped: 0, results: [],
     };
-  } catch (e) {
-    console.error('[cron] createNewProgress failed:', e.message);
-    return null;
-  }
+  } catch (e) { return null; }
 }
 
 function getFallbackProgress() {
@@ -159,7 +154,19 @@ async function processBatch(admin, baseUrl, env, progress) {
     progress.results.push({ ticker: stock.ticker, name: stock.name, ...result });
     progress.processed++;
 
-    if (result.saved) progress.succeeded++;
+    // ★ AI 할당량 초과 시 즉시 중단
+    if (result.reason === 'AI_QUOTA_EXCEEDED') {
+      progress.failed++;
+      progress.error = `AI 무료 할당량 초과로 중단되었습니다. (한국시간 오전 9시 이후 재시도 필요)`;
+      
+      // 남은 종목은 스킵 처리
+      const remainCount = progress.items.length - progress.processed;
+      progress.skipped += remainCount;
+      progress.processed = progress.items.length; 
+      
+      console.warn(`[cron] AI_QUOTA_EXCEEDED. Skipping remaining ${remainCount} items.`);
+    } 
+    else if (result.saved) progress.succeeded++;
     else if (result.fallback_reason === 'DATA_INSUFFICIENT' || result.data_quality === 'UNKNOWN') progress.skipped++;
     else {
       progress.failed++;
@@ -213,7 +220,6 @@ async function analyzeOne(baseUrl, env, stock) {
       news_items: nData.items || [], holdings_data: null,
     };
 
-    // ★ AI 분석 타임아웃 25초 -> 15초로 단축 (Cloudflare 30초 제한 회피)
     const aRes = await fetchWithTimeout(`${baseUrl}/api/analyze`, {
       method: 'POST', headers: { 'content-type': 'application/json', 'x-cron-secret': env.CRON_SECRET }, body: JSON.stringify(payload),
     }, 15000);
@@ -241,7 +247,6 @@ async function analyzeOne(baseUrl, env, stock) {
 
 async function triggerContinue(baseUrl, env, admin, progress) {
   try {
-    // 다음 배치 요청
     const res = await fetchWithTimeout(`${baseUrl}/api/cron`, {
       method: 'POST', headers: { 'x-cron-secret': env.CRON_SECRET, 'x-cron-continue': '1', 'x-run-id': progress.run_id },
     }, 15000);
