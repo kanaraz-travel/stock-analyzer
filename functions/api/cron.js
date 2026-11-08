@@ -27,7 +27,12 @@ async function fetchWithTimeout(url, options = {}, timeoutMs = 10000) {
   const controller = new AbortController();
   const id = setTimeout(() => controller.abort(), timeoutMs);
   try {
-    const response = await fetch(url, { ...options, signal: controller.signal });
+    // ★ 프롬프트 캐싱을 위한 세션 어피니티 헤더 추가
+    const headers = {
+      ...options.headers,
+      'x-session-affinity': 'cron-batch-session'
+    };
+    const response = await fetch(url, { ...options, headers, signal: controller.signal });
     clearTimeout(id);
     return response;
   } catch (e) {
@@ -163,7 +168,6 @@ async function processBatch(admin, baseUrl, env, progress) {
     else if (result.fallback_reason === 'DATA_INSUFFICIENT' || result.data_quality === 'UNKNOWN') progress.skipped++;
     else {
       progress.failed++;
-      // ★ 명확한 실패 사유 기록
       progress.error = `${stock.name} 분석 실패 (사유: ${result.reason || '알 수 없음'})`;
     }
 
@@ -222,7 +226,6 @@ async function analyzeOne(baseUrl, env, stock) {
 
     const result = await aRes.json();
     
-    // ★ saved 여부와 fallback 여부에 따라 명확하게 reason 분기
     let reason = '정상 처리됨';
     if (!result.saved) {
       if (result.fallback) reason = result.fallback_reason || '폴백 판단';

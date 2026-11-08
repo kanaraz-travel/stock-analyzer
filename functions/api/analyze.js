@@ -143,11 +143,10 @@ async function handleAnalyze(context) {
         });
         saved = true;
       } catch (e) { 
-        // ★ DB 저장 실패 시 사유 명확화
         console.error('[analyze] save failed:', e.message); 
         saved = false;
         fallbackReason = 'DB_SAVE_FAILED';
-        isFallback = true; // 저장 실패는 실패로 간주
+        isFallback = true;
       }
     }
   } catch (e) {

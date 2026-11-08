@@ -2,22 +2,52 @@
 import { buildNewsPrompts, buildTrendPrompts, buildJudgePrompts } from './_prompts.js';
 import { MODELS } from './_constants.js';
 
-function isQuotaError(e) { const msg = String(e?.message || e); return msg.includes('4006') || msg.includes('daily free allocation') || msg.includes('quota'); }
-function isDeprecatedModelError(e) { const msg = String(e?.message || e); return msg.includes('5028') || msg.includes('410') || msg.toLowerCase().includes('deprecated'); }
+function isQuotaError(e) {
+  const msg = String(e?.message || e);
+  return msg.includes('4006') || msg.includes('daily free allocation') || msg.includes('quota');
+}
+
+function isDeprecatedModelError(e) {
+  const msg = String(e?.message || e);
+  return msg.includes('5028') || msg.includes('410') || msg.toLowerCase().includes('deprecated');
+}
 
 async function callAiWithRetry(env, modelKey, messages, maxTokens, temperature) {
   const modelId = MODELS[modelKey] || MODELS.judge;
   let lastError = null;
+
   for (let attempt = 0; attempt < 2; attempt++) {
     try {
-      const response = await env.AI.run(modelId, { messages, max_tokens: maxTokens, temperature });
+      const options = {
+        messages,
+        max_tokens: maxTokens,
+        temperature,
+      };
+
+      // ★ Qwen 3.8 27B 모델 최적화: Thinking Mode 비활성화
+      if (modelId.includes('qwen3.8-27b')) {
+        options.reasoning_effort = 'none';
+        options.chat_template_kwargs = { enable_thinking: false };
+        options.max_tokens = Math.max(maxTokens, 2000); // JSON 잘림 방지
+      }
+
+      const response = await env.AI.run(modelId, options);
       if (response && response.error) throw new Error(response.error);
       return response;
     } catch (e) {
       lastError = e;
-      console.error(`[AI Error] Model: ${modelId}, Attempt: ${attempt + 1}, Error:`, e.message);
-      if (isQuotaError(e)) { const err = new Error('AI_QUOTA_EXCEEDED'); err.code = 'AI_QUOTA_EXCEEDED'; throw err; }
-      if (isDeprecatedModelError(e)) { const err = new Error('AI_MODEL_DEPRECATED'); err.code = 'AI_MODEL_DEPRECATED'; throw err; }
+      console.error(`[AI Error] Model: ${modelId}, Attempt: ${attempt + 1}, Error:`, e.message, JSON.stringify(e));
+
+      if (isQuotaError(e)) {
+        const err = new Error('AI_QUOTA_EXCEEDED');
+        err.code = 'AI_QUOTA_EXCEEDED';
+        throw err;
+      }
+      if (isDeprecatedModelError(e)) {
+        const err = new Error('AI_MODEL_DEPRECATED');
+        err.code = 'AI_MODEL_DEPRECATED';
+        throw err;
+      }
       if (attempt < 1) await new Promise(r => setTimeout(r, 1000));
     }
   }
@@ -34,7 +64,12 @@ function extractAiText(response) {
 
 export async function runNewsAgent(env, payload) {
   const prompts = buildNewsPrompts(payload);
-  if (prompts.isEmpty) return { news_analysis: '관련 뉴스 없음.', news_sentiment: '중립', news_direction: '중립', news_impact: '약', key_theme: '-', status: 'success' };
+  if (prompts.isEmpty) {
+    return { 
+      news_analysis: '관련된 최신 뉴스가 수집되지 않았음. 뉴스 부재로 인한 중립적 접근 필요함.', 
+      news_sentiment: '중립', news_direction: '중립', news_impact: '약', key_theme: '-', status: 'success' 
+    };
+  }
 
   try {
     const response = await callAiWithRetry(env, 'news', [
@@ -45,14 +80,8 @@ export async function runNewsAgent(env, payload) {
     const parsed = extractJSON(extractAiText(response));
     let newsText = typeof parsed.news_analysis === 'string' ? parsed.news_analysis : '';
     
-    // ★ 뉴스가 수집되었는데 AI가 "없음"이라고 하면, 수집된 기사 수를 언급하도록 강제
     if (!newsText || isNegativeNewsResponse(newsText)) {
-      const newsCount = prompts.itemCount || 0;
-      if (newsCount > 0) {
-        newsText = `총 ${newsCount}건의 관련 기사가 수집되었음. 시장 심리는 중립적이며 뚜렷한 단일 촉매는 확인되지 않음.`;
-      } else {
-        newsText = '관련 뉴스가 수집되지 않았음.';
-      }
+      newsText = `총 ${prompts.itemCount}건의 관련 기사가 수집되었음. 시장 심리는 중립적이며 뚜렷한 단일 촉매는 확인되지 않음.`;
     }
     
     return {
@@ -86,16 +115,17 @@ export async function runTrendAgent(env, payload) {
 export async function runJudgeAgent(env, payload) {
   const { system, user } = buildJudgePrompts(payload);
   try {
+    // ★ max_tokens를 2000으로 설정 (JSON 잘림 방지 및 속도 최적화)
     const response = await callAiWithRetry(env, 'judge', [
       { role: 'system', content: system },
       { role: 'user', content: user }
-    ], 1200, 0.1);
+    ], 2000, 0.1);
 
     const rawText = extractAiText(response);
     const parsed = extractJSON(rawText);
     
     if (typeof parsed.recommendation !== 'string' || typeof parsed.overall_summary !== 'string') {
-      console.error('[judge agent] INVALID_JUDGE_FORMAT. Raw response:', rawText);
+      console.error('[judge agent] INVALID_JUDGE_FORMAT. Raw response:', rawText.slice(0, 500));
       return { __exception: true, message: 'INVALID_JUDGE_FORMAT' };
     }
     return parsed;
@@ -105,6 +135,7 @@ export async function runJudgeAgent(env, payload) {
   }
 }
 
+// ... (extractJSON, normalize 함수들은 기존과 동일하므로 생략하지 않고 포함)
 function extractJSON(text) {
   if (!text || typeof text !== 'string') return {};
   const trimmed = text.trim();
@@ -136,7 +167,6 @@ function extractJSON(text) {
   return {};
 }
 
-// ★ 필터 완화: 명시적인 거절 표현만 걸러냄
 function isNegativeNewsResponse(text) {
   if (!text || typeof text !== 'string') return true;
   const t = text.trim();
@@ -157,10 +187,14 @@ function normalizeTrendResult(parsed) {
   let confidence = Number(parsed.trend_confidence);
   if (!Number.isFinite(confidence) || confidence < 0 || confidence > 1) confidence = null;
 
-  if (!shortTerm || !mediumTerm || !strength || confidence == null) return { __exception: true, message: 'INVALID_TREND_FIELDS' };
-  
+  if (!shortTerm || !mediumTerm || !strength || confidence == null) {
+    return { __exception: true, message: 'INVALID_TREND_FIELDS' };
+  }
   return {
-    short_term_trend: shortTerm, medium_term_trend: mediumTerm, trend_strength: strength, trend_confidence: confidence,
+    short_term_trend: shortTerm,
+    medium_term_trend: mediumTerm,
+    trend_strength: strength,
+    trend_confidence: confidence,
     trend_reasoning: typeof parsed.trend_reasoning === 'string' ? parsed.trend_reasoning : '-',
     key_drivers: Array.isArray(parsed.key_drivers) ? parsed.key_drivers.slice(0, 5) : [],
     risk_factors: Array.isArray(parsed.risk_factors) ? parsed.risk_factors.slice(0, 3) : [],
