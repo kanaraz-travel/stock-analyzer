@@ -2,7 +2,7 @@
 import { createClient } from '@supabase/supabase-js';
 
 const BATCH_SIZE = 1; 
-const STALE_LOCK_MS = 5 * 60 * 1000;
+const STALE_LOCK_MS = 10 * 60 * 1000; // ★ 락 대기 시간 5분 -> 10분으로 연장
 const TOTAL_ITEMS = 20;
 const TIME_BUDGET_MS = 5000; 
 const CACHE_EXPIRES_AT = '2099-12-31T23:59:59Z'; 
@@ -27,12 +27,7 @@ async function fetchWithTimeout(url, options = {}, timeoutMs = 10000) {
   const controller = new AbortController();
   const id = setTimeout(() => controller.abort(), timeoutMs);
   try {
-    // ★ 프롬프트 캐싱을 위한 세션 어피니티 헤더 추가
-    const headers = {
-      ...options.headers,
-      'x-session-affinity': 'cron-batch-session'
-    };
-    const response = await fetch(url, { ...options, headers, signal: controller.signal });
+    const response = await fetch(url, { ...options, signal: controller.signal });
     clearTimeout(id);
     return response;
   } catch (e) {
@@ -218,9 +213,10 @@ async function analyzeOne(baseUrl, env, stock) {
       news_items: nData.items || [], holdings_data: null,
     };
 
+    // ★ AI 분석 타임아웃 25초 -> 15초로 단축 (Cloudflare 30초 제한 회피)
     const aRes = await fetchWithTimeout(`${baseUrl}/api/analyze`, {
       method: 'POST', headers: { 'content-type': 'application/json', 'x-cron-secret': env.CRON_SECRET }, body: JSON.stringify(payload),
-    }, 25000);
+    }, 15000);
 
     if (!aRes.ok) return { ok: false, saved: false, fallback: false, reason: `HTTP ${aRes.status}` };
 
@@ -245,9 +241,10 @@ async function analyzeOne(baseUrl, env, stock) {
 
 async function triggerContinue(baseUrl, env, admin, progress) {
   try {
+    // 다음 배치 요청
     const res = await fetchWithTimeout(`${baseUrl}/api/cron`, {
       method: 'POST', headers: { 'x-cron-secret': env.CRON_SECRET, 'x-cron-continue': '1', 'x-run-id': progress.run_id },
-    }, 20000);
+    }, 15000);
     
     if (!res.ok) throw new Error(`HTTP ${res.status}`);
     const data = await res.json();
