@@ -1,7 +1,7 @@
-// functions/api/cron-status.js
+// functions/api/cron-status.js (전체 코드)
 import { createClient } from '@supabase/supabase-js';
 
-const STALE_RUNNING_MS = 5 * 60 * 1000; // 5분
+const STALE_RUNNING_MS = 10 * 60 * 1000; // 10분
 
 export async function onRequestGet(context) {
   const { env } = context;
@@ -12,9 +12,14 @@ export async function onRequestGet(context) {
   let finalStatus = status.status || 'idle';
   let finalError = status.error || null;
 
-  // ★ 예전 코드에서 남겨진 기술적 에러 메시지를 사용자 친화적으로 변환
-  if (finalError && finalError.includes('Invalid response')) {
-    finalError = '모든 처리가 정상적으로 완료되었거나, 다른 작업이 진행 중입니다.';
+  if (finalError) {
+    if (finalError.includes('The operation was aborted') || finalError.includes('Timeout/Network error') || finalError.includes('시간 초과')) {
+      finalError = '요청 시간이 초과되었거나 네트워크 오류가 발생했습니다.';
+    } else if (finalError.includes('500') || finalError.includes('Internal server error')) {
+      finalError = '서버 내부 오류가 발생했습니다. 잠시 후 다시 시도해 주세요.';
+    } else if (finalError.includes('Invalid response')) {
+      finalError = '모든 처리가 정상적으로 완료되었거나, 다른 작업이 진행 중입니다.';
+    }
   }
 
   if (finalStatus === 'running' && status.last_run_at) {
@@ -22,25 +27,25 @@ export async function onRequestGet(context) {
     if (elapsed > STALE_RUNNING_MS) {
       if ((status.succeeded || 0) > 0) {
         finalStatus = 'interrupted';
-        finalError = `5분 이상 응답이 없어 중단됨. (${status.succeeded}개 성공 / ${status.failed || 0}개 실패)`;
+        finalError = `10분 이상 응답이 없어 중단됨. (${status.succeeded}개 성공 / ${status.failed || 0}개 실패)`;
       } else {
         finalStatus = 'failed';
-        finalError = '실행 중 응답이 5분 이상 없어 전체 실패했습니다.';
+        finalError = '실행 중 응답이 10분 이상 없어 전체 실패했습니다.';
       }
     }
   }
 
-  // ★ 다음 실행 시간 계산 (KST 기준 3시간 간격)
+  // ★ 다음 실행 시간 계산 (KST 기준 4시간 간격: 00, 04, 08, 12, 16, 20)
   const now = new Date();
   const KST_OFFSET = 9 * 60 * 60 * 1000;
   const nowKst = new Date(now.getTime() + KST_OFFSET);
   const currentKstHour = nowKst.getUTCHours();
   
-  let nextKstHour = Math.ceil((currentKstHour + 1) / 3) * 3;
+  // 3시간 주기에서 4시간 주기로 변경
+  let nextKstHour = Math.ceil((currentKstHour + 1) / 4) * 4;
   const nextKst = new Date(nowKst);
   nextKst.setUTCHours(nextKstHour, 0, 0, 0);
   
-  // 다시 UTC로 변환하여 ISO 문자열 반환
   const nextUtc = new Date(nextKst.getTime() - KST_OFFSET);
 
   return new Response(JSON.stringify({
